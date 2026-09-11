@@ -1655,6 +1655,11 @@ private:
                 ret = &slot;
                 SLT_INF(*ret, "selected slot by prompt_cache_key='%s' (slot had '%s')\n",
                         key.c_str(), slot.last_prompt_cache_key.c_str());
+                // the key can outlive the KV (--cache-idle-slots parks and clears the slot),
+                // so an empty slot still has to try the level-2 restore below
+                if (ret->prompt.tokens.empty()) {
+                    update_cache = true;
+                }
                 break;
             }
         }
