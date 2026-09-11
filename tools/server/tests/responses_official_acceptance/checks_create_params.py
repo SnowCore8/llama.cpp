@@ -407,11 +407,11 @@ def run_create_param_checks(
         f"HTTP {code} has_reasoning={has_reasoning} text={output_text(data)!r}",
     )
 
-    # reasoning.effort=low → local thinking on; expect a reasoning output item
-    # (text may be empty/incomplete under --reasoning-preserve + short budgets).
+    # reasoning.effort=low -> local thinking on; expect a reasoning output item carrying the
+    # official summary_text part when a summary level is requested (raw text is not exposed)
     code, data = create(
         {
-            "reasoning": {"effort": "low"},
+            "reasoning": {"effort": "low", "summary": "detailed"},
             "input": "Think briefly, then reply with exactly: REASON_ON",
             "max_output_tokens": 256,
             "temperature": 0,
@@ -422,25 +422,23 @@ def run_create_param_checks(
         for x in (data.get("output") or [])
         if isinstance(x, dict) and x.get("type") == "reasoning"
     ]
-    has_reasoning_text = False
+    has_summary_text = False
+    has_content_key = False
     for item in reasoning_items:
-        for part in item.get("content") or []:
-            if isinstance(part, dict) and (part.get("text") or "").strip():
-                has_reasoning_text = True
-                break
-        if has_reasoning_text:
-            break
-        # Some shapes use summary[] instead of content[]
+        if "content" in item:
+            has_content_key = True
         for part in item.get("summary") or []:
             if isinstance(part, dict) and (part.get("text") or "").strip():
-                has_reasoning_text = True
+                has_summary_text = True
                 break
     report.add(
         "create_param",
         "reasoning.low",
-        "PASS" if code == 200 and reasoning_items and has_reasoning_text else "FAIL",
-        f"HTTP {code} n_reasoning={len(reasoning_items)} has_text={has_reasoning_text} "
-        f"status={data.get('status')!r} text={output_text(data)!r}",
+        "PASS"
+        if code == 200 and reasoning_items and has_summary_text and not has_content_key
+        else "FAIL",
+        f"HTTP {code} n_reasoning={len(reasoning_items)} has_summary_text={has_summary_text} "
+        f"content_key={has_content_key} status={data.get('status')!r} text={output_text(data)!r}",
     )
 
     # invalid reasoning.effort → 400

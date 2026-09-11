@@ -33,12 +33,6 @@ from openai.types.responses.response_text_delta_event import ResponseTextDeltaEv
 from openai.types.responses.response_text_done_event import ResponseTextDoneEvent
 
 try:
-    from openai.types.responses.response_reasoning_text_delta_event import (
-        ResponseReasoningTextDeltaEvent,
-    )
-    from openai.types.responses.response_reasoning_text_done_event import (
-        ResponseReasoningTextDoneEvent,
-    )
     from openai.types.responses.response_reasoning_summary_part_added_event import (
         ResponseReasoningSummaryPartAddedEvent,
     )
@@ -52,8 +46,6 @@ try:
         ResponseReasoningSummaryTextDoneEvent,
     )
 except Exception:  # pragma: no cover - older SDK
-    ResponseReasoningTextDeltaEvent = None  # type: ignore
-    ResponseReasoningTextDoneEvent = None  # type: ignore
     ResponseReasoningSummaryPartAddedEvent = None  # type: ignore
     ResponseReasoningSummaryPartDoneEvent = None  # type: ignore
     ResponseReasoningSummaryTextDeltaEvent = None  # type: ignore
@@ -75,10 +67,6 @@ EVENT_VALIDATORS = {
     "response.function_call_arguments.delta": ResponseFunctionCallArgumentsDeltaEvent,
     "response.function_call_arguments.done": ResponseFunctionCallArgumentsDoneEvent,
 }
-if ResponseReasoningTextDeltaEvent is not None:
-    EVENT_VALIDATORS["response.reasoning_text.delta"] = ResponseReasoningTextDeltaEvent
-if ResponseReasoningTextDoneEvent is not None:
-    EVENT_VALIDATORS["response.reasoning_text.done"] = ResponseReasoningTextDoneEvent
 if ResponseReasoningSummaryPartAddedEvent is not None:
     EVENT_VALIDATORS["response.reasoning_summary_part.added"] = ResponseReasoningSummaryPartAddedEvent
 if ResponseReasoningSummaryPartDoneEvent is not None:

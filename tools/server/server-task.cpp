@@ -657,24 +657,20 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
     std::vector<json> output;
 
     if (msg.reasoning_content != "") {
-        std::string enc_content;
+        // raw reasoning text is not exposed, the official API only returns the summary
+        json output_item = {
+            {"id",      oai_resp_reasoning_id.empty() ? ("rs_" + random_string()) : oai_resp_reasoning_id},
+            {"summary", server_responses_reasoning_summary(msg.reasoning_content, req_early)},
+            {"type",    "reasoning"},
+            {"status",  hit_token_limit ? "incomplete" : "completed"},
+        };
         if (server_responses_include_contains(req_early, "reasoning.encrypted_content")) {
-            enc_content = server_responses_encode_local_blob(json{
+            output_item["encrypted_content"] = server_responses_encode_local_blob(json{
                 {"type", "reasoning"},
                 {"text", msg.reasoning_content},
             });
         }
-        output.push_back(json {
-            {"id",      oai_resp_reasoning_id.empty() ? ("rs_" + random_string()) : oai_resp_reasoning_id},
-            {"summary", server_responses_reasoning_summary(msg.reasoning_content, req_early)},
-            {"type",    "reasoning"},
-            {"content", json::array({ json {
-                {"text", msg.reasoning_content},
-                {"type", "reasoning_text"},
-            }})},
-            {"encrypted_content", enc_content},
-            {"status",            hit_token_limit ? "incomplete" : "completed"},
-        });
+        output.push_back(std::move(output_item));
     }
 
     if (msg.content != "") {
@@ -798,13 +794,6 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
     };
 
     if (oaicompat_msg.reasoning_content != "") {
-        std::string enc_content;
-        if (server_responses_include_contains(req_stream, "reasoning.encrypted_content")) {
-            enc_content = server_responses_encode_local_blob(json{
-                {"type", "reasoning"},
-                {"text", oaicompat_msg.reasoning_content},
-            });
-        }
         const std::string summary_text = server_responses_reasoning_summary_text(
                 oaicompat_msg.reasoning_content, req_stream);
         json summary = json::array();
@@ -814,17 +803,19 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
                 {"text", summary_text},
             });
         }
-        const json output_item = json {
+        // raw reasoning text is not exposed, the official API only returns the summary
+        json output_item = {
             {"id",      oai_resp_reasoning_id},
             {"summary", std::move(summary)},
             {"type",    "reasoning"},
-            {"content", json::array({ json {
-                {"text", oaicompat_msg.reasoning_content},
-                {"type", "reasoning_text"},
-            }})},
-            {"encrypted_content", enc_content},
-            {"status", hit_token_limit ? "incomplete" : "completed"},
+            {"status",  hit_token_limit ? "incomplete" : "completed"},
         };
+        if (server_responses_include_contains(req_stream, "reasoning.encrypted_content")) {
+            output_item["encrypted_content"] = server_responses_encode_local_blob(json{
+                {"type", "reasoning"},
+                {"text", oaicompat_msg.reasoning_content},
+            });
+        }
 
         if (!summary_text.empty()) {
             push_evt("response.reasoning_summary_text.done", json {
@@ -848,12 +839,6 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
             }
             push_evt("response.reasoning_summary_part.done", std::move(summary_part_done));
         }
-        push_evt("response.reasoning_text.done", json {
-            {"item_id",       oai_resp_reasoning_id},
-            {"output_index",  0},
-            {"content_index", 0},
-            {"text",          oaicompat_msg.reasoning_content},
-        });
         push_evt("response.output_item.done", json {
             {"item", output_item},
             {"output_index", 0},
@@ -1533,22 +1518,14 @@ json server_task_result_cmpl_partial::to_json_oaicompat_resp() {
                 push_evt("response.output_item.added", json {
                     {"output_index", ws_off + 0},
                     {"item", json {
-                        {"id",                oai_resp_reasoning_id},
-                        {"summary",           json::array()},
-                        {"type",              "reasoning"},
-                        {"content",           json::array()},
-                        {"encrypted_content", ""},
-                        {"status",            "in_progress"},
+                        {"id",      oai_resp_reasoning_id},
+                        {"summary", json::array()},
+                        {"type",    "reasoning"},
+                        {"status",  "in_progress"},
                     }},
                 });
                 thinking_block_started = true;
             }
-            push_evt("response.reasoning_text.delta", json {
-                {"delta",   diff.reasoning_content_delta},
-                {"item_id", oai_resp_reasoning_id},
-                {"output_index", ws_off + 0},
-                {"content_index", 0},
-            });
             if (!reasoning_summary_delta.empty()) {
                 if (!reasoning_summary_started) {
                     push_evt("response.reasoning_summary_part.added", json {

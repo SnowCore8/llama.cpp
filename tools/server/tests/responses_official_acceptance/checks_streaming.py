@@ -182,7 +182,7 @@ def run_streaming_checks(
             f"HTTP {icode} types={itypes}",
         )
 
-    # --- force reasoning_text.delta + the official reasoning summary events ---
+    # --- force the official reasoning summary events ---
     think_extra = dict(extra)
     ctk = dict(think_extra.get("chat_template_kwargs") or {})
     ctk["enable_thinking"] = True
@@ -202,18 +202,8 @@ def run_streaming_checks(
     )
     revents = parse_sse(rraw) if rcode == 200 else []
     rtypes = _types(revents)
-    if "response.reasoning_text.delta" in rtypes:
-        forced["response.reasoning_text.delta"] = "forced enable_thinking stream"
-    else:
-        report.add(
-            "stream_event",
-            "response.reasoning_text.delta.forced",
-            "FAIL",
-            f"HTTP {rcode} types={_types(revents)}",
-        )
 
     for ev in (
-        "response.reasoning_text.done",
         "response.reasoning_summary_part.added",
         "response.reasoning_summary_text.delta",
         "response.reasoning_summary_text.done",
@@ -270,6 +260,21 @@ def run_streaming_checks(
         "PASS" if part_done is not None and (pd_status == "incomplete") == (incomplete_reason == "max_output_tokens")
         else "FAIL",
         f"part.done.status={pd_status!r} incomplete_reason={incomplete_reason!r}",
+    )
+
+    # aligned with the official API, which never exposes the raw reasoning text
+    raw_events = sorted({t for t in rtypes if t.startswith("response.reasoning_text")})
+    reasoning_item = next(
+        (it for it in ((final_resp or {}).get("output") or [])
+         if isinstance(it, dict) and it.get("type") == "reasoning"),
+        None,
+    )
+    report.add(
+        "stream_event",
+        "reasoning_raw_text_absent",
+        "PASS" if not raw_events and reasoning_item is not None and "content" not in reasoning_item
+        else "FAIL",
+        f"events={raw_events} content={'content' in (reasoning_item or {})}",
     )
 
     _mark_conditional(report, set(types), forced)

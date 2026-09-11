@@ -824,6 +824,30 @@ def run_semantic_checks(
         f"HTTP {code} encs={encs!r}",
     )
 
+    # --- without include=reasoning.encrypted_content the field is not emitted ---
+    code_plain, data_plain = _create(
+        client,
+        model,
+        extra,
+        {
+            "input": "Think briefly then say HI",
+            "reasoning": {"effort": "low"},
+            "max_output_tokens": 128,
+        },
+    )
+    items_plain = [
+        x
+        for x in (data_plain.get("output") or [])
+        if isinstance(x, dict) and x.get("type") == "reasoning"
+    ]
+    has_enc_key = any("encrypted_content" in x for x in items_plain)
+    report.add(
+        "semantic",
+        "include_reasoning_encrypted_content_absent_by_default",
+        "PASS" if code_plain == 200 and items_plain and not has_enc_key else "FAIL",
+        f"HTTP {code_plain} n_reasoning={len(items_plain)} enc_key={has_enc_key}",
+    )
+
     # --- parallel_tool_calls=false: at most one function_call emitted ---
     code, data = _create(
         client,
@@ -866,7 +890,8 @@ def run_semantic_checks(
         f"HTTP {code} n_fc={len(fcs)} names={names!r} status={data.get('status')!r}",
     )
 
-    # --- reasoning.effort ladder: higher effort → more reasoning text (budget mapping) ---
+    # --- reasoning.effort ladder: higher effort -> more reasoning text (budget mapping);
+    # --- measure it through the official summary channel, raw text is not exposed ---
     def _reasoning_chars(effort: str) -> tuple[int, int, str]:
         c, d = _create(
             client,
@@ -874,7 +899,7 @@ def run_semantic_checks(
             extra,
             {
                 "input": "Solve carefully: what is 17*19?",
-                "reasoning": {"effort": effort},
+                "reasoning": {"effort": effort, "summary": "detailed"},
                 "temperature": 0,
                 "max_output_tokens": 512,
             },
@@ -882,10 +907,9 @@ def run_semantic_checks(
         chars = 0
         for o in d.get("output") or []:
             if isinstance(o, dict) and o.get("type") == "reasoning":
-                for p in o.get("content") or []:
+                for p in o.get("summary") or []:
                     if isinstance(p, dict):
                         chars += len(p.get("text") or "")
-        out_tok = int(((d.get("usage") or {}).get("output_tokens")) or 0)
         return c, chars, d.get("status") or ""
 
     c_min, n_min, st_min = _reasoning_chars("minimal")
@@ -914,7 +938,7 @@ def run_semantic_checks(
             extra,
             {
                 "input": "Solve carefully: what is 23*29?",
-                "reasoning": {"effort": effort, "mode": mode},
+                "reasoning": {"effort": effort, "mode": mode, "summary": "detailed"},
                 "temperature": 0,
                 "max_output_tokens": 512,
             },
@@ -922,7 +946,7 @@ def run_semantic_checks(
         chars = 0
         for o in d.get("output") or []:
             if isinstance(o, dict) and o.get("type") == "reasoning":
-                for p in o.get("content") or []:
+                for p in o.get("summary") or []:
                     if isinstance(p, dict):
                         chars += len(p.get("text") or "")
         return c, chars

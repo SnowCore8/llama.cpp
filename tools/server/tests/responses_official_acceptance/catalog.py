@@ -87,8 +87,6 @@ CORE_STREAM_EVENTS = [
 CONDITIONAL_STREAM_EVENTS = [
     "response.failed",
     "response.incomplete",
-    "response.reasoning_text.delta",
-    "response.reasoning_text.done",
     "response.reasoning_summary_part.added",
     "response.reasoning_summary_text.delta",
     "response.reasoning_summary_text.done",
