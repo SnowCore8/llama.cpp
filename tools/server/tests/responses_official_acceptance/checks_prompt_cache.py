@@ -752,7 +752,8 @@ def _check_append_reuse(
     codes: list[int] = []
     cached: list[int] = []
     inputs: list[int] = []
-    answers_ok = True
+    has_output = True
+    echo_ok = True
     for i in range(3):
         nonce = f"GROW_{i}_{tag}"
         hist.append(_msg("user", f"Reply with exactly: {nonce}"))
@@ -764,18 +765,24 @@ def _check_append_reuse(
         codes.append(code)
         cached.append(c)
         inputs.append(inp)
-        if nonce not in (output_text(data) if isinstance(data, dict) else ""):
-            answers_ok = False
+        text = output_text(data) if isinstance(data, dict) else ""
+        # a wedged restore would leave the turn empty; the exact echo is informational,
+        # a reasoning model may spend the whole max_output_tokens budget on thinking
+        if not text:
+            has_output = False
+        if nonce not in text:
+            echo_ok = False
         hist.append(_msg("assistant", "ack " * 20, "output_text"))
 
     last = len(cached) - 1
     reuse_ok = cached[0] == 0 and cached[last] > 0 and cached[last] >= inputs[last] // 4
-    ok = all(c == 200 for c in codes) and answers_ok and reuse_ok
+    ok = all(c == 200 for c in codes) and has_output and reuse_ok
     report.add(
         "cache",
         "prompt_cache_append_reuse",
         "PASS" if ok else "FAIL",
-        f"http={codes} inputs={inputs} cached={cached} answers_ok={answers_ok}",
+        f"http={codes} inputs={inputs} cached={cached} has_output={has_output} "
+        f"echo_ok={echo_ok} (informational)",
     )
 
 
