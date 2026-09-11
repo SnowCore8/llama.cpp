@@ -9,6 +9,12 @@
 #include "sampling.h"
 #include "speculative.h"
 #include "server-common.h"
+#include "server-responses.h"
+#include "server-web-search.h"
+#include "server-chat-completions-store.h"
+
+#include <algorithm>
+#include <ctime>
 
 #include <sstream>
 
@@ -148,9 +154,9 @@ json task_params::to_json(bool only_metrics) const {
 //
 // task_result_state
 //
-task_result_state::task_result_state(const common_chat_parser_params & chat_parser_params)
+task_result_state::task_result_state(const common_chat_parser_params & chat_parser_params, const std::string & resp_id)
     : chat_parser_params(chat_parser_params)
-    , oai_resp_id("resp_" + random_string())
+    , oai_resp_id(resp_id.empty() ? ("resp_" + random_string()) : resp_id)
     , oai_resp_reasoning_id("rs_" + random_string())
     , oai_resp_message_id("msg_" + random_string()) {
     if (chat_parser_params.is_continuation && !chat_parser_params.echo) {
@@ -301,6 +307,40 @@ json completion_token_output::probs_vector_to_json(const std::vector<completion_
     return out;
 }
 
+json completion_token_output::probs_vector_to_json_oaicompat_completions(
+        const std::vector<completion_token_output> & probs) {
+    json tokens = json::array();
+    json token_logprobs = json::array();
+    json top_logprobs = json::array();
+    json text_offset = json::array();
+    size_t offset = 0;
+    for (const auto & p : probs) {
+        std::string txt(p.text_to_send);
+        txt.resize(validate_utf8(txt));
+        tokens.push_back(txt);
+        // Completions API always uses log-space probabilities.
+        token_logprobs.push_back(logarithm(p.prob));
+        json top_map = json::object();
+        for (const auto & alt : p.probs) {
+            std::string atxt(alt.txt);
+            atxt.resize(validate_utf8(atxt));
+            top_map[atxt] = logarithm(alt.prob);
+        }
+        if (!top_map.contains(txt)) {
+            top_map[txt] = logarithm(p.prob);
+        }
+        top_logprobs.push_back(std::move(top_map));
+        text_offset.push_back((int) offset);
+        offset += txt.size();
+    }
+    return json{
+        {"tokens",         std::move(tokens)},
+        {"token_logprobs", std::move(token_logprobs)},
+        {"top_logprobs",   std::move(top_logprobs)},
+        {"text_offset",    std::move(text_offset)},
+    };
+}
+
 float completion_token_output::logarithm(float x) {
     // the JSON library converts -inf to null, so we need to prevent that
     return x == 0.0f ? std::numeric_limits<float>::lowest() : std::log(x);
@@ -363,11 +403,15 @@ json server_task_result_cmpl_final::to_json_non_oaicompat() {
 }
 
 json server_task_result_cmpl_final::usage_json_oaicompat() {
+    const int32_t n_write = std::max(0, n_prompt_tokens - n_prompt_tokens_cache);
     return json {
         {"completion_tokens", n_decoded},
         {"prompt_tokens",     n_prompt_tokens},
         {"total_tokens",      n_decoded + n_prompt_tokens},
-        {"prompt_tokens_details", json { {"cached_tokens", n_prompt_tokens_cache} }},
+        {"prompt_tokens_details", json {
+            {"cached_tokens", n_prompt_tokens_cache},
+            {"cache_write_tokens", n_write},
+        }},
     };
 }
 
@@ -375,18 +419,21 @@ json server_task_result_cmpl_final::to_json_oaicompat() {
     std::time_t t = std::time(0);
     json logprobs = json(nullptr); // OAI default to null
     if (!stream && probs_output.size() > 0) {
-        logprobs = json{
-            {"content", completion_token_output::probs_vector_to_json(probs_output, post_sampling_probs)},
-        };
+        logprobs = completion_token_output::probs_vector_to_json_oaicompat_completions(probs_output);
     }
     json finish_reason = "length";
     if (stop == STOP_TYPE_WORD || stop == STOP_TYPE_EOS) {
         finish_reason = "stop";
     }
+    std::string text_out = content;
+    if (generation_params.oaicompat_cmpl_echo && !prompt.empty()) {
+        // OpenAI Completions echo=true: choice text starts with the prompt.
+        text_out = prompt + content;
+    }
     json res = json {
         {"choices",            json::array({
             json{
-                {"text",          content},
+                {"text",          text_out},
                 {"index",         index},
                 {"logprobs",      logprobs},
                 {"finish_reason", finish_reason},
@@ -396,9 +443,12 @@ json server_task_result_cmpl_final::to_json_oaicompat() {
         {"model",              oaicompat_model},
         {"system_fingerprint", std::string(llama_build_info())},
         {"object",             "text_completion"},
-        {"usage",              usage_json_oaicompat()},
         {"id", oaicompat_cmpl_id}
     };
+
+    if (!generation_params.oaicompat_chat_user.empty()) {
+        res["user"] = generation_params.oaicompat_chat_user;
+    }
 
     // extra fields for debugging purposes
     if (verbose) {
@@ -408,7 +458,27 @@ json server_task_result_cmpl_final::to_json_oaicompat() {
         res["timings"] = stats.to_json();
     }
 
-    return res;
+    // Non-stream Completions always include usage. Stream: only when
+    // stream_options.include_usage, as a trailing empty-choices chunk (Chat parity).
+    if (!stream) {
+        res["usage"] = usage_json_oaicompat();
+        return res;
+    }
+    if (!include_usage) {
+        return res;
+    }
+    json chunks = json::array();
+    chunks.push_back(res);
+    chunks.push_back({
+        {"choices",            json::array()},
+        {"created",            t},
+        {"model",              oaicompat_model},
+        {"system_fingerprint", std::string(llama_build_info())},
+        {"object",             "text_completion"},
+        {"id",                 oaicompat_cmpl_id},
+        {"usage",              usage_json_oaicompat()},
+    });
+    return chunks;
 }
 
 json server_task_result_cmpl_final::to_json_oaicompat_chat() {
@@ -424,10 +494,17 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat() {
         finish_reason = msg.tool_calls.empty() ? "stop" : "tool_calls";
     }
 
+    json message_obj = msg.to_json_oaicompat();
+    if (generation_params.oai_web_search_ran &&
+            generation_params.oai_web_search_results.is_array()) {
+        server_web_search_annotate_chat_message(
+            message_obj, generation_params.oai_web_search_results);
+    }
+
     json choice {
         {"finish_reason", finish_reason},
         {"index", index},
-        {"message", msg.to_json_oaicompat()},
+        {"message", std::move(message_obj)},
     };
 
     if (!stream && probs_output.size() > 0) {
@@ -447,6 +524,20 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat() {
         {"usage",              usage_json_oaicompat()},
         {"id", oaicompat_cmpl_id}
     };
+
+    if (generation_params.oaicompat_chat_store) {
+        res["store"] = true;
+        if (!generation_params.oaicompat_chat_metadata.is_null()) {
+            res["metadata"] = generation_params.oaicompat_chat_metadata;
+        }
+        if (!generation_params.oaicompat_chat_user.empty()) {
+            res["user"] = generation_params.oaicompat_chat_user;
+        }
+        if (!generation_params.oaicompat_chat_safety_identifier.empty()) {
+            res["safety_identifier"] = generation_params.oaicompat_chat_safety_identifier;
+        }
+        server_chat_completions_remember(res);
+    }
 
     // extra fields for debugging purposes
     if (verbose) {
@@ -484,12 +575,30 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat_stream() {
         });
     }
 
+    // Local web_search deepen: emit url_citation annotations on the terminal chunk
+    // (non-stream path attaches them on message; stream must not silently drop them).
+    json finish_delta = json::object();
+    if (generation_params.oai_web_search_ran &&
+            generation_params.oai_web_search_results.is_array()) {
+        std::string text;
+        if (!oaicompat_msg.empty()) {
+            text = oaicompat_msg.content;
+        } else {
+            text = content;
+        }
+        json message_obj = {{"content", text}};
+        server_web_search_annotate_chat_message(
+            message_obj, generation_params.oai_web_search_results);
+        if (message_obj.contains("annotations")) {
+            finish_delta["annotations"] = message_obj.at("annotations");
+        }
+    }
     deltas.push_back({
         {"choices", json::array({
             json {
                 {"finish_reason", finish_reason},
                 {"index", index},
-                {"delta", json::object()},
+                {"delta", std::move(finish_delta)},
             },
         })},
         {"created",            t},
@@ -522,6 +631,11 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat_stream() {
         deltas.front()["__verbose"] = to_json_non_oaicompat();
     }
 
+    if (generation_params.oaicompat_chat_store) {
+        // Persist the full ChatCompletion object (retrieve/list are not chunk-based).
+        (void) to_json_oaicompat_chat();
+    }
+
     return deltas;
 }
 
@@ -534,47 +648,93 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
         msg.content = content;
     }
 
+    const bool hit_token_limit = (stop == STOP_TYPE_LIMIT) || truncated;
+    bool hit_max_tool_calls = false;
+    const json req_early = oaicompat_resp_request.is_null() ? json::object() : oaicompat_resp_request;
+    const int max_tool_calls = server_responses_max_tool_calls(req_early);
+    const int emit_tool_cap = server_responses_effective_tool_call_cap(req_early);
+
     std::vector<json> output;
 
     if (msg.reasoning_content != "") {
+        std::string enc_content;
+        if (server_responses_include_contains(req_early, "reasoning.encrypted_content")) {
+            enc_content = server_responses_encode_local_blob(json{
+                {"type", "reasoning"},
+                {"text", msg.reasoning_content},
+            });
+        }
         output.push_back(json {
-            {"id",      "rs_" + random_string()},
-            {"summary", json::array()},
+            {"id",      oai_resp_reasoning_id.empty() ? ("rs_" + random_string()) : oai_resp_reasoning_id},
+            {"summary", server_responses_reasoning_summary(msg.reasoning_content, req_early)},
             {"type",    "reasoning"},
             {"content", json::array({ json {
                 {"text", msg.reasoning_content},
                 {"type", "reasoning_text"},
             }})},
-            {"encrypted_content", ""},
-            {"status",            "completed"},
+            {"encrypted_content", enc_content},
+            {"status",            hit_token_limit ? "incomplete" : "completed"},
         });
     }
 
     if (msg.content != "") {
+        json logprobs = json::array();
+        const json & req_for_lp = req_early;
+        bool want_lp = false;
+        if (req_for_lp.contains("include") && req_for_lp.at("include").is_array()) {
+            for (const auto & inc : req_for_lp.at("include")) {
+                if (inc.is_string() && inc.get<std::string>() == "message.output_text.logprobs") {
+                    want_lp = true;
+                    break;
+                }
+            }
+        }
+        if (!want_lp && req_for_lp.contains("top_logprobs") &&
+                !req_for_lp.at("top_logprobs").is_null() &&
+                json_value(req_for_lp, "top_logprobs", 0) > 0) {
+            want_lp = true;
+        }
+        if (want_lp && !probs_output.empty()) {
+            logprobs = completion_token_output::probs_vector_to_json(probs_output, post_sampling_probs);
+        }
         output.push_back(json {
             {"content", json::array({ json {
                 {"type",        "output_text"},
                 {"annotations", json::array()},
-                {"logprobs",    json::array()},
+                {"logprobs",    std::move(logprobs)},
                 {"text",        msg.content},
             }})},
-            {"id",     "msg_" + random_string()},
+            {"id",     oai_resp_message_id.empty() ? ("msg_" + random_string()) : oai_resp_message_id},
             {"role",   msg.role},
-            {"status", "completed"},
+            {"status", hit_token_limit ? "incomplete" : "completed"},
             {"type",   "message"},
         });
     }
 
+    int emitted_tools = 0;
     for (const common_chat_tool_call & tool_call : oaicompat_msg.tool_calls) {
+        if (emit_tool_cap >= 0 && emitted_tools >= emit_tool_cap) {
+            break;
+        }
+        const std::string call_id = tool_call.id.empty() ? ("call_" + random_string()) : tool_call.id;
         output.push_back(json {
-            {"id",        "fc_" + tool_call.id},
+            {"id",        "fc_" + random_string()},
             {"type",      "function_call"},
             {"status",    "completed"},
             {"arguments", tool_call.arguments},
-            {"call_id",   "call_" + tool_call.id},
+            {"call_id",   call_id},
             {"name",      tool_call.name},
         });
+        emitted_tools++;
     }
+    // incomplete only when official max_tool_calls truncates (not merely parallel_tool_calls=false).
+    if (max_tool_calls >= 0 && (int) oaicompat_msg.tool_calls.size() > emitted_tools &&
+            emitted_tools >= max_tool_calls) {
+        hit_max_tool_calls = true;
+    }
+
+    const std::string resp_status =
+        (hit_token_limit || hit_max_tool_calls) ? "incomplete" : "completed";
 
     std::time_t t = std::time(0);
     json res = {
@@ -584,14 +744,36 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
         {"model",        oaicompat_model},
         {"object",       "response"},
         {"output",       output},
-        {"status",       "completed"},
+        {"status",       resp_status},
         {"usage",        json {
             {"input_tokens",  n_prompt_tokens},
             {"output_tokens", n_decoded},
             {"total_tokens",  n_decoded + n_prompt_tokens},
-            {"input_tokens_details", json { {"cached_tokens", n_prompt_tokens_cache} }},
+            {"input_tokens_details", json {
+                {"cached_tokens", n_prompt_tokens_cache},
+                {"cache_write_tokens", std::max(0, n_prompt_tokens - n_prompt_tokens_cache)},
+            }},
+            {"output_tokens_details", json { {"reasoning_tokens", 0} }},
         }},
     };
+    if (hit_max_tool_calls) {
+        res["incomplete_details"] = json { {"reason", "max_tool_calls"} };
+    } else if (hit_token_limit) {
+        res["incomplete_details"] = json { {"reason", "max_output_tokens"} };
+    }
+
+    const json req = req_early;
+    res = server_responses_enrich_response(std::move(res), req);
+    // enrich may default-fill incomplete_details=null when absent; restore after limit stop
+    if (hit_max_tool_calls) {
+        res["status"] = "incomplete";
+        res["incomplete_details"] = json { {"reason", "max_tool_calls"} };
+    } else if (hit_token_limit) {
+        res["status"] = "incomplete";
+        res["incomplete_details"] = json { {"reason", "max_output_tokens"} };
+    }
+    server_responses_remember(res, oaicompat_resp_input, oaicompat_resp_instructions);
+    server_responses_reset_seq(oai_resp_id);
 
     return res;
 }
@@ -599,37 +781,55 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
 json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
     std::vector<json> server_sent_events;
     std::vector<json> output;
+    const json req_stream = oaicompat_resp_request.is_null() ? json::object() : oaicompat_resp_request;
+    const int max_tool_calls = server_responses_max_tool_calls(req_stream);
+    const int emit_tool_cap = server_responses_effective_tool_call_cap(req_stream);
+    bool hit_max_tool_calls = false;
+
+    auto push_evt = [&](const std::string & event_name, json data) {
+        data["type"] = event_name;
+        data["sequence_number"] = server_responses_next_seq(oai_resp_id);
+        server_responses_maybe_obfuscate_event(data, req_stream);
+        server_sent_events.push_back(json {
+            {"event", event_name},
+            {"data",  std::move(data)},
+        });
+    };
 
     if (oaicompat_msg.reasoning_content != "") {
+        std::string enc_content;
+        if (server_responses_include_contains(req_stream, "reasoning.encrypted_content")) {
+            enc_content = server_responses_encode_local_blob(json{
+                {"type", "reasoning"},
+                {"text", oaicompat_msg.reasoning_content},
+            });
+        }
         const json output_item = json {
             {"id",      oai_resp_reasoning_id},
-            {"summary", json::array()},
+            {"summary", server_responses_reasoning_summary(oaicompat_msg.reasoning_content, req_stream)},
             {"type",    "reasoning"},
             {"content", json::array({ json {
                 {"text", oaicompat_msg.reasoning_content},
                 {"type", "reasoning_text"},
             }})},
-            {"encrypted_content", ""},
+            {"encrypted_content", enc_content},
+            {"status", "completed"},
         };
 
-        server_sent_events.push_back(json {
-            {"event", "response.output_item.done"},
-            {"data", json {
-                {"type", "response.output_item.done"},
-                {"item", output_item}
-            }}
+        push_evt("response.output_item.done", json {
+            {"item", output_item},
+            {"output_index", 0},
         });
         output.push_back(output_item);
     }
 
     if (oaicompat_msg.content != "") {
-        server_sent_events.push_back(json {
-            {"event", "response.output_text.done"},
-            {"data", json {
-                {"type",    "response.output_text.done"},
-                {"item_id", oai_resp_message_id},
-                {"text",    oaicompat_msg.content}
-            }}
+        push_evt("response.output_text.done", json {
+            {"item_id", oai_resp_message_id},
+            {"text",    oaicompat_msg.content},
+            {"output_index", (int) output.size()},
+            {"content_index", 0},
+            {"logprobs", json::array()},
         });
 
         const json content_part = {
@@ -639,13 +839,11 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
             {"text",        oaicompat_msg.content}
         };
 
-        server_sent_events.push_back(json {
-            {"event", "response.content_part.done"},
-            {"data", json {
-                {"type",    "response.content_part.done"},
-                {"item_id", oai_resp_message_id},
-                {"part",    content_part}
-            }}
+        push_evt("response.content_part.done", json {
+            {"item_id", oai_resp_message_id},
+            {"part",    content_part},
+            {"output_index", (int) output.size()},
+            {"content_index", 0},
         });
         const json output_item = {
             {"type",    "message"},
@@ -655,60 +853,96 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
             {"role",    "assistant"}
         };
 
-        server_sent_events.push_back(json {
-            {"event", "response.output_item.done"},
-            {"data", json {
-                {"type", "response.output_item.done"},
-                {"item", output_item}
-            }}
+        push_evt("response.output_item.done", json {
+            {"item", output_item},
+            {"output_index", (int) output.size()},
         });
         output.push_back(output_item);
     }
 
+    int emitted_tools = 0;
     for (const common_chat_tool_call & tool_call : oaicompat_msg.tool_calls) {
+        if (emit_tool_cap >= 0 && emitted_tools >= emit_tool_cap) {
+            break;
+        }
+        const std::string call_id = tool_call.id.empty() ? ("call_" + random_string()) : tool_call.id;
+        const std::string fc_id = oai_resp_fc_id.empty() ? ("fc_" + random_string()) : oai_resp_fc_id;
+        const int output_index = (int) output.size();
+        push_evt("response.function_call_arguments.done", json {
+            {"arguments",    tool_call.arguments},
+            {"item_id",      fc_id},
+            {"name",         tool_call.name},
+            {"output_index", output_index},
+        });
         const json output_item = {
-            {"id",        "fc_" + tool_call.id},
+            {"id",        fc_id},
             {"type",      "function_call"},
             {"status",    "completed"},
             {"arguments", tool_call.arguments},
-            {"call_id",   "call_" + tool_call.id},
+            {"call_id",   call_id},
             {"name",      tool_call.name}
         };
-        server_sent_events.push_back(json {
-            {"event", "response.output_item.done"},
-            {"data", json {
-                {"type", "response.output_item.done"},
-                {"item", output_item}
-            }}
+        push_evt("response.output_item.done", json {
+            {"item", output_item},
+            {"output_index", output_index},
         });
         output.push_back(output_item);
+        emitted_tools++;
+    }
+    if (max_tool_calls >= 0 && (int) oaicompat_msg.tool_calls.size() > emitted_tools &&
+            emitted_tools >= max_tool_calls) {
+        hit_max_tool_calls = true;
     }
 
+    const bool hit_token_limit = (stop == STOP_TYPE_LIMIT) || truncated;
+    const std::string resp_status =
+        (hit_token_limit || hit_max_tool_calls) ? "incomplete" : "completed";
+
     std::time_t t = std::time(0);
-    server_sent_events.push_back(json {
-        {"event", "response.completed"},
-        {"data", json {
-            {"type", "response.completed"},
-            {"response", json {
-                {"id",         oai_resp_id},
-                {"object",     "response"},
-                {"created_at", t},
-                {"status",     "completed"},
-                {"model",      oaicompat_model},
-                {"output",     output},
-                {"usage",      json {
-                    {"input_tokens",  n_prompt_tokens},
-                    {"output_tokens", n_decoded},
-                    {"total_tokens",  n_decoded + n_prompt_tokens},
-                    {"input_tokens_details", json { {"cached_tokens", n_prompt_tokens_cache} }},
-                }}
+    json response_obj = {
+        {"id",         oai_resp_id},
+        {"object",     "response"},
+        {"created_at", t},
+        {"completed_at", t},
+        {"status",     resp_status},
+        {"model",      oaicompat_model},
+        {"output",     output},
+        {"usage",      json {
+            {"input_tokens",  n_prompt_tokens},
+            {"output_tokens", n_decoded},
+            {"total_tokens",  n_decoded + n_prompt_tokens},
+            {"input_tokens_details", json {
+                {"cached_tokens", n_prompt_tokens_cache},
+                {"cache_write_tokens", std::max(0, n_prompt_tokens - n_prompt_tokens_cache)},
             }},
+            {"output_tokens_details", json { {"reasoning_tokens", 0} }},
         }}
+    };
+    if (hit_max_tool_calls) {
+        response_obj["incomplete_details"] = json { {"reason", "max_tool_calls"} };
+    } else if (hit_token_limit) {
+        response_obj["incomplete_details"] = json { {"reason", "max_output_tokens"} };
+    }
+    const json req = req_stream;
+    response_obj = server_responses_enrich_response(std::move(response_obj), req);
+    if (hit_max_tool_calls) {
+        response_obj["status"] = "incomplete";
+        response_obj["incomplete_details"] = json { {"reason", "max_tool_calls"} };
+    } else if (hit_token_limit) {
+        response_obj["status"] = "incomplete";
+        response_obj["incomplete_details"] = json { {"reason", "max_output_tokens"} };
+    }
+    server_responses_remember(response_obj, oaicompat_resp_input, oaicompat_resp_instructions);
+
+    push_evt((hit_token_limit || hit_max_tool_calls) ? "response.incomplete" : "response.completed", json {
+        {"response", response_obj},
     });
 
     if (stats.is_set()) {
         server_sent_events.back().at("data")["timings"] = stats.to_json();
     }
+
+    server_responses_reset_seq(oai_resp_id);
 
     return server_sent_events;
 }
@@ -997,16 +1231,28 @@ void server_task_result_cmpl_partial::update(task_result_state & state) {
     text_block_started     = state.text_block_started;
 
     oai_resp_created       = state.oai_resp_created;
+    oai_web_search_streamed = state.oai_web_search_streamed;
+    oai_web_search_output_offset = state.oai_web_search_output_offset;
     oai_resp_id            = state.oai_resp_id;
     oai_resp_reasoning_id  = state.oai_resp_reasoning_id;
     oai_resp_message_id    = state.oai_resp_message_id;
     oai_resp_fc_id         = state.oai_resp_fc_id;
+    oaicompat_resp_request = state.oaicompat_resp_request;
 
     // track if the accumulated message has any reasoning content
     anthropic_has_reasoning = !state.chat_msg.reasoning_content.empty();
 
     if (res_type == TASK_RESPONSE_TYPE_OAI_RESP && !state.oai_resp_created && (is_progress || n_decoded == 1)) {
         state.oai_resp_created = true;
+    }
+    if (res_type == TASK_RESPONSE_TYPE_OAI_RESP && !state.oai_web_search_streamed &&
+            json_value(state.oaicompat_resp_request, "__oai_web_search", false)) {
+        json prefix = server_web_search_responses_output_items(state.oaicompat_resp_request);
+        state.oai_web_search_output_offset = (int) prefix.size();
+        state.oai_web_search_streamed = true;
+        // partial will emit using copied offset; mark streamed so we emit once in to_json
+        oai_web_search_streamed = false; // emit in this chunk
+        oai_web_search_output_offset = state.oai_web_search_output_offset;
     }
 
     // Pre-compute state updates based on diffs (for next chunk)
@@ -1074,9 +1320,7 @@ json server_task_result_cmpl_partial::to_json_oaicompat() {
     std::time_t t = std::time(0);
     json logprobs = json(nullptr); // OAI default to null
     if (prob_output.probs.size() > 0) {
-        logprobs = json{
-            {"content", completion_token_output::probs_vector_to_json({prob_output}, post_sampling_probs)},
-        };
+        logprobs = completion_token_output::probs_vector_to_json_oaicompat_completions({prob_output});
     }
     json res = json {
         {"choices",            json::array({
@@ -1165,137 +1409,162 @@ json server_task_result_cmpl_partial::to_json_oaicompat_chat() {
 
 json server_task_result_cmpl_partial::to_json_oaicompat_resp() {
     std::vector<json> events;
+    const json req_partial = oaicompat_resp_request.is_null() ? json::object() : oaicompat_resp_request;
+    const int max_tool_calls = server_responses_effective_tool_call_cap(req_partial); // emit cap for deltas
+
+    auto push_evt = [&](const std::string & event_name, json data) {
+        data["type"] = event_name;
+        data["sequence_number"] = server_responses_next_seq(oai_resp_id);
+        server_responses_maybe_obfuscate_event(data, req_partial);
+        events.push_back(json {
+            {"event", event_name},
+            {"data",  std::move(data)},
+        });
+    };
+
+    std::time_t t = std::time(0);
+    json response_stub = {
+        {"id",         oai_resp_id},
+        {"object",     "response"},
+        {"created_at", t},
+        {"status",     "in_progress"},
+        {"model",      oaicompat_model},
+        {"output",     json::array()},
+    };
+    // Attach required OpenAI Response fields (tools / tool_choice / parallel_tool_calls / store)
+    {
+        response_stub = server_responses_enrich_response(std::move(response_stub), req_partial);
+        // enrich may set status=completed by default when missing; keep in_progress for stubs
+        response_stub["status"] = "in_progress";
+        if (response_stub.contains("completed_at")) {
+            response_stub.erase("completed_at");
+        }
+        if (response_stub.contains("output_text")) {
+            response_stub.erase("output_text");
+        }
+    }
 
     if (!oai_resp_created) {
-        events.push_back(json {
-            {"event", "response.created"},
-            {"data", json {
-                {"type", "response.created"},
-                {"response", json {
-                    {"id",     oai_resp_id},
-                    {"object", "response"},
-                    {"status", "in_progress"},
-                }},
-            }},
-        });
-        events.push_back(json {
-            {"event", "response.in_progress"},
-            {"data", json {
-                {"type", "response.in_progress"},
-                {"response", json {
-                    {"id",     oai_resp_id},
-                    {"object", "response"},
-                    {"status", "in_progress"},
-                }},
-            }},
-        });
+        push_evt("response.created", json { {"response", response_stub} });
+        push_evt("response.in_progress", json { {"response", response_stub} });
     } else if (is_progress) {
-        events.push_back(json {
-            {"event", "response.in_progress"},
-            {"data", json {
-                {"type", "response.in_progress"},
-                {"response", json {
-                    {"id",     oai_resp_id},
-                    {"object", "response"},
-                    {"status", "in_progress"},
-                }},
-            }},
-        });
+        push_evt("response.in_progress", json { {"response", response_stub} });
+    }
+
+    const int ws_off = oai_web_search_output_offset;
+    // Emit web_search_call items once at stream start (after created/in_progress).
+    if (!oai_web_search_streamed &&
+            json_value(req_partial, "__oai_web_search", false)) {
+        json prefix = server_web_search_responses_output_items(req_partial);
+        int idx = 0;
+        for (auto & item : prefix) {
+            push_evt("response.output_item.added", json {
+                {"output_index", idx},
+                {"item", item},
+            });
+            push_evt("response.web_search_call.completed", json {
+                {"output_index", idx},
+                {"item_id", json_value(item, "id", std::string())},
+            });
+            push_evt("response.output_item.done", json {
+                {"output_index", idx},
+                {"item", item},
+            });
+            idx++;
+        }
     }
 
     for (const common_chat_msg_diff & diff : oaicompat_msg_diffs) {
         if (!diff.reasoning_content_delta.empty()) {
             if (!thinking_block_started) {
-                events.push_back(json {
-                    {"event", "response.output_item.added"},
-                    {"data", json {
-                        {"type", "response.output_item.added"},
-                        {"item", json {
-                            {"id",                oai_resp_reasoning_id},
-                            {"summary",           json::array()},
-                            {"type",              "reasoning"},
-                            {"content",           json::array()},
-                            {"encrypted_content", ""},
-                            {"status",            "in_progress"},
-                        }},
+                push_evt("response.output_item.added", json {
+                    {"output_index", ws_off + 0},
+                    {"item", json {
+                        {"id",                oai_resp_reasoning_id},
+                        {"summary",           json::array()},
+                        {"type",              "reasoning"},
+                        {"content",           json::array()},
+                        {"encrypted_content", ""},
+                        {"status",            "in_progress"},
                     }},
                 });
                 thinking_block_started = true;
             }
-            events.push_back(json {
-                {"event", "response.reasoning_text.delta"},
-                {"data", json {
-                    {"type",    "response.reasoning_text.delta"},
-                    {"delta",   diff.reasoning_content_delta},
-                    {"item_id", oai_resp_reasoning_id},
-                }},
+            push_evt("response.reasoning_text.delta", json {
+                {"delta",   diff.reasoning_content_delta},
+                {"item_id", oai_resp_reasoning_id},
+                {"output_index", ws_off + 0},
+                {"content_index", 0},
             });
         }
 
         if (!diff.content_delta.empty()) {
             if (!text_block_started) {
-                events.push_back(json {
-                    {"event", "response.output_item.added"},
-                    {"data", json {
-                        {"type", "response.output_item.added"},
-                        {"item", json {
-                            {"content", json::array()},
-                            {"id",      oai_resp_message_id},
-                            {"role",    "assistant"},
-                            {"status",  "in_progress"},
-                            {"type",    "message"},
-                        }},
+                push_evt("response.output_item.added", json {
+                    {"output_index", ws_off + (thinking_block_started ? 1 : 0)},
+                    {"item", json {
+                        {"content", json::array()},
+                        {"id",      oai_resp_message_id},
+                        {"role",    "assistant"},
+                        {"status",  "in_progress"},
+                        {"type",    "message"},
                     }},
                 });
-                events.push_back(json {
-                    {"event", "response.content_part.added"},
-                    {"data", json {
-                        {"type",    "response.content_part.added"},
-                        {"item_id", oai_resp_message_id},
-                        {"part", json {
-                            {"type", "output_text"},
-                            {"text", ""},
-                        }},
+                push_evt("response.content_part.added", json {
+                    {"item_id", oai_resp_message_id},
+                    {"output_index", ws_off + (thinking_block_started ? 1 : 0)},
+                    {"content_index", 0},
+                    {"part", json {
+                        {"type",        "output_text"},
+                        {"text",        ""},
+                        {"annotations", json::array()},
+                        {"logprobs",    json::array()},
                     }},
                 });
                 text_block_started = true;
             }
-            events.push_back(json {
-                {"event", "response.output_text.delta"},
-                {"data", json {
-                    {"type",    "response.output_text.delta"},
-                    {"item_id", oai_resp_message_id},
-                    {"delta",   diff.content_delta},
-                }},
+            push_evt("response.output_text.delta", json {
+                {"item_id", oai_resp_message_id},
+                {"delta",   diff.content_delta},
+                {"output_index", ws_off + (thinking_block_started ? 1 : 0)},
+                {"content_index", 0},
+                {"logprobs", json::array()},
             });
         }
 
         if (!diff.tool_call_delta.name.empty()) {
-            events.push_back(json {
-                {"event", "response.output_item.added"},
-                {"data", json {
-                    {"type",  "response.output_item.added"},
-                    {"item", json {
-                        {"id",        "fc_" + diff.tool_call_delta.id},
-                        {"arguments", ""},
-                        {"call_id",   "call_" + diff.tool_call_delta.id},
-                        {"name",      diff.tool_call_delta.name},
-                        {"type",      "function_call"},
-                        {"status",    "in_progress"},
-                    }},
+            const int tc_index = (int) diff.tool_call_index;
+            if (max_tool_calls >= 0 && tc_index >= max_tool_calls) {
+                continue;
+            }
+            const std::string call_id = diff.tool_call_delta.id.empty()
+                ? ("call_" + random_string())
+                : diff.tool_call_delta.id;
+            const std::string fc_id = "fc_" + (diff.tool_call_delta.id.empty() ? random_string() : diff.tool_call_delta.id);
+            push_evt("response.output_item.added", json {
+                {"item", json {
+                    {"id",        fc_id},
+                    {"arguments", ""},
+                    {"call_id",   call_id},
+                    {"name",      diff.tool_call_delta.name},
+                    {"type",      "function_call"},
+                    {"status",    "in_progress"},
                 }},
             });
-            oai_resp_fc_id = diff.tool_call_delta.id;
+            oai_resp_fc_id = fc_id;
         }
 
         if (!diff.tool_call_delta.arguments.empty()) {
-            events.push_back(json {
-                {"event", "response.function_call_arguments.delta"},
-                {"data", json {
-                    {"type",    "response.function_call_arguments.delta"},
-                    {"delta",   diff.tool_call_delta.arguments},
-                    {"item_id", "fc_" + oai_resp_fc_id},
-                }},
+            const int tc_index = (int) diff.tool_call_index;
+            if (max_tool_calls >= 0 && tc_index >= max_tool_calls) {
+                continue;
+            }
+            const int base = ws_off + (thinking_block_started && text_block_started ? 2
+                                  : (thinking_block_started || text_block_started ? 1 : 0));
+            push_evt("response.function_call_arguments.delta", json {
+                {"delta",        diff.tool_call_delta.arguments},
+                {"item_id",      oai_resp_fc_id},
+                {"output_index", base},
             });
         }
     }
@@ -1562,6 +1831,34 @@ std::string server_task_result_metrics::to_metrics() {
             "spec_decode_num_drafts_total",
             "Speculative: Total speculative decoding verification steps",
             (double) metrics.n_draft_verif_steps
+        }, {
+            "prompt_cache_saves_total",
+            "Level-2 prompt cache: states parked",
+            (double) prompt_cache.n_saves
+        }, {
+            "prompt_cache_hits_total",
+            "Level-2 prompt cache: lookups that restored a state",
+            (double) prompt_cache.n_hits
+        }, {
+            "prompt_cache_misses_total",
+            "Level-2 prompt cache: lookups that found no better state",
+            (double) prompt_cache.n_misses
+        }, {
+            "prompt_cache_hits_tokens_total",
+            "Level-2 prompt cache: tokens of the restored states that the request shares",
+            (double) prompt_cache.n_hits_tokens
+        }, {
+            "prompt_cache_evictions_total",
+            "Level-2 prompt cache: states dropped to respect the size/token limits",
+            (double) prompt_cache.n_evictions
+        }, {
+            "prompt_cache_skipped_total",
+            "Level-2 prompt cache: states refused (already parked, too large, out of memory)",
+            (double) prompt_cache.n_skipped
+        }, {
+            "prompt_cache_key_drops_total",
+            "Level-2 prompt cache: states dropped after prompt_cache_key expiry",
+            (double) prompt_cache.n_key_drops
         },
     };
 
@@ -1586,6 +1883,22 @@ std::string server_task_result_metrics::to_metrics() {
             "n_busy_slots_per_decode",
             "Average number of busy slots per llama_decode() call",
             (double) metrics.n_busy_slots / std::max((double) metrics.n_decode, 1.0)
+        }, {
+            "prompt_cache_states",
+            "Level-2 prompt cache: states currently parked",
+            (double) prompt_cache.n_states
+        }, {
+            "prompt_cache_bytes",
+            "Level-2 prompt cache: bytes currently parked",
+            (double) prompt_cache.size_bytes
+        }, {
+            "prompt_cache_tokens",
+            "Level-2 prompt cache: prompt tokens currently parked",
+            (double) prompt_cache.n_tokens
+        }, {
+            "prompt_cache_limit_bytes",
+            "Level-2 prompt cache: size limit in bytes (0 = no limit)",
+            (double) prompt_cache.limit_bytes
         },
     };
 
@@ -1708,13 +2021,110 @@ size_t server_prompt_cache::n_tokens() const {
     return res;
 }
 
-server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & prompt, size_t state_size_tgt, size_t state_size_dft) {
+bool server_prompt_cache::contains(const server_tokens & tokens) const {
+    if (tokens.empty()) {
+        return false;
+    }
+
+    for (const auto & state : states) {
+        if (state.prompt.tokens.get_common_prefix(tokens) == tokens.size()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+size_t server_prompt_cache::drop_key(const std::string & key) {
+    size_t n_dropped = 0;
+
+    for (auto it = states.begin(); it != states.end(); ) {
+        if (it->cache_key.explicit_key && it->cache_key.key == key) {
+            it = states.erase(it);
+            n_dropped++;
+        } else {
+            ++it;
+        }
+    }
+
+    n_key_drops += n_dropped;
+
+    return n_dropped;
+}
+
+// config + counters for /props; no list walk, so it is safe from the HTTP thread
+json server_prompt_cache::props_json() const {
+    const uint64_t n_hits    = this->n_hits.load();
+    const uint64_t n_misses  = this->n_misses.load();
+    const uint64_t n_lookups = n_hits + n_misses;
+
+    return json {
+        { "enabled",      enabled() },
+        { "limit_mib",    limit_size / (1024*1024) },
+        { "limit_tokens", limit_tokens },
+        { "saves",        this->n_saves.load() },
+        { "hits",         n_hits },
+        { "misses",       n_misses },
+        { "evictions",    this->n_evictions.load() },
+        { "skipped",      this->n_skipped.load() },
+        { "key_drops",    this->n_key_drops.load() },
+        { "hits_tokens",  this->n_hits_tokens.load() },
+        // hits per lookup over the process lifetime; 0 until the first lookup
+        { "hit_ratio",    n_lookups > 0 ? (double) n_hits / n_lookups : 0.0 },
+    };
+}
+
+server_prompt_cache_stats server_prompt_cache::stats() const {
+    server_prompt_cache_stats res;
+
+    res.enabled      = enabled();
+    res.limit_bytes  = limit_size;
+    res.limit_tokens = limit_tokens;
+
+    res.n_states   = states.size();
+    res.size_bytes = size();
+    res.n_tokens   = n_tokens();
+
+    res.n_saves       = n_saves.load();
+    res.n_hits        = n_hits.load();
+    res.n_misses      = n_misses.load();
+    res.n_evictions   = n_evictions.load();
+    res.n_skipped     = n_skipped.load();
+    res.n_key_drops   = n_key_drops.load();
+    res.n_hits_tokens = n_hits_tokens.load();
+
+    return res;
+}
+
+// a state parked under another isolation domain cannot stand in for this key
+static bool prompt_cache_keys_compatible(
+        const server_prompt_cache_key & a,
+        const server_prompt_cache_key & b) {
+    if (a.explicit_key && b.explicit_key) {
+        return server_oai_prompt_cache_keys_compatible(a.key, b.key);
+    }
+
+    return true;
+}
+
+server_prompt_cache_state * server_prompt_cache::alloc(
+        const server_prompt & prompt,
+        size_t state_size_tgt,
+        size_t state_size_dft,
+        const server_prompt_cache_key & cache_key,
+        int32_t slot_id) {
     // first check if the current state is contained fully in the cache
     for (auto it = states.begin(); it != states.end(); ++it) {
+        if (!prompt_cache_keys_compatible(it->cache_key, cache_key)) {
+            // same tokens, another isolation domain: keep both states
+            continue;
+        }
+
         const int cur_lcp_len = it->prompt.tokens.get_common_prefix(prompt.tokens);
 
         if (cur_lcp_len == (int) prompt.tokens.size()) {
             SRV_TRC("%s", " - prompt is already in the cache, skipping\n");
+            n_skipped++;
             return nullptr;
         }
     }
@@ -1731,17 +2141,24 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
     if (limit_size > 0 && state_size_new > limit_size) {
         SRV_WRN(" - prompt state size %.3f MiB exceeds cache size limit %.3f MiB, skipping\n",
                 state_size_new / (1024.0 * 1024.0), limit_size / (1024.0 * 1024.0));
+        n_skipped++;
         return nullptr;
     }
 
     // remove any cached prompts that are fully contained in the current prompt
     for (auto it = states.begin(); it != states.end();) {
+        if (!prompt_cache_keys_compatible(it->cache_key, cache_key)) {
+            ++it;
+            continue;
+        }
+
         const int len = it->prompt.tokens.get_common_prefix(prompt.tokens);
 
         if (len == (int) it->prompt.tokens.size()) {
             SRV_TRC(" - removing obsolete cached prompt with length %d\n", len);
 
             it = states.erase(it);
+            n_evictions++;
         } else {
             ++it;
         }
@@ -1754,6 +2171,7 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
                     states.front().size() / (1024.0 * 1024.0));
 
             states.pop_front();
+            n_evictions++;
         }
     }
 
@@ -1773,6 +2191,7 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
 
         update();
 
+        n_skipped++;
         return nullptr;
     }
 
@@ -1785,12 +2204,22 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
             /*.main =*/ std::move(state_data_tgt),
             /*.drft =*/ std::move(state_data_dft),
         },
+        /*.cache_key =*/ cache_key,
+        /*.slot_id   =*/ slot_id,
     });
+
+    n_saves++;
 
     return &states.back();
 }
 
-bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot) {
+bool server_prompt_cache::load(
+        server_prompt & prompt,
+        const server_tokens & tokens_new,
+        llama_context * ctx_tgt,
+        llama_context * ctx_dft,
+        int32_t id_slot,
+        const server_prompt_cache_key & cache_key) {
     const int lcp_best = prompt.tokens.get_common_prefix(tokens_new);
 
     float f_keep_best = prompt.tokens.size() > 0 ? float(lcp_best) / prompt.tokens.size() : -1.0f; // empty slot: any cache entry wins
@@ -1800,8 +2229,18 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
 
     auto it_best = states.end();
 
+    // common prefix of the state we restore, this is what the slot gets for free
+    int lcp_restore = 0;
+
     // find the most similar cached prompt, that would also preserve the most context
     for (auto it = states.begin(); it != states.end(); ++it) {
+        // explicit keys are isolation domains: a state parked under another explicit key
+        // must never be restored, even when the tokens match
+        if (!prompt_cache_keys_compatible(it->cache_key, cache_key)) {
+            SRV_TRC("   - skipping state parked under explicit key '%s'\n", it->cache_key.key.c_str());
+            continue;
+        }
+
         const int lcp_cur = it->prompt.tokens.get_common_prefix(tokens_new);
 
         const float f_keep_cur = float(lcp_cur) / it->prompt.tokens.size();
@@ -1818,12 +2257,16 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
             f_keep_best = f_keep_cur;
             f_sim_best  = f_sim_cur;
 
-            it_best = it;
+            it_best     = it;
+            lcp_restore = lcp_cur;
         }
     }
 
     if (it_best != states.end()) {
         SRV_TRC(" - found better prompt with f_keep = %.3f, f_sim = %.3f\n", f_keep_best, f_sim_best);
+
+        n_hits++;
+        n_hits_tokens += lcp_restore;
 
         {
             auto & data = it_best->data.main;
@@ -1862,6 +2305,8 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
         prompt = std::move(it_best->prompt);
 
         states.erase(it_best);
+    } else {
+        n_misses++;
     }
 
     return true;
@@ -1873,6 +2318,7 @@ void server_prompt_cache::update() {
             SRV_WRN(" - cache size limit reached, removing oldest entry (size = %.3f MiB)\n", states.front().size() / (1024.0 * 1024.0));
 
             states.pop_front();
+            n_evictions++;
         }
     }
 
@@ -1888,6 +2334,7 @@ void server_prompt_cache::update() {
                     limit_tokens, limit_tokens_cur, states.front().size() / (1024.0 * 1024.0));
 
             states.pop_front();
+            n_evictions++;
         }
     }
 

@@ -2,6 +2,7 @@
 
 #include "hf-cache.h"
 
+#include <map>
 #include <string>
 #include <vector>
 #include <functional>
@@ -31,6 +32,9 @@ struct common_remote_params {
     common_header_list headers;
     long timeout  = 0;           // in seconds, 0 means no timeout
     long max_size = 0;           // unlimited if 0
+    bool follow_location = true;
+    // Pin hostname -> IP for the request (SNI/Host stay on hostname). Empty = resolve normally.
+    std::map<std::string, std::string> hostname_addr_map;
 };
 
 // get remote file content, returns <http_code, raw_response_body>

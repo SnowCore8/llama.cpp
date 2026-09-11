@@ -1,22 +1,30 @@
 #include "server-chat.h"
 #include "server-common.h"
+#include "server-responses.h"
 
+#include <algorithm>
+#include <chrono>
+#include <deque>
 #include <sstream>
+#include <stdexcept>
+#include <unordered_set>
 
 json server_chat_convert_responses_to_chatcmpl(const json & response_body) {
     if (!response_body.contains("input")) {
         throw std::invalid_argument("'input' is required");
     }
-    if (!json_value(response_body, "previous_response_id", std::string{}).empty()) {
-        throw std::invalid_argument("llama.cpp does not support 'previous_response_id'.");
-    }
+    // previous_response_id is resolved by server_responses_prepare_request() before conversion.
 
     const json input_value = response_body.at("input");
     json chatcmpl_body = response_body;
     chatcmpl_body.erase("input");
+    chatcmpl_body.erase("previous_response_id");
     std::vector<json> chatcmpl_messages;
 
     if (response_body.contains("instructions")) {
+        if (!response_body.at("instructions").is_string() && !response_body.at("instructions").is_null()) {
+            throw std::invalid_argument("'instructions' must be a string");
+        }
         chatcmpl_messages.push_back({
             {"role",    "system"},
             {"content", json_value(response_body, "instructions", std::string())},
@@ -40,7 +48,20 @@ json server_chat_convert_responses_to_chatcmpl(const json & response_body) {
             return j.contains(key) && j.at(key).is_string();
         };
 
-        for (json item : input_value) {
+        std::deque<json> pending;
+        std::unordered_set<std::string> seen_compaction;
+        size_t compaction_expansions = 0;
+        static constexpr size_t k_max_compaction_expansions = 64;
+        static constexpr size_t k_max_pending_items = 4096;
+        for (const auto & it : input_value) {
+            pending.push_back(it);
+        }
+        while (!pending.empty()) {
+            if (pending.size() > k_max_pending_items) {
+                throw std::invalid_argument("compaction expand exceeded pending item limit");
+            }
+            json item = std::move(pending.front());
+            pending.pop_front();
             bool merge_prev = !chatcmpl_messages.empty() && chatcmpl_messages.back().value("role", "") == "assistant";
 
             if (exists_and_is_string(item, "content")) {
@@ -54,6 +75,26 @@ json server_chat_convert_responses_to_chatcmpl(const json & response_body) {
                         {"type", "input_text"}
                     }
                 });
+            }
+
+            // Expand local. compaction into real prior items (not a placeholder string).
+            if (exists_and_is_string(item, "type") && item.at("type") == "compaction") {
+                const std::string enc = json_value(item, "encrypted_content", std::string());
+                if (enc.empty() || !seen_compaction.insert(enc).second) {
+                    continue;
+                }
+                if (++compaction_expansions > k_max_compaction_expansions) {
+                    throw std::invalid_argument("compaction expand exceeded depth limit");
+                }
+                json folded;
+                if (server_responses_expand_local_blob(enc, folded) &&
+                        folded.contains("items") && folded.at("items").is_array()) {
+                    const auto & items = folded.at("items");
+                    for (auto it = items.begin(); it != items.end(); ++it) {
+                        pending.push_front(*it);
+                    }
+                }
+                continue;
             }
 
             if (exists_and_is_array(item, "content") &&
@@ -89,10 +130,8 @@ json server_chat_convert_responses_to_chatcmpl(const json & response_body) {
                             }},
                             {"type", "image_url"},
                         });
-                    } else if (type == "input_file") {
-                        throw std::invalid_argument("'input_file' is not supported by llamacpp at this moment");
                     } else {
-                        throw std::invalid_argument("'type' must be one of 'input_text', 'input_image', or 'input_file'");
+                        throw std::invalid_argument("'type' must be one of 'input_text' or 'input_image'");
                     }
                 }
 
@@ -107,10 +146,12 @@ json server_chat_convert_responses_to_chatcmpl(const json & response_body) {
                 chatcmpl_messages.push_back(item);
             } else if (exists_and_is_string(item, "role") &&
                 item.at("role") == "assistant" &&
-                exists_and_is_string(item, "type") &&
-                item.at("type") == "message"
+                // EasyInputMessage omits type; Output message uses type=message.
+                (!item.contains("type") || item.at("type").is_null() ||
+                 (exists_and_is_string(item, "type") && item.at("type") == "message"))
             ) {
                 // #responses_create-input-input_item_list-item-output_message
+                // Also OpenAI EasyInputMessage with role=assistant (no type).
                 auto chatcmpl_content = json::array();
 
                 // Handle both string content and array content
@@ -140,6 +181,12 @@ json server_chat_convert_responses_to_chatcmpl(const json & response_body) {
                             chatcmpl_content.push_back({
                                 {"refusal", output_text.at("refusal")},
                                 {"type", "refusal"},
+                            });
+                        } else if (type.empty() && exists_and_is_string(output_text, "text")) {
+                            // Some clients send bare {text: "..."} parts
+                            chatcmpl_content.push_back({
+                                {"text", output_text.at("text")},
+                                {"type", "text"},
                             });
                         } else {
                             throw std::invalid_argument("'type' must be one of 'output_text' or 'refusal'");
@@ -247,6 +294,63 @@ json server_chat_convert_responses_to_chatcmpl(const json & response_body) {
         throw std::invalid_argument("'input' must be a string or array of objects");
     }
 
+    // Coalesce leading system/developer messages into a single system message.
+    // Codex (and other Responses clients) often send both top-level `instructions`
+    // and an input item with role `developer`. After conversion that becomes two
+    // system messages; Qwen-family chat templates reject any system message that
+    // is not at index 0 ("System message must be at the beginning.").
+    {
+        auto extract_text = [](const json & msg) -> std::string {
+            if (!msg.contains("content")) {
+                return {};
+            }
+            const auto & content = msg.at("content");
+            if (content.is_string()) {
+                return content.get<std::string>();
+            }
+            if (!content.is_array()) {
+                return {};
+            }
+            std::string out;
+            for (const auto & part : content) {
+                if (part.contains("text") && part.at("text").is_string()) {
+                    out += part.at("text").get<std::string>();
+                }
+            }
+            return out;
+        };
+
+        size_t n_sys = 0;
+        while (n_sys < chatcmpl_messages.size()) {
+            const std::string role = chatcmpl_messages[n_sys].value("role", "");
+            if (role != "system" && role != "developer") {
+                break;
+            }
+            ++n_sys;
+        }
+
+        if (n_sys > 1) {
+            std::string merged;
+            for (size_t i = 0; i < n_sys; ++i) {
+                const std::string text = extract_text(chatcmpl_messages[i]);
+                if (text.empty()) {
+                    continue;
+                }
+                if (!merged.empty()) {
+                    merged += "\n\n";
+                }
+                merged += text;
+            }
+            chatcmpl_messages.erase(chatcmpl_messages.begin(), chatcmpl_messages.begin() + n_sys);
+            chatcmpl_messages.insert(chatcmpl_messages.begin(), json {
+                {"role",    "system"},
+                {"content", merged},
+            });
+        } else if (n_sys == 1 && chatcmpl_messages[0].value("role", "") == "developer") {
+            chatcmpl_messages[0]["role"] = "system";
+        }
+    }
+
     chatcmpl_body["messages"] = chatcmpl_messages;
 
     if (response_body.contains("tools")) {
@@ -258,10 +362,15 @@ json server_chat_convert_responses_to_chatcmpl(const json & response_body) {
             json chatcmpl_tool;
 
             const std::string type = json_value(resp_tool, "type", std::string());
-            if (type != "function") {
-                // Non-function Responses tools have no Chat Completions equivalent.
-                SRV_WRN("unsupported Responses tool type '%s' skipped\n", type.c_str());
+            if (server_is_local_web_search_tool_type(type)) {
+                // Handled by server_openai_apply_web_search_semantics (prepare_request).
                 continue;
+            }
+            if (type != "function") {
+                // Do not silently drop other hosted/cloud tools (file_search, mcp, …).
+                throw std::invalid_argument(
+                    "hosted Responses tool type '" + type + "' is not supported on this server "
+                    "(only type=function or local web_search). Cloud tool execution is unavailable locally.");
             }
             resp_tool.erase("type");
             chatcmpl_tool["type"] = "function";
@@ -284,12 +393,92 @@ json server_chat_convert_responses_to_chatcmpl(const json & response_body) {
     }
 
     if (response_body.contains("reasoning")) {
-        // Only "effort" is handled so far
+        // Official reasoning fields are shape-validated + echoed on the Response object.
+        // Only effort maps into Chat Completions `reasoning_effort` for local thinking.
         const json & reasoning = response_body.at("reasoning");
-        if (reasoning.contains("effort")) {
-            chatcmpl_body["reasoning_effort"] = reasoning.at("effort");
+        if (reasoning.is_object()) {
+            std::string effort;
+            if (reasoning.contains("effort") && !reasoning.at("effort").is_null() &&
+                    reasoning.at("effort").is_string()) {
+                effort = reasoning.at("effort").get<std::string>();
+            }
+            // mode=pro boosts local thinking depth when effort is unset or below high.
+            if (reasoning.contains("mode") && reasoning.at("mode").is_string() &&
+                    reasoning.at("mode").get<std::string>() == "pro") {
+                static const std::unordered_set<std::string> k_below_high = {
+                    "", "none", "minimal", "low", "medium",
+                };
+                if (k_below_high.count(effort)) {
+                    effort = "high";
+                }
+            }
+            if (!effort.empty()) {
+                chatcmpl_body["reasoning_effort"] = effort;
+            }
         }
         chatcmpl_body.erase("reasoning");
+    }
+
+    // Responses text → Chat: verbosity hint + format → response_format/grammar.
+    if (response_body.contains("text") && response_body.at("text").is_object()) {
+        const json & text = response_body.at("text");
+        if (text.contains("verbosity") && text.at("verbosity").is_string()) {
+            chatcmpl_body["verbosity"] = text.at("verbosity");
+        }
+        if (text.contains("format") && text.at("format").is_object()) {
+            const json & fmt = text.at("format");
+            const std::string ftype = json_value(fmt, "type", std::string());
+            if (ftype == "json_object") {
+                chatcmpl_body["response_format"] = json{{"type", "json_object"}};
+            } else if (ftype == "json_schema") {
+                if (!fmt.contains("schema") || !fmt.at("schema").is_object()) {
+                    throw std::invalid_argument("'text.format.schema' is required for type=json_schema");
+                }
+                const std::string name = json_value(fmt, "name", std::string("response"));
+                chatcmpl_body["response_format"] = json{
+                    {"type", "json_schema"},
+                    {"json_schema", {
+                        {"name", name},
+                        {"schema", fmt.at("schema")},
+                    }},
+                };
+            } else if (!ftype.empty() && ftype != "text") {
+                throw std::invalid_argument(
+                    "'text.format.type' must be one of: text, json_object, json_schema");
+            }
+        }
+    }
+
+    // Responses API exposes top_logprobs without a separate logprobs boolean.
+    // Chat Completions requires logprobs=true when top_logprobs is set.
+    if (response_body.contains("top_logprobs") && !chatcmpl_body.contains("logprobs")) {
+        chatcmpl_body["logprobs"] = true;
+    }
+    // include=["message.output_text.logprobs"] must enable sampling probs before strip.
+    if (response_body.contains("include") && response_body.at("include").is_array()) {
+        for (const auto & inc : response_body.at("include")) {
+            if (inc.is_string() &&
+                    inc.get<std::string>() == "message.output_text.logprobs") {
+                chatcmpl_body["logprobs"] = true;
+                if (!chatcmpl_body.contains("top_logprobs")) {
+                    chatcmpl_body["top_logprobs"] = 0;
+                }
+                break;
+            }
+        }
+    }
+
+    // Strip Responses-only request fields that are not Chat Completions params
+    // (they remain on the prepared request for Response enrichment / store).
+    static const char * responses_only_keys[] = {
+        "store", "background", "conversation", "prompt", "include",
+        "prompt_cache_key", "prompt_cache_options", "prompt_cache_retention",
+        "safety_identifier", "service_tier", "truncation", "text",
+        "context_management", "moderation", "max_tool_calls", "stream_options",
+        "metadata", "user",
+    };
+    for (const char * key : responses_only_keys) {
+        chatcmpl_body.erase(key);
     }
 
     return chatcmpl_body;
@@ -330,6 +519,7 @@ static void normalize_anthropic_billing_header(std::string & system_text) {
         LOG_ERR("anthropic string not as expected: %s", system_text.c_str());
     }
 }
+
 
 json server_chat_convert_anthropic_to_oai(const json & body) {
     json oai_body;

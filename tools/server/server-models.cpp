@@ -4,6 +4,7 @@
 #include "server-context.h"
 #include "server-stream.h"
 
+#include "arg.h"
 #include "build-info.h"
 #include "preset.h"
 #include "download.h"
@@ -80,10 +81,14 @@ struct server_lru_sched {
     }
 
     // returns "" if no model can be given up
+    // a model marked no-evict is only picked when no other one can be given up, so the mark
+    // can delay an eviction but never block a load
     std::string pick_victim(std::unique_lock<std::mutex> & lk) {
         check_lock(lk);
         std::string victim;
         int64_t victim_last_used = 0;
+        std::string kept;
+        int64_t kept_last_used = 0;
         for (const auto & m : models.mapping) {
             // a busy model is mid-request, one still coming up has no request to finish
             if (m.second.req_count != 0 || !m.second.meta.is_ready_or_sleep()) {
@@ -93,10 +98,21 @@ struct server_lru_sched {
             if (models.stopping_models.count(m.first) || find(m.first)) {
                 continue;
             }
+            if (m.second.meta.no_evict) {
+                if (kept.empty() || m.second.meta.last_used < kept_last_used) {
+                    kept           = m.first;
+                    kept_last_used = m.second.meta.last_used;
+                }
+                continue;
+            }
             if (victim.empty() || m.second.meta.last_used < victim_last_used) {
                 victim           = m.first;
                 victim_last_used = m.second.meta.last_used;
             }
+        }
+        if (victim.empty() && !kept.empty()) {
+            SRV_WRN("no other model can be given up, evicting name=%s although it is marked no-evict\n", kept.c_str());
+            victim = kept;
         }
         return victim;
     }
@@ -590,6 +606,7 @@ void server_models::load_models() {
             std::string info;
             if (!inst.meta.aliases.empty()) info += " (aliases: " + join_set(inst.meta.aliases) + ")";
             if (!inst.meta.tags.empty())    info += " [tags: "    + join_set(inst.meta.tags)    + "]";
+            if (inst.meta.no_evict)         info += " [no-evict]";
             SRV_INF("  %c %s%s\n", has_custom ? '*' : ' ', name.c_str(), info.c_str());
         }
     };
@@ -610,6 +627,14 @@ void server_models::load_models() {
     auto apply_hidden = [&]() {
         for (auto & [name, inst] : mapping) {
             inst.meta.hidden = hidden_models.count(name) > 0;
+        }
+    };
+    auto apply_no_evict = [&]() {
+        for (auto & [name, inst] : mapping) {
+            std::string val;
+            // the mark can also be removed by a reload, so unset it when the key is gone
+            inst.meta.no_evict = inst.meta.preset.get_option(COMMON_ARG_PRESET_NO_EVICT, val)
+                && common_arg_utils::is_truthy(val);
         }
     };
     // update_args() injects HOST/PORT/ALIAS, so strip them before comparing presets
@@ -653,6 +678,7 @@ void server_models::load_models() {
         }
         apply_stop_timeout();
         apply_hidden();
+        apply_no_evict();
         log_available_models();
 
         // skipped on reload, see startup_models
@@ -831,6 +857,7 @@ void server_models::load_models() {
 
         apply_stop_timeout();
         apply_hidden();
+        apply_no_evict();
 
         // clear reload flag under the lock, this releases the load() calls waiting on !is_reloading
         is_reloading = false;
@@ -1788,6 +1815,84 @@ static bool router_validate_model(std::string & name, server_models & models, bo
     return true;
 }
 
+static bool router_preset_is_embedding(const server_model_meta & meta) {
+    std::string val;
+    return meta.preset.get_option("LLAMA_ARG_EMBEDDINGS", val) && common_arg_utils::is_truthy(val);
+}
+
+static int32_t router_meta_n_ctx(const server_model_meta & meta) {
+    if (meta.loaded_info.contains("meta") && meta.loaded_info.at("meta").is_object()) {
+        return json_value(meta.loaded_info.at("meta"), "n_ctx", 0);
+    }
+    return 0;
+}
+
+static bool router_meta_is_speech(const server_model_meta & meta) {
+    if (!meta.loaded_info.is_object()) {
+        return false;
+    }
+    const auto & mods = meta.loaded_info.contains("modalities") ? meta.loaded_info.at("modalities") : json(nullptr);
+    return mods.is_object() && json_value(mods, "speech", false);
+}
+
+// Prefer a ready non-embedding, non-speech child (largest n_ctx). Used when body/query
+// omit model (batches create, metrics, /props overlay, etc.).
+static std::string router_default_proxy_model(server_models & models) {
+    std::string best;
+    int32_t best_ctx = -1;
+    bool best_ready = false;
+    bool best_speech = true;
+    for (const auto & meta : models.get_all_meta()) {
+        if (router_preset_is_embedding(meta)) {
+            continue;
+        }
+        const bool ready = meta.is_ready_or_sleep();
+        const bool speech = router_meta_is_speech(meta);
+        const int32_t n_ctx = router_meta_n_ctx(meta);
+        auto better = [&]() {
+            if (best.empty()) {
+                return true;
+            }
+            if (ready && !best_ready) {
+                return true;
+            }
+            if (ready != best_ready) {
+                return false;
+            }
+            // Prefer chat over TTS when both ready.
+            if (!speech && best_speech) {
+                return true;
+            }
+            if (speech != best_speech) {
+                return false;
+            }
+            return n_ctx > best_ctx;
+        };
+        if (better()) {
+            best = meta.name;
+            best_ctx = n_ctx;
+            best_ready = ready;
+            best_speech = speech;
+        }
+    }
+    return best;
+}
+
+// Resolve routing model: query/body/path, then default ready chat child.
+static std::string router_pick_proxy_model(const server_http_req & req, server_models & models, const json * body) {
+    std::string name = req.get_param("model");
+    if (name.empty()) {
+        name = req.get_param("model_id");
+    }
+    if (name.empty() && body != nullptr) {
+        name = json_value(*body, "model", std::string());
+    }
+    if (name.empty()) {
+        name = router_default_proxy_model(models);
+    }
+    return name;
+}
+
 static bool is_autoload(const common_params & params, const server_http_req & req) {
     std::string autoload = req.get_param("autoload");
     if (autoload.empty()) {
@@ -1844,25 +1949,84 @@ void server_models_routes::init_routes() {
     this->get_router_props = [this](const server_http_req & req) {
         std::string name = req.get_param("model");
         if (name.empty()) {
-            // main instance
-            auto res = std::make_unique<server_http_res>();
-            res_ok(res, {
-                // TODO: add support for this on web UI
+            // Router identity + parent store paths; overlay default child's
+            // n_ctx / total_slots / modalities so suites can size truncation / QoS.
+            json props = {
                 {"role",                 "router"},
                 {"max_instances",        params.models_max},
                 {"models_autoload",      params.models_autoload},
-                // this is a dummy response to make sure the UI doesn't break
-                {"model_alias", "llama-server"},
-                {"model_path",  "none"},
+                {"model_alias",          "llama-server"},
+                {"model_path",           "none"},
                 {"default_generation_settings", {
                     {"params", json{}},
                     {"n_ctx",  0},
                 }},
-                // New key
                 {"ui_settings",          ui_settings},
                 {"build_info",           std::string(llama_build_info())},
                 {"cors_proxy_enabled",   params.ui_mcp_proxy},
-            });
+                {"slot_save_path",       params.slot_save_path},
+                {"endpoint_slots",       params.endpoint_slots},
+                {"endpoint_metrics",     params.endpoint_metrics},
+                {"endpoint_props",       params.endpoint_props},
+                {"openai_files_path",    params.openai_files_path},
+            };
+            const std::string def = router_default_proxy_model(models);
+            if (!def.empty()) {
+                auto meta = models.get_meta(def);
+                if (meta.has_value() && meta->loaded_info.is_object()) {
+                    const json & info = meta->loaded_info;
+                    props["model_alias"] = def;
+                    if (info.contains("model_path")) {
+                        props["model_path"] = info.at("model_path");
+                    }
+                    if (info.contains("default_generation_settings")) {
+                        props["default_generation_settings"] = info.at("default_generation_settings");
+                    } else {
+                        const int32_t n_ctx = router_meta_n_ctx(*meta);
+                        if (n_ctx > 0) {
+                            props["default_generation_settings"] = json{
+                                {"params", json{}},
+                                {"n_ctx",  n_ctx},
+                            };
+                        }
+                    }
+                    if (info.contains("total_slots")) {
+                        props["total_slots"] = info.at("total_slots");
+                    }
+                    if (info.contains("modalities")) {
+                        props["modalities"] = info.at("modalities");
+                    }
+                }
+                if (meta.has_value()) {
+                    // prompt cache config of the default model, taken from its preset
+                    // (the preset already includes the router's own arguments, and it is what
+                    //  the child process gets; the same value reading as preset::apply_to_params)
+                    // note: the router keeps no counters, read the live ones from GET /props?model=<name>
+                    std::string val;
+                    auto preset_int = [&](const std::string & env, int32_t fallback) {
+                        if (!meta->preset.get_option(env, val)) {
+                            return fallback;
+                        }
+                        try {
+                            return (int32_t) std::stoi(val);
+                        } catch (const std::exception &) {
+                            return fallback; // invalid value in the ini file, the child would fail to start anyway
+                        }
+                    };
+                    auto preset_bool = [&](const std::string & env, bool fallback) {
+                        return meta->preset.get_option(env, val) ? common_arg_utils::is_truthy(val) : fallback;
+                    };
+                    const int32_t cache_ram_mib = preset_int("LLAMA_ARG_CACHE_RAM", params.cache_ram_mib);
+                    props["prompt_cache"] = {
+                        {"enabled",     cache_ram_mib != 0},
+                        {"limit_mib",   cache_ram_mib > 0 ? cache_ram_mib : 0},
+                        {"idle_slots",  preset_bool("LLAMA_ARG_CACHE_IDLE_SLOTS", params.cache_idle_slots)},
+                        {"cache_reuse", preset_int("LLAMA_ARG_CACHE_REUSE", params.n_cache_reuse)},
+                    };
+                }
+            }
+            auto res = std::make_unique<server_http_res>();
+            res_ok(res, props);
             return res;
         }
         return proxy_get(req);
@@ -1870,7 +2034,7 @@ void server_models_routes::init_routes() {
 
     this->proxy_get = [this](const server_http_req & req) {
         std::string method = "GET";
-        std::string name = req.get_param("model");
+        std::string name = router_pick_proxy_model(req, models, nullptr);
         bool autoload = is_autoload(params, req);
         auto error_res = std::make_unique<server_http_res>();
         if (!router_validate_model(name, models, autoload, error_res)) {
@@ -1884,8 +2048,8 @@ void server_models_routes::init_routes() {
 
     this->proxy_post = [this](const server_http_req & req) {
         std::string method = "POST";
-        json body = json::parse(req.body);
-        std::string name = json_value(body, "model", std::string());
+        json body = json::parse(req.body.empty() ? "{}" : req.body);
+        std::string name = router_pick_proxy_model(req, models, &body);
         bool autoload = is_autoload(params, req);
         auto error_res = std::make_unique<server_http_res>();
         if (!router_validate_model(name, models, autoload, error_res)) {
@@ -1986,6 +2150,7 @@ void server_models_routes::init_routes() {
                 {"architecture",  architecture},
                 {"source",        server_model_source_to_string(meta.source)},
                 {"can_remove",    meta.source == SERVER_MODEL_SOURCE_CACHE},
+                {"no_evict",      meta.no_evict},
                 // {"need_download", meta.need_download},
                 // TODO: add other fields, may require reading GGUF metadata
             };

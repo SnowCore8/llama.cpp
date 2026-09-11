@@ -14,12 +14,19 @@ def create_server(tmp_path):
     global server
     server = ServerPreset.tinyllama2()
     server.slot_save_path = str(tmp_path)
+    server.server_slots = True  # expose GET /slots alongside --slot-save-path
     server.temperature = 0.0
 
 
 def test_slot_save_restore():
     global server
     server.start()
+
+    # Discoverability: props exposes whether slot KV persistence is configured
+    res = server.make_request("GET", "/props")
+    assert res.status_code == 200, res.body
+    assert res.body.get("slot_save_path")  # non-empty when --slot-save-path is set
+    assert res.body.get("endpoint_slots") is True
 
     # First prompt in slot 1 should be fully processed
     res = server.make_request("POST", "/completion", data={

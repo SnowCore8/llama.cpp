@@ -63,6 +63,8 @@ The core architecture consists of the following components:
 graph TD
     API_User <--> server_http_context
     server_http_context <-- router mode --> server_models
+    server_models -->|child llama-server| ChildA
+    server_models -->|child llama-server| ChildB
     server_http_context <-- inference mode --> server_routes
     server_routes -- server_task --> server_queue
     subgraph server_context
@@ -184,7 +186,7 @@ For detailed instructions, see the [test documentation](./tests/README.md).
 
 This endpoint is intended to be used internally by the Web UI and subject to change or to be removed in the future.
 
-**GET /tools**
+**GET /tools** (also **GET /v1/tools**)
 
 Get a list of tools, each tool has these fields:
 - `tool` (string): the ID name of the tool, to be used in POST call. Example: `read_file`
@@ -193,7 +195,10 @@ Get a list of tools, each tool has these fields:
 - `permissions` (object): a mapping string --> boolean that indicates the permission required by this tool. This is useful for the UI to ask the user before calling the tool. For now, the only permission supported is `"write"`
 - `definition` (object): the OAI-compat definition of this tool
 
-**POST /tools**
+Query:
+- `format=openai`: return `{ "object": "list", "data": [ ...OpenAI function tools... ], "warnings"?: [...] }` instead of the Web UI array. Use this to wire MCP/builtin tools into Chat Completions / Responses without silent drops. `warnings` lists MCP tools skipped at setup (e.g. name collisions).
+
+**POST /tools** (also **POST /v1/tools**)
 
 Invoke a tool call, request body is a JSON object with:
 - `tool` (string): the name of the tool

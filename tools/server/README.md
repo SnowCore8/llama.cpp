@@ -922,6 +922,7 @@ By default, it is read-only. To make POST request to change global properties, y
 - `chat_template_caps` - capabilities of the chat template (see `common/jinja/caps.h` for more info)
 - `modalities` - the list of supported modalities
 - `is_sleeping` - sleeping status, see [Sleeping on idle](#sleeping-on-idle)
+- `prompt_cache` - level-2 prompt cache state: `enabled`, the limits (`limit_mib`, `limit_tokens`), the `idle_slots` / `cache_reuse` settings, the cumulative `saves` / `hits` / `misses` / `evictions` / `skipped` / `key_drops` counters, `hits_tokens` and `hit_ratio`; a router reports the settings of its default model only, the live counters of a model stay on `GET /props?model=(model_name)`
 
 ### POST `/props`: Change server global properties.
 
@@ -1144,6 +1145,74 @@ In *router mode* the query param `?model={model_id}` has to be set. This endpoin
 | `llamacpp:spec_decode_num_accepted_tokens_total` | Counter | Total draft tokens accepted by the target model (0 when spec-decode is off). |
 | `llamacpp:spec_decode_num_drafts_total` | Counter | Total speculative decoding verification steps (0 when spec-decode is off). |
 | `llamacpp:spec_decode_num_accepted_tokens_per_pos_total` | Counter | Accepted tokens per draft position (labeled `position="N"`; absent when spec-decode is off or before the first completed speculative request). |
+| `llamacpp:prompt_cache_saves_total` | Counter | Level-2 prompt cache: states parked. |
+| `llamacpp:prompt_cache_hits_total` | Counter | Level-2 prompt cache: lookups that restored a state. |
+| `llamacpp:prompt_cache_misses_total` | Counter | Level-2 prompt cache: lookups that found no better state. |
+| `llamacpp:prompt_cache_hits_tokens_total` | Counter | Level-2 prompt cache: tokens of the restored states that the request shares. |
+| `llamacpp:prompt_cache_evictions_total` | Counter | Level-2 prompt cache: states dropped to respect the size/token limits. |
+| `llamacpp:prompt_cache_skipped_total` | Counter | Level-2 prompt cache: states refused (already parked, too large, out of memory). |
+| `llamacpp:prompt_cache_key_drops_total` | Counter | Level-2 prompt cache: states dropped after `prompt_cache_key` expiry. |
+| `llamacpp:prompt_cache_states` | Gauge | Level-2 prompt cache: states currently parked. |
+| `llamacpp:prompt_cache_bytes` | Gauge | Level-2 prompt cache: bytes currently parked. |
+| `llamacpp:prompt_cache_tokens` | Gauge | Level-2 prompt cache: prompt tokens currently parked. |
+| `llamacpp:prompt_cache_limit_bytes` | Gauge | Level-2 prompt cache: size limit in bytes (0 = no limit). |
+
+A prompt cache hit counts the tokens of the restored state that the request shares, which can be
+more than the tokens the client sees reused: the effective reuse stops at the last context
+checkpoint. `GET /props` reports the same counters as JSON.
+
+### Slot KV cache persistence (local session acceleration)
+
+This is a **llama-server native** feature for saving / restoring a slot’s KV (prompt cache) to disk. It is **not** part of the OpenAI / Anthropic HTTP APIs.
+
+| Concept | What it is | What it is not |
+|---------|------------|----------------|
+| Slot save/restore | Low-level KV binary for one server slot (`id_slot`) | Not `previous_response_id` or Chat `store` |
+| Responses / Chat store | Response / completion **objects** in memory | Does not dump GPU/CPU KV tensors |
+
+**Enable**
+
+```bash
+mkdir -p /tmp/llama-slots
+llama-server ... --slot-save-path /tmp/llama-slots/
+# GET /slots must stay enabled (default); disable only with --no-slots
+```
+
+`GET /props` reports `endpoint_slots` and `slot_save_path` (empty string when persistence is disabled).
+
+**Typical workflow** (pin a slot, warm the cache, save, later restore):
+
+```bash
+# 1) Warm slot 0 with a long system / prefix (native or OAI body may include id_slot)
+curl -s http://localhost:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model":"local",
+    "id_slot": 0,
+    "cache_prompt": true,
+    "messages":[{"role":"system","content":"...large prefix..."},{"role":"user","content":"Say OK"}]
+  }'
+
+# 2) Persist that slot's KV
+curl -s http://localhost:8080/slots/0?action=save \
+  -H 'Content-Type: application/json' \
+  -d '{"filename":"session_a.bin"}'
+
+# 3) Later (same process/model): restore into a slot and continue with a short suffix
+curl -s http://localhost:8080/slots/0?action=restore \
+  -H 'Content-Type: application/json' \
+  -d '{"filename":"session_a.bin"}'
+```
+
+**Constraints**
+
+- Requires `--slot-save-path`. Without it, save/restore/erase return **501** (`not_supported_error`).
+- `filename` is validated (no path traversal); files are written only under `--slot-save-path`.
+- Slots that hold **multimodal** tokens cannot be saved (501); pure-text slots on a multimodal server are fine.
+- Cache is process-local and model-specific; do not expect restore across different models / GGUF revisions.
+- Prefer this for **long shared prefixes**; use Responses `previous_response_id` / Chat `store` for API-level conversation continuity.
+
+API details for each action follow.
 
 ### POST `/slots/{id_slot}?action=save`: Save the prompt cache of the specified slot to a file.
 
@@ -1317,7 +1386,9 @@ The `response_format` parameter supports both plain JSON output (e.g. `{"type": 
 
 `chat_template_kwargs`: Allows sending additional parameters to the json templating system. For example: `{"enable_thinking": false}`
 
-`reasoning_effort`: If `none`, reasoning/thinking is disabled. Otherwise, the value is made available to the jinja template.
+`reasoning_effort`: Official OpenAI ReasoningEffort enum: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. `none` disables thinking; other values enable thinking and are forwarded to the chat template as `chat_template_kwargs.reasoning_effort`. Invalid values → 400.
+
+Responses API `reasoning` object (shape-validated + echoed): `effort` (same enum), `context` (`auto`|`current_turn`|`all_turns`), `summary` / `generate_summary` (`auto`|`concise`|`detailed`), `mode` (string; documented values include `standard`|`pro`). Only `effort` affects local thinking.
 
 `reasoning_format`: The reasoning format to be parsed. If set to `none`, it will output the raw generated text.
 
@@ -1500,6 +1571,61 @@ curl http://localhost:8080/v1/responses \
 
 This endpoint works by converting Responses request into Chat Completions request.
 
+#### Response store (`previous_response_id`)
+
+llama-server keeps completed Responses so clients can continue with `previous_response_id`. When `--openai-files-path` is set, entries persist under `…/responses/` (restart-safe); otherwise the store is **memory-only**.
+
+| Flag | Env | Default | Meaning |
+|------|-----|---------|---------|
+| `--responses-store-max N` | `LLAMA_ARG_RESPONSES_STORE_MAX` | `1024` | Max stored responses (`0` disables the store) |
+| `--responses-store-ttl N` | `LLAMA_ARG_RESPONSES_STORE_TTL` | `604800` (7d) | TTL in seconds (`0` = no TTL eviction) |
+
+Missing or expired ids return HTTP 400. Without `--openai-files-path`, the store is process-local (lost on restart / not shared across router child processes).
+
+Local deepenings (not cloud-equivalent): `max_tool_calls` truncates tool outputs; `context_management` with `compaction` auto-folds long history into a local opaque item; `stream_options.include_obfuscation` adds SSE `obfuscation` payloads; `truncation=auto` drops oldest input items beyond a local soft limit while `truncation=disabled` returns HTTP 400 when over that limit; Responses + Chat Completions validate OpenAI-shaped `prompt` (Responses only) / `prompt_cache_*`; OpenAI Completions validates `echo`/`suffix`/`best_of`/`n` shapes — see `tools/server/tests/OFFICIAL_API_SCOPE.md`.
+
+#### Durable store (`--openai-files-path`)
+
+| Flag / Env | Meaning |
+|------------|---------|
+| `--openai-files-path PATH` / `LLAMA_OPENAI_FILES_PATH` | Root for the durable Responses / Chat Completions stores, Responses prompt templates and prompt-cache keys. Layout: `responses/`, `chat_completions/`, `prompts/`, `prompt_cache_keys/` subdirs. Empty = memory-only. |
+
+- Responses `prompt.id` loads `--openai-files-path/prompts/<id>.json` (`instructions` / `input` + `{{variables}}`); unknown id → 400.
+- Responses / Chat Completions stores also persist JSON under the same root (restart-safe); interrupted Responses are marked `failed` with `server_restart`.
+
+OpenAI **web_search** is deepened locally (not a cloud search backend):
+
+| Env | Role |
+|-----|------|
+| `LLAMA_WEB_SEARCH_FIXTURE` | JSON `{results:[{title,url,snippet}]}` (deterministic / offline) |
+| `LLAMA_WEB_SEARCH_LOCAL_DIR` | Recurse `.txt`/`.md`/… and rank by query terms |
+| `LLAMA_WEB_SEARCH_URL` | Custom GET endpoint; `{q}` / `%s` substituted |
+
+Default remote providers: DuckDuckGo Instant Answer + HTML/Lite SERP; when fixture/local_dir already returned hits, remote SERP is skipped (offline-friendly). When no backend returns hits, `provider` is `none` (no fake stub URLs). `search_context_size=medium|high` also fetches pages (`open_page` / `find_in_page` actions) unless results are purely offline. Tool `filters.allowed_domains` / `blocked_domains` are honored.
+
+- **Responses**: `web_search_call` items (`queries`; `action.sources` / `results` when `include` requests them); `url_citation` annotations on `output_text`; streaming emits `response.web_search_call.completed`.
+- **Chat Completions** `web_search_options`: inject system context + `message.annotations` (including stream terminal chunk).
+
+Other hosted tools (`file_search`, remote `mcp`, `code_interpreter`, …) still receive **HTTP 400** — not silently dropped.
+
+Local MCP servers configured with `--mcp-servers-config` / `--mcp-servers-json` are separate: they appear under `GET /tools` (and `GET /v1/tools`) and can be invoked via `POST /tools`. To expose them to Chat Completions / Responses function calling, fetch OpenAI-shaped definitions with `GET /v1/tools?format=openai` and pass the `data` array as the request `tools` field (client-side wiring).
+
+For **low-level KV reuse** across requests (not conversation objects), see [Slot KV cache persistence](#slot-kv-cache-persistence-local-session-acceleration) (`--slot-save-path`).
+
+Multi-turn example:
+
+```shell
+# turn 1
+curl -s http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{"model":"local","input":"My favorite color is blue. Reply with OK."}'
+
+# turn 2 (use id from previous response)
+curl -s http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{"model":"local","previous_response_id":"resp_...","input":"What is my favorite color?"}'
+```
+
 
 ### POST `/v1/embeddings`: OpenAI-compatible embeddings API
 
@@ -1638,11 +1764,19 @@ curl http://localhost:8080/v1/messages/count_tokens \
 {"input_tokens": 10}
 ```
 
-## Server tools
+## Server built-in tools
 
-The server exposes a REST API under `/tools` that allows the Web UI to call server tools. This endpoint is intended to be used internally by the Web UI and subject to change or to be removed in the future.
+The server exposes a REST API under `/tools` (and `/v1/tools`) that allows the Web UI — and optionally other local clients — to list and call built-in tools and MCP tools.
 
-**Please do NOT use this endpoint in a downstream application**
+**Please treat this endpoint as experimental** (shape may change). Prefer `GET /v1/tools?format=openai` when you need Chat Completions / Responses-compatible `tools` definitions.
+
+### Local MCP visibility
+
+1. Configure MCP with `--mcp-servers-json` or `--mcp-servers-config` (Cursor-compatible `mcpServers` JSON).
+2. Tools are named `<server>_<tool>` and listed by `GET /tools` / `GET /v1/tools`.
+3. `GET /v1/tools?format=openai` returns `{ "object": "list", "data": [ { "type": "function", "function": {...} }, ... ] }` plus optional `warnings` (e.g. name collisions that hid an MCP tool).
+4. Pass that `data` into `/v1/chat/completions` or `/v1/responses` as `tools` (type `function` only). Hosted OpenAI `type: mcp` / `file_search` in the request body still returns **400**. Local `web_search` is executed by the server (see above).
+5. Execute MCP tools either by completing the model tool call via your client against `POST /tools`, or by using the Web UI.
 
 For further documentation about this endpoint, please refer to [server internal documentation](./README-dev.md)
 

@@ -76,6 +76,24 @@ def test_mcp_tools_listed_in_tools_endpoint():
         # Verify tool structure
         echo_tool = next(t for t in mcp_tools if get_tool_name(t) == "echo_echo")
         assert "description" in echo_tool or "definition" in echo_tool
+
+        # /v1/tools alias + OpenAI-shaped catalog for Chat/Responses wiring
+        res_v1 = server.make_request("GET", "/v1/tools")
+        assert res_v1.status_code == 200, res_v1.body
+        assert isinstance(res_v1.body, list)
+
+        res_oai = server.make_request("GET", "/v1/tools?format=openai")
+        assert res_oai.status_code == 200, res_oai.body
+        body = res_oai.body
+        assert body.get("object") == "list"
+        assert isinstance(body.get("data"), list)
+        names = {
+            (t.get("function") or {}).get("name")
+            for t in body["data"]
+            if isinstance(t, dict) and t.get("type") == "function"
+        }
+        assert "echo_echo" in names
+        assert "echo_add" in names
     finally:
         server.stop()
 

@@ -101,7 +101,7 @@ void server_queue::pop_deferred_task(int id_slot) {
                 break;
             }
         }
-        // if not tasks found using the slot, just pop the first deferred task (default behavior)
+        // fallback: oldest deferred task
         if (!found) {
             QUE_DBG("pop deferred task, id_task = %d\n", queue_tasks_deferred.front().id);
             queue_tasks.emplace_front(std::move(queue_tasks_deferred.front()));
@@ -422,6 +422,11 @@ void server_response::remove_waiting_task_ids(const std::unordered_set<int> & id
         RES_DBG("remove task %d from waiting list. current waiting = %d (before remove)\n", id_task, (int) waiting_task_ids.size());
         waiting_task_ids.erase(id_task);
     }
+}
+
+bool server_response::is_waiting_for(int id_task) {
+    std::unique_lock<std::mutex> lock(mutex_results);
+    return waiting_task_ids.find(id_task) != waiting_task_ids.end();
 }
 
 server_task_result_ptr server_response::recv(const std::unordered_set<int> & id_tasks) {

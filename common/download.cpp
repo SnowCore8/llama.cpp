@@ -446,6 +446,10 @@ std::pair<long, std::vector<char>> common_remote_get_content(const std::string  
         cli.set_read_timeout(params.timeout, 0);
         cli.set_write_timeout(params.timeout, 0);
     }
+    cli.set_follow_location(params.follow_location);
+    if (!params.hostname_addr_map.empty()) {
+        cli.set_hostname_addr_map(params.hostname_addr_map);
+    }
 
     std::vector<char> buf;
     auto res = cli.Get(parts.path, headers,

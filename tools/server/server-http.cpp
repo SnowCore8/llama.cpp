@@ -28,6 +28,13 @@ server_http_context::server_http_context()
 server_http_context::~server_http_context() = default;
 
 static void log_server_request(const httplib::Request & req, const httplib::Response & res) {
+    // Always log client/server errors with method+path (helps diagnose Not Found / auth).
+    if (res.status >= 400) {
+        SRV_WRN("http %d %s %s from %s\n",
+                res.status, req.method.c_str(), req.path.c_str(), req.remote_addr.c_str());
+        return;
+    }
+
     // skip logging requests that are regularly sent, to avoid log spam
     if (req.path == "/health"
         || req.path == "/v1/health"
@@ -124,7 +131,8 @@ bool server_http_context::init(const common_params & params) {
 #endif
 
     srv->set_default_headers({{"Server", "llama.cpp"}});
-    // srv->set_logger(log_server_request); // TODO @ngxson : this is too spamy, no very useful; improve it in the future
+    // Log 4xx/5xx with method+path; quiet on health/models spam for 2xx.
+    srv->set_logger(log_server_request);
     srv->set_exception_handler([](const httplib::Request &, httplib::Response & res, const std::exception_ptr & ep) {
         // this is fail-safe; exceptions should already handled by `ex_wrapper`
 
@@ -142,12 +150,17 @@ bool server_http_context::init(const common_params & params) {
         SRV_ERR("got exception: %s\n", message.c_str());
     });
 
-    srv->set_error_handler([](const httplib::Request &, httplib::Response & res) {
-        if (res.status == 404) {
+    srv->set_error_handler([](const httplib::Request & req, httplib::Response & res) {
+        // cpp-httplib invokes the error handler for every 4xx/5xx before writing.
+        // Only fill a default body for unmatched routes (empty body). Do NOT overwrite
+        // handler-produced 404s such as model/batch/response not found.
+        if (res.status == 404 && res.body.empty()) {
+            const std::string msg = req.method + " " + req.path + " not found"
+                " (if base_url already ends with /v1, do not append another /v1)";
             res.set_content(
                 safe_json_to_str(json {
                     {"error", {
-                        {"message", "File Not Found"},
+                        {"message", msg},
                         {"type", "not_found_error"},
                         {"code", 404}
                     }}
@@ -660,6 +673,28 @@ void server_http_context::del(const std::string & path, const server_http_contex
         });
         server_http_res_ptr response = handler(*request);
         process_handler_response(std::move(request), response, res);
+    });
+}
+
+void server_http_context::websocket(const std::string & path, const server_http_context::ws_handler_t & handler) const {
+    pimpl->srv->WebSocket(path_prefix + path, [handler](const httplib::Request & req, httplib::ws::WebSocket & ws) {
+        auto headers = get_headers(req);
+        auto read_text = [&ws](std::string & msg) -> bool {
+            while (true) {
+                const auto rr = ws.read(msg);
+                if (rr == httplib::ws::ReadResult::Fail) {
+                    return false;
+                }
+                if (rr == httplib::ws::ReadResult::Text) {
+                    return true;
+                }
+                // ignore binary frames
+            }
+        };
+        auto send_text = [&ws](const std::string & data) -> bool {
+            return ws.send(data);
+        };
+        handler(headers, read_text, send_text);
     });
 }
 

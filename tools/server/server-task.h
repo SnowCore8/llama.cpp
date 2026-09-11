@@ -3,6 +3,7 @@
 #include "common.h"
 #include "llama.h"
 
+#include <atomic>
 #include <string>
 #include <unordered_set>
 #include <list>
@@ -84,6 +85,37 @@ struct task_params {
     std::string        oaicompat_model;
     std::string        oaicompat_cmpl_id;
 
+    // OpenAI Responses: optional pre-assigned id + metadata for Response Store
+    std::string oaicompat_resp_id;
+    json        oaicompat_resp_input        = nullptr;
+    json        oaicompat_resp_instructions = nullptr;
+    json        oaicompat_resp_request      = nullptr; // original/prepared Responses request body
+
+    // OpenAI Chat Completions: persist when store=true
+    bool oaicompat_chat_store    = false;
+    json oaicompat_chat_metadata = nullptr;
+    std::string oaicompat_chat_user;
+    std::string oaicompat_chat_safety_identifier;
+
+    // OpenAI Completions: echo prompt into choice text; truncate best_of → n choices.
+    bool    oaicompat_cmpl_echo     = false;
+    int32_t oaicompat_cmpl_return_n = -1; // <0 → keep all generated choices
+    bool    oaicompat_cmpl_rank_by_logprob = false;
+    bool    oaicompat_cmpl_hide_rank_logprobs = false; // n_probs forced for ranking only
+
+    // OpenAI prompt_cache local deepen
+    std::string oai_prompt_cache_key;   // slot affinity key
+    bool        oai_prompt_cache_key_explicit = false; // true = client-provided key (isolation domain)
+    bool        oai_prompt_cache_key_implicit = false; // true = local anchor derived from the prompt tokens
+    int32_t     oai_prompt_cache_ttl = 0; // seconds; 0 = process lifetime
+    bool        oai_prompt_cache_expired = false; // disk TTL was dead before this request's touch
+
+    // Local web_search deepen (Responses emits hosted-shaped blocks)
+    bool        oai_web_search_ran = false;
+    std::string oai_web_search_query;
+    json        oai_web_search_results = nullptr;
+    int32_t     oai_web_search_n_requests = 0;
+
     // realtime control (SERVER_TASK_TYPE_CONTROL)
     std::string        control_action;
     std::string        control_cmpl_id;
@@ -118,12 +150,19 @@ struct task_result_state {
 
     // for OpenAI Responses streaming API
     bool oai_resp_created = false;
-    const std::string oai_resp_id;
-    const std::string oai_resp_reasoning_id;
-    const std::string oai_resp_message_id;
+    bool oai_web_search_streamed = false;
+    int  oai_web_search_output_offset = 0;
+    std::string oai_resp_id;
+    std::string oai_resp_reasoning_id;
+    std::string oai_resp_message_id;
     std::string oai_resp_fc_id; // function call ID for current args delta
 
-    task_result_state(const common_chat_parser_params & chat_parser_params);
+    // metadata for Response Store (copied from task_params)
+    json oaicompat_resp_input        = nullptr;
+    json oaicompat_resp_instructions = nullptr;
+    json oaicompat_resp_request      = nullptr;
+
+    task_result_state(const common_chat_parser_params & chat_parser_params, const std::string & resp_id = "");
 
     // parse partial tool calls and update the internal state
     common_chat_msg update_chat_msg(
@@ -247,7 +286,11 @@ struct server_task {
     // the task will be moved into queue, then onto slots
     // however, the state must be kept by caller (e.g., HTTP thread)
     task_result_state create_state() const {
-        return task_result_state(params.chat_parser_params);
+        task_result_state st(params.chat_parser_params, params.oaicompat_resp_id);
+        st.oaicompat_resp_input        = params.oaicompat_resp_input;
+        st.oaicompat_resp_instructions = params.oaicompat_resp_instructions;
+        st.oaicompat_resp_request      = params.oaicompat_resp_request;
+        return st;
     }
 
     bool is_parent() const {
@@ -311,6 +354,10 @@ struct completion_token_output {
 
     static json probs_vector_to_json(const std::vector<completion_token_output> & probs, bool post_sampling_probs);
 
+    // OpenAI Completions (legacy) logprobs shape: tokens/token_logprobs/top_logprobs/text_offset
+    static json probs_vector_to_json_oaicompat_completions(
+        const std::vector<completion_token_output> & probs);
+
     static float logarithm(float x);
 
     static std::vector<unsigned char> str_to_bytes(const std::string & str);
@@ -355,6 +402,10 @@ struct server_task_result_cmpl_final : server_task_result {
     std::string oai_resp_id;
     std::string oai_resp_reasoning_id;
     std::string oai_resp_message_id;
+    std::string oai_resp_fc_id;
+    json oaicompat_resp_input        = nullptr;
+    json oaicompat_resp_instructions = nullptr;
+    json oaicompat_resp_request      = nullptr;
 
     virtual bool is_stop() override {
         return true; // in stream mode, final responses are considered stop
@@ -369,6 +420,10 @@ struct server_task_result_cmpl_final : server_task_result {
         oai_resp_id = state.oai_resp_id;
         oai_resp_reasoning_id = state.oai_resp_reasoning_id;
         oai_resp_message_id = state.oai_resp_message_id;
+        oai_resp_fc_id = state.oai_resp_fc_id;
+        oaicompat_resp_input        = state.oaicompat_resp_input;
+        oaicompat_resp_instructions = state.oaicompat_resp_instructions;
+        oaicompat_resp_request      = state.oaicompat_resp_request;
     }
 
     json to_json_non_oaicompat();
@@ -420,12 +475,18 @@ struct server_task_result_cmpl_partial : server_task_result {
     bool thinking_block_started = false;
     bool text_block_started     = false;
 
+    // Copied from task for stream enrichments (web_search, etc.)
+    task_params generation_params;
+
     // for OpenAI Responses API
     bool oai_resp_created = false;
+    bool oai_web_search_streamed = false;
+    int  oai_web_search_output_offset = 0;
     std::string oai_resp_id;
     std::string oai_resp_reasoning_id;
     std::string oai_resp_message_id;
     std::string oai_resp_fc_id;
+    json oaicompat_resp_request = nullptr;
 
     // for Anthropic API: track if any reasoning content has been generated
     bool anthropic_has_reasoning = false;
@@ -489,13 +550,36 @@ struct server_task_result_error : server_task_result {
     virtual json to_json() override;
 };
 
-// used by /metrics API
+// snapshot of the level-2 prompt cache, used by /props and /metrics
+struct server_prompt_cache_stats {
+    bool     enabled      = false; // --cache-ram > 0
+    uint64_t limit_bytes  = 0;
+    uint64_t limit_tokens = 0;
+
+    // live gauges, only filled by the main loop
+    uint64_t n_states   = 0;
+    uint64_t size_bytes = 0;
+    uint64_t n_tokens   = 0;
+
+    // cumulative counters
+    uint64_t n_saves       = 0;
+    uint64_t n_hits        = 0;
+    uint64_t n_misses      = 0;
+    uint64_t n_evictions   = 0;
+    uint64_t n_skipped     = 0;
+    uint64_t n_key_drops   = 0;
+    uint64_t n_hits_tokens = 0; // tokens of the restored states that the request shares
+};
+
 struct server_task_result_metrics : server_task_result {
     // these are immediate stats, not accumulated (server_metrics is cumulative)
     int n_processing_slots = 0;
     int n_tasks_deferred = 0;
 
     server_metrics metrics;
+
+    // level-2 prompt cache snapshot, filled by the main loop
+    server_prompt_cache_stats prompt_cache;
 
     virtual json to_json() override;
 
@@ -594,9 +678,28 @@ struct server_prompt_data {
     }
 };
 
+// affinity key of a parked state:
+// - explicit  : client-provided prompt_cache_key, an isolation domain - never reused by another key
+// - implicit  : server-derived anchor (prompt_cache_options/retention without a key), weak hint
+// - unkeyed   : no key at all
+struct server_prompt_cache_key {
+    std::string key;
+    bool        explicit_key = false;
+
+    bool is_unkeyed() const {
+        return key.empty();
+    }
+};
+
 struct server_prompt_cache_state {
     server_prompt prompt;
     server_prompt_data data;
+
+    // key of the slot that produced this state, used to keep isolation domains apart
+    server_prompt_cache_key cache_key;
+
+    // slot the state was parked from; restore targets the same slot id
+    int32_t slot_id = -1;
 
     size_t size() const {
         size_t res = data.size();
@@ -611,8 +714,9 @@ struct server_prompt_cache_state {
 
 struct server_prompt_cache {
     server_prompt_cache(int32_t limit_size_mib, size_t limit_tokens) {
-        this->limit_size   = 1024ull*1024ull*(limit_size_mib < 0 ? 0 : limit_size_mib);
-        this->limit_tokens = limit_tokens;
+        this->limit_size      = 1024ull*1024ull*(limit_size_mib < 0 ? 0 : limit_size_mib);
+        this->limit_size_none = limit_size_mib < 0;
+        this->limit_tokens    = limit_tokens;
     }
 
     std::list<server_prompt_cache_state> states;
@@ -620,16 +724,57 @@ struct server_prompt_cache {
     // in bytes, 0 = no limit
     size_t limit_size = 0;
 
+    // set only for --cache-ram < 0, when the size limit is off instead of 0 bytes
+    bool limit_size_none = false;
+
     // in tokens, 0 = no limit
     size_t limit_tokens = 0;
+
+    bool enabled() const {
+        return limit_size > 0 || limit_size_none;
+    }
+
+    // cumulative stats, exposed via /props and /metrics
+    // note: atomic so that the HTTP thread can read them for /props while the main loop updates
+    std::atomic<uint64_t> n_saves      {0}; // states accepted by alloc()
+    std::atomic<uint64_t> n_hits       {0}; // load() restored a state
+    std::atomic<uint64_t> n_misses     {0}; // load() found nothing better
+    std::atomic<uint64_t> n_evictions  {0}; // entries dropped by the size/token limits
+    std::atomic<uint64_t> n_skipped    {0}; // alloc() refused a state (too large, already present, OOM)
+    std::atomic<uint64_t> n_key_drops  {0}; // entries dropped after key TTL expiry / isolation reset
+    std::atomic<uint64_t> n_hits_tokens{0}; // tokens of the restored states that the request shares
 
     size_t size() const;
 
     size_t n_tokens() const;
 
-    server_prompt_cache_state * alloc(const server_prompt & prompt, size_t state_size_main, size_t state_size_drft);
+    // true if the cache already holds a state that starts with these tokens
+    bool contains(const server_tokens & tokens) const;
 
-    bool load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot);
+    // forget states parked under an explicit key (TTL expiry / isolation reset); returns
+    // the number of dropped states
+    size_t drop_key(const std::string & key);
+
+    // config + counters for /props; safe to call from the HTTP thread (no list walk)
+    json props_json() const;
+
+    // counters + live gauges for /metrics; main loop only
+    server_prompt_cache_stats stats() const;
+
+    server_prompt_cache_state * alloc(
+            const server_prompt & prompt,
+            size_t state_size_main,
+            size_t state_size_drft,
+            const server_prompt_cache_key & cache_key,
+            int32_t slot_id);
+
+    bool load(
+            server_prompt & prompt,
+            const server_tokens & tokens_new,
+            llama_context * ctx_tgt,
+            llama_context * ctx_dft,
+            int32_t id_slot,
+            const server_prompt_cache_key & cache_key);
 
     void update();
 };

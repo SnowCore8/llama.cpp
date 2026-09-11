@@ -85,6 +85,7 @@ struct server_model_meta {
     int stop_timeout = 0; // seconds to wait before force-killing the model instance during shutdown
     mtmd_caps multimodal; // multimodal capabilities
     bool hidden = false; // hidden from GET /models, but still accept if requested
+    bool no_evict = false; // prefer keeping this model loaded when models_max is exceeded
 
     bool is_ready() const {
         return status == SERVER_MODEL_STATUS_LOADED;

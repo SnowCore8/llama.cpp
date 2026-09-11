@@ -35,6 +35,9 @@ struct server_tools_runtime; // impl detail, defined in server-tools.cpp
 
 struct server_tools {
     std::vector<std::unique_ptr<server_tool>> tools;
+    // Non-fatal setup notes (e.g. MCP tools skipped due to name collision).
+    // Surfaced by GET /tools?format=openai for client visibility.
+    std::vector<json> setup_warnings;
 
     // for streaming
     server_response queue_res;

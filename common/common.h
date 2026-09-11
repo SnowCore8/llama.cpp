@@ -691,8 +691,13 @@ struct common_params {
 
     std::string slot_save_path;
     std::string media_path; // path to directory for loading media files
+    std::string openai_files_path; // root for durable OpenAI objects (empty = memory-only)
 
     float slot_prompt_similarity = 0.1f;
+
+    // OpenAI Responses API in-memory store (previous_response_id)
+    int32_t responses_store_max = 1024;            // 0 = disable store
+    int32_t responses_store_ttl = 7 * 24 * 3600;   // seconds; 0 = no TTL eviction
 
     // batched-bench params
     bool is_pp_shared   = false;
