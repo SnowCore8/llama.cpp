@@ -68,6 +68,8 @@ Inference create/stream/parse, create-param catalogs, tools/`tool_choice`, reaso
 
 **Local complete (not cloud):** `--reasoning-preserve` on templates without `supports_preserve_reasoning` folds prior `reasoning_content` into message `content` as `<think>…</think>` before templating (Qwen etc.).
 
+**记录（未修）:** `reasoning_effort` / `reasoning.effort` 原值透传进 `chat_template_kwargs`; 模板自带词表时会拒绝: Qwen3.8-27B 模板只接受 `xhigh`/`medium`/`low`，`minimal`/`high`/`max` 触发模板异常 -> HTTP 500（Chat 与 Responses 均已复现）。未做 OpenAI 到模板词表的映射; 客户端可改用 `chat_template_kwargs.reasoning_effort` 传模板原生值。
+
 ## Server changes for this acceptance pass (risk)
 
 | Change | Risk | Side effects | Rationale |

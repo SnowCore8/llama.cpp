@@ -1388,6 +1388,8 @@ The `response_format` parameter supports both plain JSON output (e.g. `{"type": 
 
 `reasoning_effort`: Official OpenAI ReasoningEffort enum: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. `none` disables thinking; other values enable thinking and are forwarded to the chat template as `chat_template_kwargs.reasoning_effort`. Invalid values → 400.
 
+The effort value is forwarded verbatim, so a template with its own vocabulary can reject it. Qwen3.8 accepts only `xhigh` (default), `medium` and `low` and raises a template exception (HTTP 500) for `minimal` / `high` / `max`; templates that ignore `reasoning_effort` are unaffected. Same behavior for `--reasoning-effort`. Workaround: pass the template-native value via `chat_template_kwargs.reasoning_effort` instead of the body field.
+
 Responses API `reasoning` object (shape-validated + echoed): `effort` (same enum), `context` (`auto`|`current_turn`|`all_turns`), `summary` / `generate_summary` (`auto`|`concise`|`detailed`), `mode` (string; documented values include `standard`|`pro`). Only `effort` affects local thinking.
 
 `reasoning_format`: The reasoning format to be parsed. If set to `none`, it will output the raw generated text.
