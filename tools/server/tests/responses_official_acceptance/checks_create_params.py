@@ -699,7 +699,7 @@ def run_create_param_checks(
                 f"HTTP {code} first={data.get('status')!r} terminal={terminal!r}",
             )
             continue
-        # max_tool_calls: enforce zero → incomplete with no function_call
+        # max_tool_calls: zero drops the tool-call attempt, the response still completes
         if field == "max_tool_calls":
             code, data = create(
                 {
@@ -722,18 +722,18 @@ def run_create_param_checks(
                 for x in (data.get("output") or [])
                 if isinstance(x, dict) and x.get("type") == "function_call"
             ]
-            reason = (data.get("incomplete_details") or {}).get("reason") if isinstance(data, dict) else None
+            details = data.get("incomplete_details") if isinstance(data, dict) else None
             ok = (
                 code == 200
-                and data.get("status") == "incomplete"
-                and reason == "max_tool_calls"
+                and data.get("status") == "completed"
+                and not details
                 and len(fcs) == 0
             )
             report.add(
                 "create_param",
                 field,
                 "PASS" if ok else "FAIL",
-                f"HTTP {code} status={data.get('status')!r} reason={reason!r} n_fc={len(fcs)}",
+                f"HTTP {code} status={data.get('status')!r} incomplete={details!r} n_fc={len(fcs)}",
             )
             continue
         # stream_options: include_obfuscation true adds SSE obfuscation keys

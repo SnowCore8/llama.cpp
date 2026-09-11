@@ -315,7 +315,7 @@ def run_semantic_checks(
     else:
         report.add("semantic", "input_items_have_ids", "FAIL", f"create HTTP {code}")
 
-    # --- max_tool_calls truncates / incomplete when limit is 0 ---
+    # --- max_tool_calls=0 drops the tool-call attempt; the response still completes ---
     code, data = _create(
         client,
         model,
@@ -341,19 +341,18 @@ def run_semantic_checks(
         if isinstance(x, dict) and x.get("type") == "function_call"
     ]
     details = data.get("incomplete_details") if isinstance(data, dict) else None
-    reason = details.get("reason") if isinstance(details, dict) else None
     ok = (
         code == 200
         and data.get("max_tool_calls") == 0
         and len(fcs) == 0
-        and data.get("status") == "incomplete"
-        and reason == "max_tool_calls"
+        and data.get("status") == "completed"
+        and not details
     )
     report.add(
         "semantic",
         "max_tool_calls_enforced_zero",
         "PASS" if ok else "FAIL",
-        f"HTTP {code} status={data.get('status')!r} reason={reason!r} n_fc={len(fcs)}",
+        f"HTTP {code} status={data.get('status')!r} incomplete={details!r} n_fc={len(fcs)}",
     )
 
     # --- max_tool_calls=1 still allows a single forced tool ---

@@ -1584,7 +1584,7 @@ llama-server keeps completed Responses so clients can continue with `previous_re
 
 Missing or expired ids return HTTP 400. Without `--openai-files-path`, the store is process-local (lost on restart / not shared across router child processes).
 
-Local deepenings (not cloud-equivalent): `max_tool_calls` truncates tool outputs; `context_management` with `compaction` auto-folds long history into a local opaque item; `stream_options.include_obfuscation` adds SSE `obfuscation` payloads; `truncation=auto` drops oldest input items beyond a local soft limit while `truncation=disabled` returns HTTP 400 when over that limit; Responses + Chat Completions validate OpenAI-shaped `prompt` (Responses only) / `prompt_cache_*`; OpenAI Completions validates `echo`/`suffix`/`best_of`/`n` shapes — see `tools/server/tests/OFFICIAL_API_SCOPE.md`.
+Local deepenings (not cloud-equivalent): `max_tool_calls` drops calls beyond the cap (excess attempts ignored); `context_management` with `compaction` auto-folds long history into a local opaque item; `stream_options.include_obfuscation` adds SSE `obfuscation` payloads; `truncation=auto` drops oldest input items beyond a local soft limit while `truncation=disabled` returns HTTP 400 when over that limit; Responses + Chat Completions validate OpenAI-shaped `prompt` (Responses only) / `prompt_cache_*`; OpenAI Completions validates `echo`/`suffix`/`best_of`/`n` shapes - see `tools/server/tests/OFFICIAL_API_SCOPE.md`.
 
 #### Durable store (`--openai-files-path`)
 

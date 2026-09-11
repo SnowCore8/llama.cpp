@@ -182,6 +182,59 @@ def run_streaming_checks(
             f"HTTP {icode} types={itypes}",
         )
 
+    # --- max_tool_calls cap: excess calls are ignored, the stream still completes ---
+    mcode, _, mraw = client.request(
+        "POST",
+        "/v1/responses",
+        {
+            "model": model,
+            "input": "call ping",
+            "max_output_tokens": 64,
+            "stream": True,
+            "max_tool_calls": 0,
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "ping",
+                    "description": "ping",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ],
+            "tool_choice": {"type": "function", "name": "ping"},
+            **extra,
+        },
+        stream=True,
+    )
+    mevents = parse_sse(mraw) if mcode == 200 else []
+    mtypes = _types(mevents)
+    mfinal = next(
+        (obj for t, obj in mevents if t in ("response.completed", "response.incomplete")),
+        None,
+    )
+    mresp = (mfinal or {}).get("response") if isinstance(mfinal, dict) else None
+    m_fcs = [
+        x
+        for x in ((mresp or {}).get("output") or [])
+        if isinstance(x, dict) and x.get("type") == "function_call"
+    ]
+    ok = (
+        mcode == 200
+        and "response.completed" in mtypes
+        and "response.incomplete" not in mtypes
+        and isinstance(mresp, dict)
+        and mresp.get("status") == "completed"
+        and not mresp.get("incomplete_details")
+        and not m_fcs
+    )
+    report.add(
+        "stream_event",
+        "max_tool_calls_cap_completes",
+        "PASS" if ok else "FAIL",
+        f"HTTP {mcode} completed={'response.completed' in mtypes} "
+        f"incomplete={'response.incomplete' in mtypes} "
+        f"status={(mresp or {}).get('status')!r} n_fc={len(m_fcs)}",
+    )
+
     # --- force the official reasoning summary events ---
     think_extra = dict(extra)
     ctk = dict(think_extra.get("chat_template_kwargs") or {})

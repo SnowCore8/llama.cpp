@@ -649,9 +649,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
     }
 
     const bool hit_token_limit = (stop == STOP_TYPE_LIMIT) || truncated;
-    bool hit_max_tool_calls = false;
     const json req_early = oaicompat_resp_request.is_null() ? json::object() : oaicompat_resp_request;
-    const int max_tool_calls = server_responses_max_tool_calls(req_early);
     const int emit_tool_cap = server_responses_effective_tool_call_cap(req_early);
 
     std::vector<json> output;
@@ -723,14 +721,8 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
         });
         emitted_tools++;
     }
-    // incomplete only when official max_tool_calls truncates (not merely parallel_tool_calls=false).
-    if (max_tool_calls >= 0 && (int) oaicompat_msg.tool_calls.size() > emitted_tools &&
-            emitted_tools >= max_tool_calls) {
-        hit_max_tool_calls = true;
-    }
 
-    const std::string resp_status =
-        (hit_token_limit || hit_max_tool_calls) ? "incomplete" : "completed";
+    const std::string resp_status = hit_token_limit ? "incomplete" : "completed";
 
     std::time_t t = std::time(0);
     json res = {
@@ -752,19 +744,14 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
             {"output_tokens_details", json { {"reasoning_tokens", 0} }},
         }},
     };
-    if (hit_max_tool_calls) {
-        res["incomplete_details"] = json { {"reason", "max_tool_calls"} };
-    } else if (hit_token_limit) {
+    if (hit_token_limit) {
         res["incomplete_details"] = json { {"reason", "max_output_tokens"} };
     }
 
     const json req = req_early;
     res = server_responses_enrich_response(std::move(res), req);
     // enrich may default-fill incomplete_details=null when absent; restore after limit stop
-    if (hit_max_tool_calls) {
-        res["status"] = "incomplete";
-        res["incomplete_details"] = json { {"reason", "max_tool_calls"} };
-    } else if (hit_token_limit) {
+    if (hit_token_limit) {
         res["status"] = "incomplete";
         res["incomplete_details"] = json { {"reason", "max_output_tokens"} };
     }
@@ -778,10 +765,8 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
     std::vector<json> server_sent_events;
     std::vector<json> output;
     const json req_stream = oaicompat_resp_request.is_null() ? json::object() : oaicompat_resp_request;
-    const int max_tool_calls = server_responses_max_tool_calls(req_stream);
     const int emit_tool_cap = server_responses_effective_tool_call_cap(req_stream);
     const bool hit_token_limit = (stop == STOP_TYPE_LIMIT) || truncated;
-    bool hit_max_tool_calls = false;
 
     auto push_evt = [&](const std::string & event_name, json data) {
         data["type"] = event_name;
@@ -912,13 +897,8 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
         output.push_back(output_item);
         emitted_tools++;
     }
-    if (max_tool_calls >= 0 && (int) oaicompat_msg.tool_calls.size() > emitted_tools &&
-            emitted_tools >= max_tool_calls) {
-        hit_max_tool_calls = true;
-    }
 
-    const std::string resp_status =
-        (hit_token_limit || hit_max_tool_calls) ? "incomplete" : "completed";
+    const std::string resp_status = hit_token_limit ? "incomplete" : "completed";
 
     std::time_t t = std::time(0);
     json response_obj = {
@@ -940,23 +920,18 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
             {"output_tokens_details", json { {"reasoning_tokens", 0} }},
         }}
     };
-    if (hit_max_tool_calls) {
-        response_obj["incomplete_details"] = json { {"reason", "max_tool_calls"} };
-    } else if (hit_token_limit) {
+    if (hit_token_limit) {
         response_obj["incomplete_details"] = json { {"reason", "max_output_tokens"} };
     }
     const json req = req_stream;
     response_obj = server_responses_enrich_response(std::move(response_obj), req);
-    if (hit_max_tool_calls) {
-        response_obj["status"] = "incomplete";
-        response_obj["incomplete_details"] = json { {"reason", "max_tool_calls"} };
-    } else if (hit_token_limit) {
+    if (hit_token_limit) {
         response_obj["status"] = "incomplete";
         response_obj["incomplete_details"] = json { {"reason", "max_output_tokens"} };
     }
     server_responses_remember(response_obj, oaicompat_resp_input, oaicompat_resp_instructions);
 
-    push_evt((hit_token_limit || hit_max_tool_calls) ? "response.incomplete" : "response.completed", json {
+    push_evt(hit_token_limit ? "response.incomplete" : "response.completed", json {
         {"response", response_obj},
     });
 
