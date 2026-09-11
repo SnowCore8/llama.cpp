@@ -148,6 +148,11 @@ struct task_result_state {
     bool thinking_block_started = false;
     bool text_block_started = false;
 
+    // for OpenAI Responses streaming API: reasoning summary stream (official events)
+    bool   reasoning_summary_started = false; // summary part.added already emitted
+    bool   reasoning_summary_frozen  = false; // summary cut is final, stop extending
+    size_t reasoning_summary_emitted = 0;     // bytes of summary text already streamed
+
     // for OpenAI Responses streaming API
     bool oai_resp_created = false;
     bool oai_web_search_streamed = false;
@@ -474,6 +479,10 @@ struct server_task_result_cmpl_partial : server_task_result {
     // Streaming state copied from task_result_state for this chunk
     bool thinking_block_started = false;
     bool text_block_started     = false;
+
+    // Reasoning summary text to stream in this chunk (OpenAI Responses)
+    bool        reasoning_summary_started = false;
+    std::string reasoning_summary_delta;
 
     // Copied from task for stream enrichments (web_search, etc.)
     task_params generation_params;

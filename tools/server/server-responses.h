@@ -78,6 +78,10 @@ std::string server_responses_encode_local_blob(const json & obj);
 // Inverse of encode; false if not a local. blob or payload is corrupt.
 bool server_responses_expand_local_blob(const std::string & enc, json & out);
 
+// Text of the Responses reasoning `summary[]` entry for the accumulated reasoning, per
+// request reasoning.summary / generate_summary. Empty when unset.
+std::string server_responses_reasoning_summary_text(const std::string & reasoning_text, const json & request_body);
+
 // Build Responses reasoning item `summary[]` from request reasoning.summary /
 // generate_summary (auto|concise|detailed). Empty when unset.
 json server_responses_reasoning_summary(const std::string & reasoning_text, const json & request_body);

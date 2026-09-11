@@ -957,11 +957,10 @@ bool server_responses_drop_history_reasoning(const json & request_body) {
     return json_value(request_body.at("reasoning"), "context", std::string()) == "current_turn";
 }
 
-json server_responses_reasoning_summary(const std::string & reasoning_text, const json & request_body) {
-    json summary = json::array();
+std::string server_responses_reasoning_summary_text(const std::string & reasoning_text, const json & request_body) {
     if (reasoning_text.empty() ||
             !request_body.contains("reasoning") || !request_body.at("reasoning").is_object()) {
-        return summary;
+        return std::string();
     }
     const json & reasoning = request_body.at("reasoning");
     std::string level;
@@ -971,7 +970,7 @@ json server_responses_reasoning_summary(const std::string & reasoning_text, cons
                reasoning.at("generate_summary").is_string()) {
         level = reasoning.at("generate_summary").get<std::string>();
     } else {
-        return summary;
+        return std::string();
     }
     std::string text = reasoning_text;
     if (level == "concise") {
@@ -992,10 +991,18 @@ json server_responses_reasoning_summary(const std::string & reasoning_text, cons
         text = text.substr(0, 800) + "...";
     }
     // detailed (and short auto/concise) keep fuller reasoning text.
-    summary.push_back(json {
-        {"type", "summary_text"},
-        {"text", std::move(text)},
-    });
+    return text;
+}
+
+json server_responses_reasoning_summary(const std::string & reasoning_text, const json & request_body) {
+    json summary = json::array();
+    std::string text = server_responses_reasoning_summary_text(reasoning_text, request_body);
+    if (!text.empty()) {
+        summary.push_back(json {
+            {"type", "summary_text"},
+            {"text", std::move(text)},
+        });
+    }
     return summary;
 }
 

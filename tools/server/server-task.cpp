@@ -804,9 +804,18 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
                 {"text", oaicompat_msg.reasoning_content},
             });
         }
+        const std::string summary_text = server_responses_reasoning_summary_text(
+                oaicompat_msg.reasoning_content, req_stream);
+        json summary = json::array();
+        if (!summary_text.empty()) {
+            summary.push_back(json {
+                {"type", "summary_text"},
+                {"text", summary_text},
+            });
+        }
         const json output_item = json {
             {"id",      oai_resp_reasoning_id},
-            {"summary", server_responses_reasoning_summary(oaicompat_msg.reasoning_content, req_stream)},
+            {"summary", std::move(summary)},
             {"type",    "reasoning"},
             {"content", json::array({ json {
                 {"text", oaicompat_msg.reasoning_content},
@@ -816,6 +825,29 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
             {"status", "completed"},
         };
 
+        if (!summary_text.empty()) {
+            push_evt("response.reasoning_summary_text.done", json {
+                {"item_id",       oai_resp_reasoning_id},
+                {"output_index",  0},
+                {"summary_index", 0},
+                {"text",          summary_text},
+            });
+            push_evt("response.reasoning_summary_part.done", json {
+                {"item_id",       oai_resp_reasoning_id},
+                {"output_index",  0},
+                {"summary_index", 0},
+                {"part", json {
+                    {"type", "summary_text"},
+                    {"text", summary_text},
+                }},
+            });
+        }
+        push_evt("response.reasoning_text.done", json {
+            {"item_id",       oai_resp_reasoning_id},
+            {"output_index",  0},
+            {"content_index", 0},
+            {"text",          oaicompat_msg.reasoning_content},
+        });
         push_evt("response.output_item.done", json {
             {"item", output_item},
             {"output_index", 0},
@@ -1230,6 +1262,8 @@ void server_task_result_cmpl_partial::update(task_result_state & state) {
     thinking_block_started = state.thinking_block_started;
     text_block_started     = state.text_block_started;
 
+    reasoning_summary_started = state.reasoning_summary_started;
+
     oai_resp_created       = state.oai_resp_created;
     oai_web_search_streamed = state.oai_web_search_streamed;
     oai_web_search_output_offset = state.oai_web_search_output_offset;
@@ -1253,6 +1287,20 @@ void server_task_result_cmpl_partial::update(task_result_state & state) {
         // partial will emit using copied offset; mark streamed so we emit once in to_json
         oai_web_search_streamed = false; // emit in this chunk
         oai_web_search_output_offset = state.oai_web_search_output_offset;
+    }
+
+    // OpenAI Responses: stream the reasoning summary that the final response builds, so
+    // clients listening to the official summary events see the thinking live
+    if (res_type == TASK_RESPONSE_TYPE_OAI_RESP && !state.reasoning_summary_frozen) {
+        const std::string target = server_responses_reasoning_summary_text(
+                state.chat_msg.reasoning_content, state.oaicompat_resp_request);
+        if (target.size() > state.reasoning_summary_emitted) {
+            reasoning_summary_delta = target.substr(state.reasoning_summary_emitted);
+            state.reasoning_summary_emitted = target.size();
+            state.reasoning_summary_started = true;
+        }
+        // a target shorter than the reasoning so far means the cut is final (concise / auto)
+        state.reasoning_summary_frozen = target.size() < state.chat_msg.reasoning_content.size();
     }
 
     // Pre-compute state updates based on diffs (for next chunk)
@@ -1496,6 +1544,26 @@ json server_task_result_cmpl_partial::to_json_oaicompat_resp() {
                 {"output_index", ws_off + 0},
                 {"content_index", 0},
             });
+            if (!reasoning_summary_delta.empty()) {
+                if (!reasoning_summary_started) {
+                    push_evt("response.reasoning_summary_part.added", json {
+                        {"item_id",       oai_resp_reasoning_id},
+                        {"output_index",  ws_off + 0},
+                        {"summary_index", 0},
+                        {"part", json {
+                            {"type", "summary_text"},
+                            {"text", ""},
+                        }},
+                    });
+                }
+                push_evt("response.reasoning_summary_text.delta", json {
+                    {"delta",         reasoning_summary_delta},
+                    {"item_id",       oai_resp_reasoning_id},
+                    {"output_index",  ws_off + 0},
+                    {"summary_index", 0},
+                });
+                reasoning_summary_delta.clear();
+            }
         }
 
         if (!diff.content_delta.empty()) {
