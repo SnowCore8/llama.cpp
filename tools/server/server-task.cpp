@@ -784,6 +784,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
     const json req_stream = oaicompat_resp_request.is_null() ? json::object() : oaicompat_resp_request;
     const int max_tool_calls = server_responses_max_tool_calls(req_stream);
     const int emit_tool_cap = server_responses_effective_tool_call_cap(req_stream);
+    const bool hit_token_limit = (stop == STOP_TYPE_LIMIT) || truncated;
     bool hit_max_tool_calls = false;
 
     auto push_evt = [&](const std::string & event_name, json data) {
@@ -822,7 +823,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
                 {"type", "reasoning_text"},
             }})},
             {"encrypted_content", enc_content},
-            {"status", "completed"},
+            {"status", hit_token_limit ? "incomplete" : "completed"},
         };
 
         if (!summary_text.empty()) {
@@ -832,7 +833,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
                 {"summary_index", 0},
                 {"text",          summary_text},
             });
-            push_evt("response.reasoning_summary_part.done", json {
+            json summary_part_done = json {
                 {"item_id",       oai_resp_reasoning_id},
                 {"output_index",  0},
                 {"summary_index", 0},
@@ -840,7 +841,12 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
                     {"type", "summary_text"},
                     {"text", summary_text},
                 }},
-            });
+            };
+            if (hit_token_limit) {
+                // omitted on normal completion, set when generation was interrupted
+                summary_part_done["status"] = "incomplete";
+            }
+            push_evt("response.reasoning_summary_part.done", std::move(summary_part_done));
         }
         push_evt("response.reasoning_text.done", json {
             {"item_id",       oai_resp_reasoning_id},
@@ -879,7 +885,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
         });
         const json output_item = {
             {"type",    "message"},
-            {"status",  "completed"},
+            {"status",  hit_token_limit ? "incomplete" : "completed"},
             {"id",      oai_resp_message_id},
             {"content", json::array({content_part})},
             {"role",    "assistant"}
@@ -926,7 +932,6 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
         hit_max_tool_calls = true;
     }
 
-    const bool hit_token_limit = (stop == STOP_TYPE_LIMIT) || truncated;
     const std::string resp_status =
         (hit_token_limit || hit_max_tool_calls) ? "incomplete" : "completed";
 

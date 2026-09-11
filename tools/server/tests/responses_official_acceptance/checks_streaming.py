@@ -253,6 +253,25 @@ def run_streaming_checks(
         f"joined={len(summary_joined)} done={None if summary_done is None else len(summary_done)}",
     )
 
+    # the part is marked incomplete only when the generation was cut, see the SDK field doc
+    part_done = next(
+        (obj for t, obj in revents if t == "response.reasoning_summary_part.done"), None
+    )
+    final_resp = next(
+        (obj.get("response") for t, obj in revents
+         if t in ("response.completed", "response.incomplete")),
+        None,
+    )
+    incomplete_reason = ((final_resp or {}).get("incomplete_details") or {}).get("reason")
+    pd_status = (part_done or {}).get("status")
+    report.add(
+        "stream_event",
+        "reasoning_summary_part.done.status_matches_response",
+        "PASS" if part_done is not None and (pd_status == "incomplete") == (incomplete_reason == "max_output_tokens")
+        else "FAIL",
+        f"part.done.status={pd_status!r} incomplete_reason={incomplete_reason!r}",
+    )
+
     _mark_conditional(report, set(types), forced)
 
     mono = seqs == list(range(len(seqs))) and len(seqs) > 0
