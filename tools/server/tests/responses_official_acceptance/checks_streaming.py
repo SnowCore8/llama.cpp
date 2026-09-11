@@ -182,7 +182,7 @@ def run_streaming_checks(
             f"HTTP {icode} types={itypes}",
         )
 
-    # --- force reasoning_text.delta (thinking on for this probe only) ---
+    # --- force reasoning_text.delta + the official reasoning summary events ---
     think_extra = dict(extra)
     ctk = dict(think_extra.get("chat_template_kwargs") or {})
     ctk["enable_thinking"] = True
@@ -196,12 +196,13 @@ def run_streaming_checks(
             "max_output_tokens": 64,
             "stream": True,
             **think_extra,
-            "reasoning": {"effort": "low"},
+            "reasoning": {"effort": "low", "summary": "detailed"},
         },
         stream=True,
     )
     revents = parse_sse(rraw) if rcode == 200 else []
-    if "response.reasoning_text.delta" in _types(revents):
+    rtypes = _types(revents)
+    if "response.reasoning_text.delta" in rtypes:
         forced["response.reasoning_text.delta"] = "forced enable_thinking stream"
     else:
         report.add(
@@ -210,6 +211,47 @@ def run_streaming_checks(
             "FAIL",
             f"HTTP {rcode} types={_types(revents)}",
         )
+
+    for ev in (
+        "response.reasoning_text.done",
+        "response.reasoning_summary_part.added",
+        "response.reasoning_summary_text.delta",
+        "response.reasoning_summary_text.done",
+        "response.reasoning_summary_part.done",
+    ):
+        if ev not in rtypes:
+            report.add(
+                "stream_event",
+                f"{ev}.forced",
+                "FAIL",
+                f"missing; HTTP {rcode} types={sorted(set(rtypes))}",
+            )
+            continue
+        errs = []
+        for t, obj in revents:
+            if t != ev:
+                continue
+            ok, detail = validate_event(ev, obj)
+            if not ok:
+                errs.append(detail)
+        if errs:
+            report.add("stream_event", f"{ev}.forced", "FAIL", f"sdk_err={errs[:1]}")
+        else:
+            forced[ev] = "forced reasoning.summary=detailed stream+sdk_ok"
+
+    summary_joined = "".join(
+        obj.get("delta", "") for t, obj in revents if t == "response.reasoning_summary_text.delta"
+    )
+    summary_done = next(
+        (obj.get("text") for t, obj in revents if t == "response.reasoning_summary_text.done"),
+        None,
+    )
+    report.add(
+        "stream_event",
+        "reasoning_summary_text.delta_join_matches_done",
+        "PASS" if summary_done is not None and summary_joined == summary_done else "FAIL",
+        f"joined={len(summary_joined)} done={None if summary_done is None else len(summary_done)}",
+    )
 
     _mark_conditional(report, set(types), forced)
 

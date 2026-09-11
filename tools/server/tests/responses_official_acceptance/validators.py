@@ -36,8 +36,28 @@ try:
     from openai.types.responses.response_reasoning_text_delta_event import (
         ResponseReasoningTextDeltaEvent,
     )
-except Exception:  # pragma: no cover
+    from openai.types.responses.response_reasoning_text_done_event import (
+        ResponseReasoningTextDoneEvent,
+    )
+    from openai.types.responses.response_reasoning_summary_part_added_event import (
+        ResponseReasoningSummaryPartAddedEvent,
+    )
+    from openai.types.responses.response_reasoning_summary_part_done_event import (
+        ResponseReasoningSummaryPartDoneEvent,
+    )
+    from openai.types.responses.response_reasoning_summary_text_delta_event import (
+        ResponseReasoningSummaryTextDeltaEvent,
+    )
+    from openai.types.responses.response_reasoning_summary_text_done_event import (
+        ResponseReasoningSummaryTextDoneEvent,
+    )
+except Exception:  # pragma: no cover - older SDK
     ResponseReasoningTextDeltaEvent = None  # type: ignore
+    ResponseReasoningTextDoneEvent = None  # type: ignore
+    ResponseReasoningSummaryPartAddedEvent = None  # type: ignore
+    ResponseReasoningSummaryPartDoneEvent = None  # type: ignore
+    ResponseReasoningSummaryTextDeltaEvent = None  # type: ignore
+    ResponseReasoningSummaryTextDoneEvent = None  # type: ignore
 
 EVENT_VALIDATORS = {
     "response.created": ResponseCreatedEvent,
@@ -57,6 +77,16 @@ EVENT_VALIDATORS = {
 }
 if ResponseReasoningTextDeltaEvent is not None:
     EVENT_VALIDATORS["response.reasoning_text.delta"] = ResponseReasoningTextDeltaEvent
+if ResponseReasoningTextDoneEvent is not None:
+    EVENT_VALIDATORS["response.reasoning_text.done"] = ResponseReasoningTextDoneEvent
+if ResponseReasoningSummaryPartAddedEvent is not None:
+    EVENT_VALIDATORS["response.reasoning_summary_part.added"] = ResponseReasoningSummaryPartAddedEvent
+if ResponseReasoningSummaryPartDoneEvent is not None:
+    EVENT_VALIDATORS["response.reasoning_summary_part.done"] = ResponseReasoningSummaryPartDoneEvent
+if ResponseReasoningSummaryTextDeltaEvent is not None:
+    EVENT_VALIDATORS["response.reasoning_summary_text.delta"] = ResponseReasoningSummaryTextDeltaEvent
+if ResponseReasoningSummaryTextDoneEvent is not None:
+    EVENT_VALIDATORS["response.reasoning_summary_text.done"] = ResponseReasoningSummaryTextDoneEvent
 
 
 
