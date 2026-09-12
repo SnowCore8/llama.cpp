@@ -10,6 +10,8 @@
 #include <chrono>
 #include <ctime>
 #include <fstream>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <unordered_map>
@@ -389,6 +391,8 @@ json server_responses_prepare_request(
             }
         }
         expanded = true;
+        // the Response object echoes previous_response_id; keep the request value for enrich
+        body["__oai_prev_response_id"] = prev_id;
         body.erase("previous_response_id");
     }
 
@@ -646,7 +650,7 @@ json server_responses_enrich_response(json response_obj, const json & request_bo
 
     // Echo request fields when present (OpenAI includes many on the Response object)
     static const char * passthrough_keys[] = {
-        "temperature", "top_p", "truncation", "metadata", "store",
+        "temperature", "top_logprobs", "top_p", "truncation", "metadata", "store",
         "service_tier", "user", "max_output_tokens", "tools", "tool_choice",
         "parallel_tool_calls", "text", "reasoning", "instructions",
         "background", "include", "max_tool_calls", "prompt",
@@ -657,6 +661,11 @@ json server_responses_enrich_response(json response_obj, const json & request_bo
         if (request_body.contains(key) && !response_obj.contains(key)) {
             response_obj[key] = request_body.at(key);
         }
+    }
+    // previous_response_id is stripped from the prepared request; enrich sees the kept value
+    if (!response_obj.contains("previous_response_id") &&
+            request_body.contains("__oai_prev_response_id")) {
+        response_obj["previous_response_id"] = request_body.at("__oai_prev_response_id");
     }
     // Fast mode: official responses show service_tier=priority for request fast or priority.
     if (response_obj.contains("service_tier") && response_obj.at("service_tier").is_string() &&
@@ -889,32 +898,88 @@ json server_responses_cancel(const std::string & response_id) {
     return body;
 }
 
-json server_responses_list_input_items(const std::string & response_id) {
+json server_responses_list_input_items(const std::string & response_id,
+                                       const std::string & after,
+                                       const std::string & order,
+                                       int64_t limit,
+                                       const json & include) {
     auto entry = server_responses_store::instance().get(response_id);
     if (!entry.has_value()) {
         throw std::invalid_argument("response not found or expired: " + response_id);
     }
+    if (order != "asc" && order != "desc") {
+        throw std::invalid_argument("'order' must be 'asc' or 'desc'");
+    }
+    if (limit <= 0 || limit > 100) {
+        throw std::invalid_argument("'limit' must be between 1 and 100");
+    }
 
-    json data = json::array();
-    json input = server_responses_normalize_input(entry->input);
-    for (const auto & item : input) {
-        data.push_back(server_responses_input_item_for_list(item));
+    const json input = server_responses_normalize_input(entry->input);
+    const int64_t n = (int64_t) input.size();
+    int64_t idx_after = -1;
+    if (!after.empty()) {
+        for (int64_t i = 0; i < n; ++i) {
+            if (input.at(i).is_object() && json_value(input.at(i), "id", std::string()) == after) {
+                idx_after = i;
+                break;
+            }
+        }
+        if (idx_after < 0) {
+            throw std::invalid_argument("'after' item not found for response: " + after);
+        }
+    }
+
+    // stored order is oldest first; the official list defaults to newest first (desc)
+    std::vector<json> data;
+    bool has_more = false;
+    if (order == "desc") {
+        int64_t i = after.empty() ? n - 1 : idx_after - 1;
+        for (; i >= 0 && (int64_t) data.size() < limit; --i) {
+            data.push_back(server_responses_input_item_for_list(input.at(i)));
+        }
+        has_more = i >= 0;
+    } else {
+        int64_t i = after.empty() ? 0 : idx_after + 1;
+        for (; i < n && (int64_t) data.size() < limit; ++i) {
+            data.push_back(server_responses_input_item_for_list(input.at(i)));
+        }
+        has_more = i < n;
+    }
+
+    // include gates optional fields (logprobs, encrypted_content, search results)
+    json filtered = json::array();
+    for (auto & item : data) {
+        filtered.push_back(item.is_object() ? server_conversation_item_filter(item, include) : item);
     }
 
     std::string first_id;
     std::string last_id;
-    if (!data.empty()) {
-        first_id = json_value(data.front(), "id", std::string());
-        last_id  = json_value(data.back(), "id", std::string());
+    if (!filtered.empty()) {
+        first_id = json_value(filtered.front(), "id", std::string());
+        last_id  = json_value(filtered.back(), "id", std::string());
     }
 
     return json {
         {"object",    "list"},
-        {"data",      std::move(data)},
+        {"data",      std::move(filtered)},
         {"first_id",  first_id.empty() ? nullptr : json(first_id)},
         {"last_id",   last_id.empty() ? nullptr : json(last_id)},
-        {"has_more",  false},
+        {"has_more",  has_more},
     };
+}
+
+json server_responses_apply_output_include(json response_obj, const json & include) {
+    if (!response_obj.is_object() || !response_obj.contains("output") ||
+            !response_obj.at("output").is_array()) {
+        return response_obj;
+    }
+    json filtered = json::array();
+    for (const auto & item : response_obj.at("output")) {
+        // official retrieve gates optional item fields behind include
+        filtered.push_back(item.is_object() ? server_conversation_item_filter(item, include) : item);
+    }
+    response_obj["output"] = std::move(filtered);
+    return response_obj;
 }
 
 json server_responses_compact(json body, const llama_vocab * vocab, int32_t n_ctx_slot) {
@@ -1125,4 +1190,54 @@ void server_responses_maybe_obfuscate_event(json & event_data, const json & requ
         return;
     }
     event_data["obfuscation"] = random_string();
+}
+
+// One replayed SSE event block: drop the obfuscation field from its data object.
+static std::string server_responses_strip_event_obfuscation(const std::string & ev) {
+    if (ev.find("\"obfuscation\"") == std::string::npos) {
+        return ev;
+    }
+    const size_t data_pos = ev.find("data: ");
+    if (data_pos == std::string::npos) {
+        return ev;
+    }
+    const size_t line_end = ev.find('\n', data_pos);
+    if (line_end == std::string::npos) {
+        return ev;
+    }
+    try {
+        json obj = json::parse(ev.substr(data_pos + 6, line_end - data_pos - 6));
+        if (!obj.is_object() || !obj.contains("obfuscation")) {
+            return ev;
+        }
+        obj.erase("obfuscation");
+        return ev.substr(0, data_pos) + "data: " + obj.dump_safe() + ev.substr(line_end);
+    } catch (const std::exception &) {
+        return ev;
+    }
+}
+
+std::function<bool(std::string &)> server_responses_strip_obfuscation_from_stream(
+        std::function<bool(std::string &)> next) {
+    auto pending = std::make_shared<std::string>();
+    return [next = std::move(next), pending](std::string & out) -> bool {
+        for (;;) {
+            std::string chunk;
+            const bool has_next = next(chunk);
+            pending->append(chunk);
+            size_t pos;
+            while ((pos = pending->find("\n\n")) != std::string::npos) {
+                out += server_responses_strip_event_obfuscation(pending->substr(0, pos + 2));
+                pending->erase(0, pos + 2);
+            }
+            if (!has_next) {
+                out += *pending; // a trailing partial block, if any
+                pending->clear();
+                return false;
+            }
+            if (!out.empty()) {
+                return true;
+            }
+        }
+    };
 }

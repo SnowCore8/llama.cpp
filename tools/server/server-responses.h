@@ -7,6 +7,7 @@
 
 #include "server-common.h"
 
+#include <functional>
 #include <string>
 
 
@@ -61,7 +62,20 @@ json server_responses_build_error_failed_sse_events(
 json server_responses_cancel(const std::string & response_id);
 
 // GET /v1/responses/{id}/input_items — OpenAI list object of input items.
-json server_responses_list_input_items(const std::string & response_id);
+// after/order/limit paginate; include gates optional item fields.
+json server_responses_list_input_items(const std::string & response_id,
+                                       const std::string & after,
+                                       const std::string & order,
+                                       int64_t limit,
+                                       const json & include);
+
+// Apply retrieve `include` gating to a stored Response object's output items.
+json server_responses_apply_output_include(json response_obj, const json & include);
+
+// Wrap a replayed SSE reader, dropping the obfuscation field from each event
+// (GET /v1/responses/{id}?stream=true&include_obfuscation=false).
+std::function<bool(std::string &)> server_responses_strip_obfuscation_from_stream(
+        std::function<bool(std::string &)> next);
 
 // Fold non-user input items into a local. compaction item (used by compact + context_management).
 json server_responses_fold_input_compaction(const json & input);

@@ -165,11 +165,21 @@ def run_create_param_checks(
 
     if seed_response_id:
         code, data = create({"previous_response_id": seed_response_id})
+        # official: the Response echoes the request value (also on retrieve)
+        echo_prev = data.get("previous_response_id") == seed_response_id
+        gcode_prev = 0
+        if code == 200 and data.get("id"):
+            gcode_prev, got_prev = client.get_json(f"/v1/responses/{data['id']}")
+            echo_prev = (
+                echo_prev
+                and isinstance(got_prev, dict)
+                and got_prev.get("previous_response_id") == seed_response_id
+            )
         report.add(
             "create_param",
             "previous_response_id",
-            "PASS" if code == 200 else "FAIL",
-            f"HTTP {code}",
+            "PASS" if code == 200 and echo_prev else "FAIL",
+            f"HTTP {code} echo={data.get('previous_response_id')!r} get_http={gcode_prev}",
         )
     else:
         report.add("create_param", "previous_response_id", "SKIP", "no seed id")
@@ -272,11 +282,19 @@ def run_create_param_checks(
         for part in item.get("content") or []:
             if isinstance(part.get("logprobs"), list) and part["logprobs"]:
                 has_lp = True
+    # official: the Response echoes top_logprobs (also on retrieve)
+    echo_tlp = data.get("top_logprobs") == 2
+    gcode_tlp = 0
+    if code == 200 and data.get("id"):
+        gcode_tlp, got_tlp = client.get_json(f"/v1/responses/{data['id']}")
+        echo_tlp = (
+            echo_tlp and isinstance(got_tlp, dict) and got_tlp.get("top_logprobs") == 2
+        )
     report.add(
         "create_param",
         "top_logprobs",
-        "PASS" if code == 200 and has_lp else "FAIL",
-        f"HTTP {code} logprobs_nonempty={has_lp}",
+        "PASS" if code == 200 and has_lp and echo_tlp else "FAIL",
+        f"HTTP {code} logprobs_nonempty={has_lp} echo={data.get('top_logprobs')!r} get_http={gcode_tlp}",
     )
 
     # tools triad (required on Response object)

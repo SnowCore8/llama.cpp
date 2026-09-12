@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .http_client import ResponsesHttpClient, output_text
+from .http_client import ResponsesHttpClient, output_text, parse_sse
 from .report import Report
 from .validators import validate_response
 
@@ -173,6 +173,185 @@ def run_endpoint_checks(
             f"HTTP {code} {json_preview(items)}",
         )
 
+    # input_items pagination: official order defaults to desc; limit 1..100 (default 20)
+    code_pg, pg = client.post_json(
+        "/v1/responses",
+        {
+            "model": model,
+            "input": [
+                {"role": "user", "content": "Reply with exactly: PG1"},
+                {"role": "assistant", "content": "PG1"},
+                {"role": "user", "content": "Reply with exactly: PG2"},
+            ],
+            "max_output_tokens": 16,
+            **extra,
+        },
+    )
+    if code_pg == 200 and isinstance(pg, dict) and pg.get("id"):
+        pid = pg["id"]
+        gcode_all, all_items = client.get_json(f"/v1/responses/{pid}/input_items?order=asc&limit=100")
+        gcode_def, def_items = client.get_json(f"/v1/responses/{pid}/input_items")
+        gcode_l1, l1_items = client.get_json(f"/v1/responses/{pid}/input_items?limit=1")
+        asc_ids = [x.get("id") for x in (all_items.get("data") or []) if isinstance(x, dict)]
+        def_ids = [x.get("id") for x in (def_items.get("data") or []) if isinstance(x, dict)]
+        l1_ids = [x.get("id") for x in (l1_items.get("data") or []) if isinstance(x, dict)]
+        gcode_af = 0
+        af_ids: list[Any] = []
+        if asc_ids:
+            gcode_af, af_items = client.get_json(
+                f"/v1/responses/{pid}/input_items?order=desc&limit=100&after={asc_ids[-1]}"
+            )
+            af_ids = [x.get("id") for x in (af_items.get("data") or []) if isinstance(x, dict)]
+        code_l0, _ = client.get_json(f"/v1/responses/{pid}/input_items?limit=0")
+        code_l101, _ = client.get_json(f"/v1/responses/{pid}/input_items?limit=101")
+        ok_pg = (
+            gcode_all == 200
+            and len(asc_ids) >= 3
+            and gcode_def == 200
+            and isinstance(def_items, dict)
+            and len(def_ids) == len(asc_ids)
+            and def_ids == list(reversed(asc_ids))
+            and def_items.get("has_more") is False
+            and def_items.get("first_id") == asc_ids[-1]
+            and def_items.get("last_id") == asc_ids[0]
+            and gcode_l1 == 200
+            and isinstance(l1_items, dict)
+            and l1_ids == [asc_ids[-1]]
+            and l1_items.get("has_more") is True
+            and gcode_af == 200
+            and af_ids == list(reversed(asc_ids[:-1]))
+        )
+        report.add(
+            "endpoint",
+            "GET /v1/responses/{id}/input_items?order/limit/after (pagination)",
+            "PASS" if ok_pg else "FAIL",
+            f"all={gcode_all} n_asc={len(asc_ids)} def={gcode_def} n_def={len(def_ids)} "
+            f"has_more={def_items.get('has_more') if isinstance(def_items, dict) else None} "
+            f"l1={gcode_l1} l1_ids={l1_ids} af={gcode_af} n_af={len(af_ids)}",
+        )
+        report.add(
+            "endpoint",
+            "GET /v1/responses/{id}/input_items (limit bounds)",
+            "PASS" if code_l0 == 400 and code_l101 == 400 else "FAIL",
+            f"limit0={code_l0} limit101={code_l101}",
+        )
+    else:
+        report.add(
+            "endpoint",
+            "GET /v1/responses/{id}/input_items?order/limit/after (pagination)",
+            "FAIL",
+            f"seed create HTTP {code_pg} {json_preview(pg)}",
+        )
+        report.add(
+            "endpoint",
+            "GET /v1/responses/{id}/input_items (limit bounds)",
+            "FAIL",
+            "seed create failed",
+        )
+
+    # retrieve include gating: optional fields (reasoning.encrypted_content) follow include
+    code_enc, enc_data = client.post_json(
+        "/v1/responses",
+        {
+            "model": model,
+            "input": "Think briefly, then reply with exactly: ENC_EP",
+            "reasoning": {"effort": "low"},
+            "include": ["reasoning.encrypted_content"],
+            "max_output_tokens": 128,
+            "temperature": 0,
+            **{k: v for k, v in extra.items() if k != "reasoning"},
+        },
+    )
+
+    def _enc_present(obj: Any) -> bool:
+        return any(
+            isinstance(x, dict) and "encrypted_content" in x
+            for x in ((obj.get("output") or []) if isinstance(obj, dict) else [])
+            if isinstance(x, dict) and x.get("type") == "reasoning"
+        )
+
+    if code_enc == 200 and isinstance(enc_data, dict) and enc_data.get("id"):
+        rid_enc = enc_data["id"]
+        created_enc = _enc_present(enc_data)
+        gcode_plain, got_plain = client.get_json(f"/v1/responses/{rid_enc}")
+        gcode_inc, got_inc = client.get_json(
+            f"/v1/responses/{rid_enc}?include=reasoning.encrypted_content"
+        )
+        ok_inc = (
+            created_enc
+            and gcode_plain == 200
+            and not _enc_present(got_plain)
+            and gcode_inc == 200
+            and _enc_present(got_inc)
+        )
+        report.add(
+            "endpoint",
+            "GET /v1/responses/{id}?include (gating)",
+            "PASS" if ok_inc else "FAIL",
+            f"create_enc={created_enc} plain={gcode_plain}/{_enc_present(got_plain)} "
+            f"inc={gcode_inc}/{_enc_present(got_inc)}",
+        )
+    else:
+        report.add(
+            "endpoint",
+            "GET /v1/responses/{id}?include (gating)",
+            "FAIL",
+            f"create HTTP {code_enc} {json_preview(enc_data)}",
+        )
+
+    # retrieve?stream=true replay: include_obfuscation=false drops the obfuscation field
+    code_bs, _, raw_bs = client.request(
+        "POST",
+        "/v1/responses",
+        {
+            "model": model,
+            "input": "Reply with exactly: OBF_STREAM",
+            "max_output_tokens": 32,
+            "temperature": 0,
+            "background": True,
+            "stream": True,
+            **extra,
+        },
+        stream=True,
+    )
+    rid_bs = None
+    if code_bs == 200:
+        for _t, obj in parse_sse(raw_bs):
+            resp_obj = obj.get("response") if isinstance(obj, dict) else None
+            if isinstance(resp_obj, dict) and resp_obj.get("id"):
+                rid_bs = resp_obj["id"]
+                break
+    if code_bs == 200 and rid_bs:
+        c_keep, _, raw_keep = client.request("GET", f"/v1/responses/{rid_bs}?stream=true", stream=True)
+        c_strip, _, raw_strip = client.request(
+            "GET", f"/v1/responses/{rid_bs}?stream=true&include_obfuscation=false", stream=True
+        )
+        keep_events = parse_sse(raw_keep) if c_keep == 200 else []
+        strip_events = parse_sse(raw_strip) if c_strip == 200 else []
+        keep_has = any(isinstance(obj, dict) and "obfuscation" in obj for _t, obj in keep_events)
+        strip_has = any(isinstance(obj, dict) and "obfuscation" in obj for _t, obj in strip_events)
+        ok_obf = (
+            c_keep == 200
+            and keep_has
+            and c_strip == 200
+            and len(strip_events) > 0
+            and not strip_has
+        )
+        report.add(
+            "endpoint",
+            "GET /v1/responses/{id}?stream=true (include_obfuscation)",
+            "PASS" if ok_obf else "FAIL",
+            f"keep HTTP {c_keep} n={len(keep_events)} has_obf={keep_has}; "
+            f"strip HTTP {c_strip} n={len(strip_events)} has_obf={strip_has}",
+        )
+    else:
+        report.add(
+            "endpoint",
+            "GET /v1/responses/{id}?stream=true (include_obfuscation)",
+            "FAIL",
+            f"background stream create HTTP {code_bs} id={rid_bs!r}",
+        )
+
     # WebSocket connect (openai SDK responses.connect → ws://.../v1/responses)
     from openai.resources.responses.responses import Responses
     from urllib.parse import urlparse
@@ -329,7 +508,7 @@ def run_endpoint_checks(
             code == 200
             and isinstance(deleted, dict)
             and deleted.get("deleted") is True
-            and deleted.get("object") == "response.deleted"
+            and deleted.get("object") == "response"
         )
         if code == 404:
             report.add("endpoint", "DELETE /v1/responses/{id}", "NOT_IMPLEMENTED", "HTTP 404")

@@ -5773,6 +5773,14 @@ void server_routes::init_routes() {
                 "response not found or expired: " + resp_id, ERROR_TYPE_NOT_FOUND));
             return res;
         }
+        // official retrieve query params: include gates optional output fields
+        json include;
+        try {
+            include = server_conversations_include_from_param(req.get_param("include"));
+        } catch (const std::exception & e) {
+            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
         // resumable streaming: GET /v1/responses/{id}?stream=true[&starting_after=N]
         // replays the stored stream after the client cursor and follows live bytes
         if (req.get_param("stream") == "true") {
@@ -5784,6 +5792,13 @@ void server_routes::init_routes() {
                     return res;
                 }
             }
+            // official include_obfuscation=false drops the obfuscation fields on replay
+            const std::string obf_str = req.get_param("include_obfuscation");
+            if (!obf_str.empty() && obf_str != "true" && obf_str != "false") {
+                res->error(format_error_response("invalid 'include_obfuscation' value", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+            const bool include_obfuscation = obf_str != "false";
             std::function<bool(std::string &)> next;
             const server_stream_resume_status status = server_stream_make_response_resume(
                 resp_id, starting_after, req.should_stop,
@@ -5800,6 +5815,9 @@ void server_routes::init_routes() {
                     "stream replay cursor was dropped, restart without starting_after",
                     ERROR_TYPE_INVALID_REQUEST));
                 return res;
+            }
+            if (!include_obfuscation) {
+                next = server_responses_strip_obfuscation_from_stream(std::move(next));
             }
             res->status = 200;
             res->content_type = "text/event-stream";
@@ -5818,6 +5836,7 @@ void server_routes::init_routes() {
                               {"status",     "completed"},
                           };
         body = server_responses_enrich_response(std::move(body), json::object());
+        body = server_responses_apply_output_include(std::move(body), include);
         res->ok(std::move(body));
         return res;
     };
@@ -5837,7 +5856,7 @@ void server_routes::init_routes() {
         }
         res->ok(json {
             {"id",      resp_id},
-            {"object",  "response.deleted"},
+            {"object",  "response"}, // official delete example uses "response"
             {"deleted", true},
         });
         return res;
@@ -5891,7 +5910,19 @@ void server_routes::init_routes() {
             return res;
         }
         try {
-            res->ok(server_responses_list_input_items(resp_id));
+            int64_t limit = 20; // official default
+            const std::string limit_str = req.get_param("limit");
+            if (!limit_str.empty()) {
+                if (!parse_int64_param(limit_str, limit)) {
+                    throw std::invalid_argument("'limit' must be an integer");
+                }
+            }
+            res->ok(server_responses_list_input_items(
+                resp_id,
+                req.get_param("after"),
+                req.get_param("order", "desc"),
+                limit,
+                server_conversations_include_from_param(req.get_param("include"))));
         } catch (const std::exception & e) {
             res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
         }
