@@ -8,6 +8,8 @@
 #include "../src/llama-grammar.h"
 #include "../src/unicode.h"
 #include "../tools/server/server-chat.h"
+#include "../tools/server/server-responses.h"
+#include "../tools/server/server-responses-store.h"
 #include "chat-auto-parser.h"
 #include "chat.h"
 #include "common.h"
@@ -1881,6 +1883,104 @@ static void test_convert_responses_to_chatcmpl() {
         const auto & sys_msg = result.at("messages")[0];
         assert_equals(std::string("system"), sys_msg.at("role").get<std::string>());
         assert_equals(std::string("You are a helpful assistant."), sys_msg.at("content").get<std::string>());
+    }
+
+    // Codex-style: instructions + developer (+ users) must collapse to one leading system.
+    // Without this merge, Qwen templates raise "System message must be at the beginning."
+    {
+        json input = json::parse(R"({
+            "instructions": "You are Codex.",
+            "input": [
+                {"role": "developer", "content": "Repo tips from AGENTS.md."},
+                {"role": "user", "content": "<environment_context>cwd</environment_context>"},
+                {"role": "user", "content": "Reply with exactly: READY"}
+            ],
+            "model": "test-model"
+        })");
+
+        json result = server_chat_convert_responses_to_chatcmpl(input);
+
+        assert_equals((size_t)3, result.at("messages").size());
+        const auto & sys_msg = result.at("messages")[0];
+        assert_equals(std::string("system"), sys_msg.at("role").get<std::string>());
+        assert_equals(std::string("You are Codex.\n\nRepo tips from AGENTS.md."),
+                      sys_msg.at("content").get<std::string>());
+        assert_equals(std::string("user"), result.at("messages")[1].at("role").get<std::string>());
+        assert_equals(std::string("user"), result.at("messages")[2].at("role").get<std::string>());
+    }
+
+    // Multiple leading system/developer messages without instructions also coalesce.
+    {
+        json input = json::parse(R"({
+            "input": [
+                {"role": "system", "content": "System A"},
+                {"role": "developer", "content": "Developer B"},
+                {"role": "user", "content": "Hi"}
+            ],
+            "model": "test-model"
+        })");
+
+        json result = server_chat_convert_responses_to_chatcmpl(input);
+
+        assert_equals((size_t)2, result.at("messages").size());
+        assert_equals(std::string("system"), result.at("messages")[0].at("role").get<std::string>());
+        assert_equals(std::string("System A\n\nDeveloper B"),
+                      result.at("messages")[0].at("content").get<std::string>());
+        assert_equals(std::string("user"), result.at("messages")[1].at("role").get<std::string>());
+    }
+
+    // previous_response_id expanded by server_responses_prepare_request
+    {
+        server_responses_store::instance().configure(16, 3600);
+        server_responses_store::instance().clear();
+
+        server_responses_store_entry entry;
+        entry.id = "resp_test_prev";
+        entry.created_at = 1;
+        entry.model = "test-model";
+        entry.instructions = "Be brief.";
+        entry.input = json::array({
+            json{{"role", "user"}, {"content", "Hi"}, {"type", "message"}},
+        });
+        entry.output = json::array({
+            json{
+                {"type", "message"},
+                {"role", "assistant"},
+                {"status", "completed"},
+                {"id", "msg_1"},
+                {"content", json::array({
+                    json{{"type", "output_text"}, {"text", "Hello!"}},
+                })},
+            },
+        });
+        server_responses_store::instance().put(entry);
+
+        json req = json::parse(R"({
+            "previous_response_id": "resp_test_prev",
+            "input": "What did you say?",
+            "model": "test-model"
+        })");
+        json prepared = server_responses_prepare_request(req);
+        assert_equals(false, prepared.contains("previous_response_id"));
+        assert_equals(true, prepared.at("input").is_array());
+        assert_equals((size_t)3, prepared.at("input").size());
+        // OpenAI: instructions from previous response are NOT carried over
+        assert_equals(false, prepared.contains("instructions"));
+
+        json converted = server_chat_convert_responses_to_chatcmpl(prepared);
+        assert_equals(true, converted.contains("messages"));
+        assert_equals(true, converted.at("messages").size() >= (size_t)3);
+
+        bool threw = false;
+        try {
+            server_responses_prepare_request(json::parse(R"({
+                "previous_response_id": "resp_missing",
+                "input": "x"
+            })"));
+        } catch (const std::invalid_argument &) {
+            threw = true;
+        }
+        assert_equals(true, threw);
     }
 
     // Test with max_output_tokens conversion

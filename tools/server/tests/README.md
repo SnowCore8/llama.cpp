@@ -94,3 +94,24 @@ And then the test in question can be run in another terminal:
 ```
 And this should trigger the breakpoint and allow inspection of the server state
 in the debugger terminal.
+
+### Official OpenAI Responses API acceptance
+
+Standalone harness (not pytest) that accepts a **running** server against the
+**public OpenAI Responses API** (docs + `openai` Python SDK types). Codex wire
+shapes are intentionally out of scope.
+
+```shell
+# venv with tools/server/tests/requirements.txt (includes openai)
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+.venv/bin/python -m responses_official_acceptance \
+  --base-url http://127.0.0.1:8080 \
+  --api-key sk-1234567890 \
+  --model Qwen3.5-9B-Q4_K_M \
+  --extra-json '{"chat_template_kwargs":{"enable_thinking":false}}' \
+  --report-json /tmp/responses-official-report.json
+```
+
+See `responses_official_acceptance/README.md`. Exit `0` only when the full
+official Responses surface has no `FAIL` / `PARTIAL` / `NOT_IMPLEMENTED`.

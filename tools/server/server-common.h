@@ -324,6 +324,56 @@ struct server_chat_params {
 // used by /completions endpoint
 json oaicompat_completion_params_parse(const json & body);
 
+// Validate OpenAI-shaped cloud fields shared by Responses + Chat Completions.
+// Invalid shape/enum → throws std::invalid_argument (HTTP 400).
+// When allow_prompt is true, also validate Responses `prompt` template object.
+void server_openai_validate_cloud_shaped_fields(const json & body, bool allow_prompt);
+
+// Local deepen for prompt_cache_* : enable cache_prompt, local anchor, TTL metadata.
+void server_openai_apply_prompt_cache_semantics(json & body);
+
+// True for OpenAI `web_search` / `web_search_preview` tool types.
+// Implemented in server-web-search.cpp (compat wrappers).
+bool server_is_local_web_search_tool_type(const std::string & type);
+void server_openai_apply_web_search_semantics(json & body);
+
+// Completions nonempty suffix → FIM (vocab tokens when available, else soft FIM prompt).
+json server_openai_completions_apply_suffix(
+    const llama_vocab * vocab,
+    json body,
+    int n_batch,
+    int n_predict,
+    int n_ctx,
+    bool spm_infill);
+
+// Sum of token logprobs for Completions best_of ranking (higher is better).
+double server_oaicompat_probs_score(const std::vector<float> & token_probs);
+
+std::string server_openai_short_hash(const std::string & s);
+// True when two affinity keys may share a slot/KV.
+bool server_oai_prompt_cache_keys_compatible(const std::string & a, const std::string & b);
+// Stable anchor for clients that send no prompt_cache_key: the head of a conversation does
+// not change while the thread grows, so hashing it identifies the thread across turns.
+std::string server_prompt_cache_anchor_key(const server_tokens & tokens);
+// Durable prompt_cache_key registry under --openai-files-path/prompt_cache_keys/.
+// ttl_seconds<=0 -> process-lifetime marker (no cross-restart claim).
+void server_prompt_cache_key_touch(const std::string & key, int32_t ttl_seconds);
+// false if missing/expired on disk (24h/30m keys).
+bool server_prompt_cache_key_alive(const std::string & key);
+
+// Official ReasoningEffort enum (Chat `reasoning_effort` + Responses `reasoning.effort`).
+bool server_openai_is_reasoning_effort(const std::string & effort);
+void server_openai_validate_reasoning_effort_field(const json & value, const char * field_name);
+
+// Official Responses `reasoning` object (effort/context/summary/generate_summary/mode).
+void server_openai_validate_reasoning_object(const json & body);
+
+// Validate OpenAI Completions (/v1/completions) create fields against official shapes.
+void server_openai_validate_completions_create(const json & body);
+
+// Validate Chat Completions create fields (modalities/audio/verbosity/penalties/…).
+void server_openai_validate_chat_create_fields(const json & body);
+
 // used by /chat/completions endpoint
 json oaicompat_chat_params_parse(
     json & body, /* openai api json semantics */

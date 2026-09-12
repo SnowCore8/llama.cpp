@@ -4,6 +4,10 @@
 #include "server-cors-proxy.h"
 #include "server-stream.h"
 #include "server-tools.h"
+#include "server-responses-store.h"
+#include "server-chat-completions-store.h"
+#include "server-openai-persist.h"
+#include "server-common.h"
 
 #include "arg.h"
 #include "build-info.h"
@@ -16,6 +20,7 @@
 #include <clocale>
 #include <exception>
 #include <signal.h>
+#include <sstream>
 #include <thread> // for std::thread::hardware_concurrency
 
 #if defined(_WIN32)
@@ -34,6 +39,74 @@ static inline void signal_handler(int signal) {
     }
 
     shutdown_handler(signal);
+}
+
+// Forward OpenAI Responses SSE chunks as WebSocket JSON event frames.
+static void responses_sse_to_ws(
+        server_http_res_ptr & response,
+        const std::function<bool(const std::string &)> & send_text) {
+    if (!response) {
+        return;
+    }
+    if (!response->is_stream()) {
+        // Unexpected non-stream body: wrap as error or completed payload
+        if (!response->data.empty()) {
+            try {
+                json body = json::parse(response->data);
+                if (body.contains("error")) {
+                    send_text(json {
+                        {"type",    "error"},
+                        {"message", body.dump()},
+                    }.dump());
+                } else {
+                    send_text(json {
+                        {"type",     "response.completed"},
+                        {"response", body},
+                    }.dump());
+                }
+            } catch (...) {
+                send_text(json {
+                    {"type",    "error"},
+                    {"message", "invalid response body"},
+                }.dump());
+            }
+        }
+        response->on_complete();
+        return;
+    }
+
+    std::string leftover;
+    std::string chunk;
+    while (response->next(chunk)) {
+        leftover += chunk;
+        size_t pos = 0;
+        while ((pos = leftover.find("\n\n")) != std::string::npos) {
+            const std::string block = leftover.substr(0, pos);
+            leftover.erase(0, pos + 2);
+            std::string data;
+            std::istringstream iss(block);
+            std::string line;
+            while (std::getline(iss, line)) {
+                if (!line.empty() && line.back() == '\r') {
+                    line.pop_back();
+                }
+                if (line.rfind("data:", 0) == 0) {
+                    data = line.substr(5);
+                    if (!data.empty() && data[0] == ' ') {
+                        data.erase(0, 1);
+                    }
+                }
+            }
+            if (data.empty() || data == "[DONE]") {
+                continue;
+            }
+            if (!send_text(data)) {
+                response->on_complete();
+                return;
+            }
+        }
+    }
+    response->on_complete();
 }
 
 // satisfies -Wmissing-declarations (used by llama command)
@@ -114,6 +187,21 @@ int llama_server(int argc, char ** argv) {
 
 int llama_server(common_params & params, int argc, char ** argv) {
     bool is_run_by_cli = (argv == nullptr);
+
+    const std::string store_root = params.openai_files_path;
+    openai_persist::set_root(store_root);
+    const std::string responses_dir =
+        store_root.empty() ? "" : openai_persist::join_dir(store_root, "responses");
+    const std::string chat_dir =
+        store_root.empty() ? "" : openai_persist::join_dir(store_root, "chat_completions");
+
+    // Configure Responses / Chat stores (disk when --openai-files-path set)
+    server_responses_store::instance().configure(params.responses_store_max, params.responses_store_ttl, responses_dir);
+    SRV_INF("responses store: max=%d ttl=%ds path=%s\n", params.responses_store_max, params.responses_store_ttl,
+            responses_dir.empty() ? "(memory)" : responses_dir.c_str());
+    server_chat_completions_store::instance().configure(params.responses_store_max, params.responses_store_ttl, chat_dir);
+    SRV_INF("chat completions store: max=%d ttl=%ds path=%s\n", params.responses_store_max, params.responses_store_ttl,
+            chat_dir.empty() ? "(memory)" : chat_dir.c_str());
 
     common_models_handler models_handler;
 
@@ -208,33 +296,34 @@ int llama_server(common_params & params, int argc, char ** argv) {
 
         // proxy handlers
         // note: routes.get_health stays the same
-        routes.get_metrics                 = models_routes->proxy_get;
-        routes.post_props                  = models_routes->proxy_post;
-        routes.post_completions            = models_routes->proxy_post;
-        routes.post_completions_oai        = models_routes->proxy_post;
-        routes.post_chat_completions       = models_routes->proxy_post;
-        routes.post_control                = models_routes->proxy_post;
-        routes.post_responses_oai          = models_routes->proxy_post;
-        routes.post_transcriptions_oai     = models_routes->proxy_post;
-        routes.post_anthropic_messages     = models_routes->proxy_post;
-        routes.post_anthropic_count_tokens = models_routes->proxy_post;
-        routes.post_infill                 = models_routes->proxy_post;
-        routes.post_embeddings             = models_routes->proxy_post;
-        routes.post_embeddings_oai         = models_routes->proxy_post;
-        routes.post_rerank                 = models_routes->proxy_post;
-        routes.post_tokenize               = models_routes->proxy_post;
-        routes.post_detokenize             = models_routes->proxy_post;
-        routes.post_apply_template         = models_routes->proxy_post;
-        routes.post_chat_completions_tok   = models_routes->proxy_post;
-        routes.post_responses_tok_oai      = models_routes->proxy_post;
-        routes.get_lora_adapters           = models_routes->proxy_get;
-        routes.post_lora_adapters          = models_routes->proxy_post;
-        routes.get_slots                   = models_routes->proxy_get;
-        routes.post_slots                  = models_routes->proxy_post;
+        routes.get_metrics                  = models_routes->proxy_get;
+        routes.post_props                   = models_routes->proxy_post;
+        routes.post_completions             = models_routes->proxy_post;
+        routes.post_completions_oai         = models_routes->proxy_post;
+        routes.post_chat_completions        = models_routes->proxy_post;
+        routes.post_control                 = models_routes->proxy_post;
+        routes.post_responses_oai           = models_routes->proxy_post;
+        routes.post_responses_compact_oai   = models_routes->proxy_post;
+        routes.post_transcriptions_oai      = models_routes->proxy_post;
+        routes.post_anthropic_messages      = models_routes->proxy_post;
+        routes.post_anthropic_count_tokens  = models_routes->proxy_post;
+        routes.post_infill                  = models_routes->proxy_post;
+        routes.post_embeddings              = models_routes->proxy_post;
+        routes.post_embeddings_oai          = models_routes->proxy_post;
+        routes.post_rerank                  = models_routes->proxy_post;
+        routes.post_tokenize                = models_routes->proxy_post;
+        routes.post_detokenize              = models_routes->proxy_post;
+        routes.post_apply_template          = models_routes->proxy_post;
+        routes.post_chat_completions_tok    = models_routes->proxy_post;
+        routes.post_responses_tok_oai       = models_routes->proxy_post;
+        routes.get_lora_adapters            = models_routes->proxy_get;
+        routes.post_lora_adapters           = models_routes->proxy_post;
+        routes.get_slots                    = models_routes->proxy_get;
+        routes.post_slots                   = models_routes->proxy_post;
 
         // custom routes for router
-        routes.get_props                   = models_routes->get_router_props;
-        routes.get_models                  = models_routes->get_router_models;
+        routes.get_props                    = models_routes->get_router_props;
+        routes.get_models                   = models_routes->get_router_models;
 
         ctx_http.post("/models",               ex_wrapper(models_routes->post_router_models));
         ctx_http.post("/models/load",          ex_wrapper(models_routes->post_router_models_load));
@@ -255,9 +344,87 @@ int llama_server(common_params & params, int argc, char ** argv) {
     ctx_http.post("/v1/completions",           ex_wrapper(routes.post_completions_oai));
     ctx_http.post("/chat/completions",         ex_wrapper(routes.post_chat_completions));
     ctx_http.post("/v1/chat/completions",      ex_wrapper(routes.post_chat_completions));
+    // Specific subpaths MUST be registered before :completion_id
     ctx_http.post("/v1/chat/completions/control", ex_wrapper(routes.post_control));
+    ctx_http.post("/chat/completions/input_tokens",    ex_wrapper(routes.post_chat_completions_tok));
+    ctx_http.post("/v1/chat/completions/input_tokens", ex_wrapper(routes.post_chat_completions_tok));
+    // Stored Chat Completions management (OpenAI store=true)
+    ctx_http.get ("/v1/chat/completions",                    ex_wrapper(routes.get_chat_completions));
+    ctx_http.get ("/chat/completions",                       ex_wrapper(routes.get_chat_completions));
+    ctx_http.get ("/v1/chat/completions/:completion_id",     ex_wrapper(routes.get_chat_completion));
+    ctx_http.get ("/chat/completions/:completion_id",        ex_wrapper(routes.get_chat_completion));
+    ctx_http.post("/v1/chat/completions/:completion_id",     ex_wrapper(routes.post_chat_completion_update));
+    ctx_http.post("/chat/completions/:completion_id",        ex_wrapper(routes.post_chat_completion_update));
+    ctx_http.del ("/v1/chat/completions/:completion_id",     ex_wrapper(routes.delete_chat_completion));
+    ctx_http.del ("/chat/completions/:completion_id",        ex_wrapper(routes.delete_chat_completion));
     ctx_http.post("/v1/responses",             ex_wrapper(routes.post_responses_oai));
     ctx_http.post("/responses",                ex_wrapper(routes.post_responses_oai));
+    ctx_http.post("/v1/responses/compact",     ex_wrapper(routes.post_responses_compact_oai));
+    ctx_http.post("/responses/compact",        ex_wrapper(routes.post_responses_compact_oai));
+    ctx_http.get ("/v1/responses/:response_id", ex_wrapper(routes.get_responses_oai));
+    ctx_http.get ("/responses/:response_id",    ex_wrapper(routes.get_responses_oai));
+    ctx_http.del ("/v1/responses/:response_id", ex_wrapper(routes.delete_responses_oai));
+    ctx_http.del ("/responses/:response_id",    ex_wrapper(routes.delete_responses_oai));
+    ctx_http.post("/v1/responses/:response_id/cancel", ex_wrapper(routes.post_responses_cancel_oai));
+    ctx_http.post("/responses/:response_id/cancel",    ex_wrapper(routes.post_responses_cancel_oai));
+    ctx_http.get ("/v1/responses/:response_id/input_items", ex_wrapper(routes.get_responses_input_items_oai));
+    ctx_http.get ("/responses/:response_id/input_items",    ex_wrapper(routes.get_responses_input_items_oai));
+
+    // Official Responses WebSocket connect: same path as create, upgrade to WS.
+    auto responses_ws = [&routes](
+            const std::map<std::string, std::string> & headers,
+            const std::function<bool(std::string &)> & read_text,
+            const std::function<bool(const std::string &)> & send_text) {
+        std::string msg;
+        while (read_text(msg)) {
+            json ev;
+            try {
+                ev = json::parse(msg);
+            } catch (const std::exception & e) {
+                send_text(json {
+                    {"type",    "error"},
+                    {"message", std::string("invalid json: ") + e.what()},
+                }.dump());
+                continue;
+            }
+            const std::string typ = json_value(ev, "type", std::string());
+            if (typ != "response.create") {
+                send_text(json {
+                    {"type",    "error"},
+                    {"message", "unsupported event type: " + typ},
+                }.dump());
+                continue;
+            }
+            ev.erase("type");
+            // Transport fields are not used over WebSocket (OpenAI docs).
+            ev.erase("stream");
+            ev.erase("background");
+            ev["stream"] = true;
+
+            std::function<bool()> never_stop = []() { return false; };
+            server_http_req req {
+                {},
+                headers,
+                "/v1/responses",
+                "",
+                ev.dump(),
+                {},
+                never_stop,
+            };
+            try {
+                auto res = routes.post_responses_oai(req);
+                responses_sse_to_ws(res, send_text);
+            } catch (const std::exception & e) {
+                send_text(json {
+                    {"type",    "error"},
+                    {"message", e.what()},
+                }.dump());
+            }
+        }
+    };
+    ctx_http.websocket("/v1/responses", responses_ws);
+    ctx_http.websocket("/responses", responses_ws);
+
     ctx_http.post("/v1/audio/transcriptions",  ex_wrapper(routes.post_transcriptions_oai));
     ctx_http.post("/audio/transcriptions",     ex_wrapper(routes.post_transcriptions_oai));
     ctx_http.post("/v1/messages",              ex_wrapper(routes.post_anthropic_messages)); // anthropic messages API
@@ -273,8 +440,6 @@ int llama_server(common_params & params, int argc, char ** argv) {
     ctx_http.post("/detokenize",               ex_wrapper(routes.post_detokenize));
     ctx_http.post("/apply-template",           ex_wrapper(routes.post_apply_template));
     // token counting
-    ctx_http.post("/chat/completions/input_tokens",    ex_wrapper(routes.post_chat_completions_tok));
-    ctx_http.post("/v1/chat/completions/input_tokens", ex_wrapper(routes.post_chat_completions_tok));
     ctx_http.post("/responses/input_tokens",           ex_wrapper(routes.post_responses_tok_oai));
     ctx_http.post("/v1/responses/input_tokens",        ex_wrapper(routes.post_responses_tok_oai));
     ctx_http.post("/v1/messages/count_tokens",         ex_wrapper(routes.post_anthropic_count_tokens)); // anthropic token counting
@@ -358,6 +523,9 @@ int llama_server(common_params & params, int argc, char ** argv) {
         }
         ctx_http.get ("/tools",           ex_wrapper(tools.handle_get));
         ctx_http.post("/tools",           ex_wrapper(tools.handle_post));
+        // OpenAI-style /v1 prefix so clients with base_url …/v1 can discover tools
+        ctx_http.get ("/v1/tools",        ex_wrapper(tools.handle_get));
+        ctx_http.post("/v1/tools",        ex_wrapper(tools.handle_post));
         if (!params.server_tools.empty()) {
             warn_names.push_back("server tools (experimental)");
         }
@@ -370,6 +538,8 @@ int llama_server(common_params & params, int argc, char ** argv) {
     } else {
         ctx_http.get ("/tools",           ex_wrapper(res_403));
         ctx_http.post("/tools",           ex_wrapper(res_403));
+        ctx_http.get ("/v1/tools",        ex_wrapper(res_403));
+        ctx_http.post("/v1/tools",        ex_wrapper(res_403));
     }
 
     if (warn_names.size() > 0) {

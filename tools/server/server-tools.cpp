@@ -1997,6 +1997,7 @@ static std::unique_ptr<server_tools_runtime> make_tools_runtime(const std::strin
 void server_tools::setup(const std::vector<std::string> & enabled_tools,
                          server_mcp & mcp_mgr,
                          const std::string & tools_runtime) {
+    setup_warnings.clear();
     if (!tools_runtime.empty()) {
         runtime = make_tools_runtime(tools_runtime);
     }
@@ -2047,6 +2048,14 @@ void server_tools::setup(const std::vector<std::string> & enabled_tools,
             if (seen_names.count(mcp_name)) {
                 SRV_WRN("MCP tool \"%s\" from server \"%s\" collides with an existing tool, skipping\n",
                     mcp_name.c_str(), def.server_name.c_str());
+                setup_warnings.push_back({
+                    {"tool",   mcp_name},
+                    {"server", def.server_name},
+                    {"reason", "name_collision"},
+                    {"message",
+                     "MCP tool skipped because another tool already uses this name; "
+                     "rename the MCP server or tool to restore visibility"},
+                });
                 continue;
             }
             seen_names.insert(mcp_name);
@@ -2058,14 +2067,31 @@ void server_tools::setup(const std::vector<std::string> & enabled_tools,
         }
     }
 
-    handle_get = [this](const server_http_req &) -> server_http_res_ptr {
+    handle_get = [this](const server_http_req & req) -> server_http_res_ptr {
         auto res = std::make_unique<server_http_res>();
         try {
-            json result = json::array();
-            for (const auto & t : tools) {
-                result.push_back(t->to_json());
+            const std::string format = req.get_param("format");
+            if (format == "openai") {
+                // OpenAI Chat/Responses-compatible function tool list for client-side wiring.
+                json data = json::array();
+                for (const auto & t : tools) {
+                    data.push_back(t->get_definition());
+                }
+                json out = {
+                    {"object", "list"},
+                    {"data",   data},
+                };
+                if (!setup_warnings.empty()) {
+                    out["warnings"] = setup_warnings;
+                }
+                res->data = safe_json_to_str(out);
+            } else {
+                json result = json::array();
+                for (const auto & t : tools) {
+                    result.push_back(t->to_json());
+                }
+                res->data = safe_json_to_str(result);
             }
-            res->data = safe_json_to_str(result);
         } catch (const std::exception & e) {
             SRV_ERR("got exception: %s\n", e.what());
             res->status = 500;

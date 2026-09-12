@@ -91,6 +91,13 @@ struct server_http_context {
     void post(const std::string & path, const handler_t & handler) const;
     void del(const std::string & path, const handler_t & handler) const;
 
+    // OpenAI Responses WebSocket connect (/v1/responses). read_text returns false on close/fail.
+    using ws_handler_t = std::function<void(
+        const std::map<std::string, std::string> & headers,
+        const std::function<bool(std::string &)> & read_text,
+        const std::function<bool(const std::string &)> & send_text)>;
+    void websocket(const std::string & path, const ws_handler_t & handler) const;
+
     // Register the Google Cloud Platform (Vertex AI) compat (AIP_PREDICT_ROUTE env var, or /predict)
     // Must be called AFTER all other API routes are registered
     void register_gcp_compat() const;

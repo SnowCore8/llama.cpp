@@ -3321,6 +3321,20 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_PORT"));
     add_opt(common_arg(
+        {"--responses-store-max"}, "N",
+        string_format("max in-memory OpenAI Responses entries for previous_response_id (default: %d, 0=disable)", params.responses_store_max),
+        [](common_params & params, int value) {
+            params.responses_store_max = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_RESPONSES_STORE_MAX"));
+    add_opt(common_arg(
+        {"--responses-store-ttl"}, "N",
+        string_format("TTL in seconds for stored Responses (default: %d, 0=no TTL)", params.responses_store_ttl),
+        [](common_params & params, int value) {
+            params.responses_store_ttl = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_RESPONSES_STORE_TTL"));
+    add_opt(common_arg(
         {"--reuse-port"},
         string_format("allow multiple sockets to bind to the same port (default: %s)", params.reuse_port ? "enabled" : "disabled"),
         [](common_params & params) {
@@ -3611,6 +3625,22 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             }
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--openai-files-path"}, "PATH",
+        "directory for durable OpenAI objects: responses, chat completions, prompt templates (default: disabled = memory-only)",
+        [](common_params & params, const std::string & value) {
+            params.openai_files_path = value;
+            std::error_code ec;
+            std::filesystem::create_directories(params.openai_files_path, ec);
+            if (ec || !fs_is_directory(params.openai_files_path)) {
+                throw std::invalid_argument("cannot create/use openai store directory: " + value);
+            }
+            if (!params.openai_files_path.empty() &&
+                    params.openai_files_path[params.openai_files_path.size() - 1] != DIRECTORY_SEPARATOR) {
+                params.openai_files_path += DIRECTORY_SEPARATOR;
+            }
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_OPENAI_FILES_PATH"));
     add_opt(common_arg(
         {"--media-path"}, "PATH",
         "directory for loading local media files; files can be accessed via file:// URLs using relative paths (default: disabled)",
@@ -4746,9 +4776,9 @@ void common_params_add_preset_options(std::vector<common_arg> & args) {
         [](common_params &, const std::string &) { /* unused */ }
     ).set_env(COMMON_ARG_PRESET_DEDUP_CACHE_MODELS).set_preset_only());
 
-    // args.push_back(common_arg(
-    //     {"pin"},
-    //     "in server router mode, do not unload this model if models_max is exceeded",
-    //     [](common_params &) { /* unused */ }
-    // ).set_preset_only());
+    args.push_back(common_arg(
+        {"no-evict"}, "0|1",
+        "in server router mode, prefer to keep this model loaded when models_max is exceeded",
+        [](common_params &, const std::string &) { /* unused */ }
+    ).set_env(COMMON_ARG_PRESET_NO_EVICT).set_preset_only());
 }

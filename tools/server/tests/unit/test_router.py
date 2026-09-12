@@ -147,6 +147,130 @@ def test_router_models_max_evicts_lru():
     assert _get_model_status(first) == "unloaded"
 
 
+def _write_no_evict_preset(path: str) -> None:
+    with open(path, "w") as f:
+        f.write(
+            "[kept]\n"
+            "hf-repo = ggml-org/test-model-stories260K\n"
+            "no-evict = 1\n"
+            "\n"
+            "[other-a]\n"
+            "hf-repo = ggml-org/test-model-stories260K-infill\n"
+            "\n"
+            "[other-b]\n"
+            "hf-repo = ggml-org/tinygemma3-GGUF:Q8_0\n"
+        )
+
+
+def test_router_no_evict_keeps_model():
+    """an idle model marked no-evict is kept when another idle model can be given up instead"""
+    global server
+
+    preset_path = os.path.join(TMP_DIR, "test_no_evict.ini")
+    _write_no_evict_preset(preset_path)
+
+    server.models_preset = preset_path
+    server.models_max = 2
+    server.start()
+
+    try:
+        # load the marked model first, so that it is also the least recently used one
+        _load_model_and_wait("kept", timeout=120)
+        _load_model_and_wait("other-a", timeout=120)
+
+        res = server.make_request("GET", "/models")
+        assert res.status_code == 200
+        no_evict = {item["id"]: item["no_evict"] for item in res.body["data"]}
+        assert no_evict["kept"] is True
+        assert no_evict["other-a"] is False
+
+        # filling the last slot gives up other-a: the mark only decides which idle model
+        # goes first, it is not a hard pin
+        _load_model_and_wait("other-b", timeout=120)
+        assert _get_model_status("other-b") == "loaded"
+        assert _get_model_status("other-a") == "unloaded"
+        assert _get_model_status("kept") == "loaded"
+    finally:
+        os.remove(preset_path)
+
+
+def test_router_no_evict_yields_when_it_is_the_only_candidate():
+    """the mark never blocks a load: without another candidate the marked model is given up"""
+    global server
+
+    preset_path = os.path.join(TMP_DIR, "test_no_evict_only.ini")
+    _write_no_evict_preset(preset_path)
+
+    server.models_preset = preset_path
+    server.models_max = 1
+    server.start()
+
+    try:
+        _load_model_and_wait("kept", timeout=120)
+
+        # kept is both the only model loaded and the only candidate, so a request for
+        # another model must still be served instead of waiting for a slot that never frees
+        _load_model_and_wait("other-a", timeout=120)
+        assert _get_model_status("other-a") == "loaded"
+        assert _get_model_status("kept") == "unloaded"
+    finally:
+        os.remove(preset_path)
+
+
+def test_router_prompt_cache_key_does_not_cross_models():
+    """a shared prompt_cache_key must not carry KV between models: each starts cold"""
+    global server
+
+    preset_path = os.path.join(TMP_DIR, "test_cache_isolation.ini")
+    with open(preset_path, "w") as f:
+        f.write(
+            "[alpha]\n"
+            "hf-repo = ggml-org/test-model-stories260K\n"
+            "\n"
+            "[beta]\n"
+            "hf-repo = ggml-org/tinygemma3-GGUF:Q8_0\n"
+        )
+
+    server.models_preset = preset_path
+    server.models_max = 2
+    server.start()
+
+    key = f"router-iso-{time.time_ns()}"
+    pad = "cache isolation pad: " + ("tango-uniform " * 16)
+    measured: list[tuple[str, int]] = []
+
+    def cached(model_id: str) -> int:
+        res = server.make_request(
+            "POST",
+            "/v1/responses",
+            data={
+                "model": model_id,
+                "input": f"{pad}\nReply with exactly: ISO_OK",
+                "max_output_tokens": 8,
+                "temperature": 0,
+                "prompt_cache_key": key,
+            },
+            timeout=120,
+        )
+        assert res.status_code == 200, f"{model_id}: HTTP {res.status_code} {res.body}"
+        n = int(res.body["usage"]["input_tokens_details"]["cached_tokens"] or 0)
+        measured.append((model_id, n))
+        return n
+
+    try:
+        # each model warms up on its own: the repeat hits its own KV, never the other model's
+        alpha_cold = cached("alpha")
+        alpha_warm = cached("alpha")
+        beta_cold = cached("beta")
+        beta_warm = cached("beta")
+        assert alpha_cold == 0, f"alpha first request reused KV: {measured}"
+        assert alpha_warm > 0, f"alpha repeat did not reuse its own KV: {measured}"
+        assert beta_cold == 0, f"beta reused alpha's KV under the same key: {measured}"
+        assert beta_warm > 0, f"beta repeat did not reuse its own KV: {measured}"
+    finally:
+        os.remove(preset_path)
+
+
 # server_lru_sched tests (relying on LLAMA_SERVER_DEBUG_FAKE_TIMING)
 
 MODEL_A = "ggml-org/tinygemma3-GGUF:Q8_0"

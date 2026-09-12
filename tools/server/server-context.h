@@ -108,6 +108,10 @@ struct server_context {
     // not thread-safe, should only be used from the main thread
     server_context_meta get_meta() const;
 
+    // level-2 prompt cache, can return nullptr if disabled (--cache-ram 0)
+    // note: created only once, so the pointer stays valid across sleeping states
+    server_prompt_cache * get_prompt_cache() const;
+
     // note: must be set before load_model() is called
     void set_state_callback(server_state_callback_t callback);
 };
@@ -123,7 +127,8 @@ struct server_routes {
 
     // note: this is not thread-safe and can only when ctx_http.is_ready is false
     void update_meta(const server_context & ctx_server) {
-        this->meta = std::make_unique<server_context_meta>(ctx_server.get_meta());
+        this->meta         = std::make_unique<server_context_meta>(ctx_server.get_meta());
+        this->prompt_cache = ctx_server.get_prompt_cache();
     }
 
     // handlers using lambda function, so that they can capture `this` without `std::bind`
@@ -139,8 +144,17 @@ struct server_routes {
     server_http_context::handler_t post_completions_oai;
     server_http_context::handler_t post_chat_completions;
     server_http_context::handler_t post_chat_completions_tok;
+    server_http_context::handler_t get_chat_completions;          // list stored
+    server_http_context::handler_t get_chat_completion;           // retrieve by id
+    server_http_context::handler_t post_chat_completion_update;   // update metadata
+    server_http_context::handler_t delete_chat_completion;        // delete stored
     server_http_context::handler_t post_control;
     server_http_context::handler_t post_responses_oai;
+    server_http_context::handler_t get_responses_oai;
+    server_http_context::handler_t delete_responses_oai;
+    server_http_context::handler_t post_responses_cancel_oai;
+    server_http_context::handler_t post_responses_compact_oai;
+    server_http_context::handler_t get_responses_input_items_oai;
     server_http_context::handler_t post_responses_tok_oai;
     server_http_context::handler_t post_transcriptions_oai;
     server_http_context::handler_t post_anthropic_messages;
@@ -173,6 +187,10 @@ private:
 
     // using unique_ptr to allow late initialization of const
     std::unique_ptr<const server_context_meta> meta;
+
+    // level-2 prompt cache, owned by ctx_server, nullptr if disabled (--cache-ram 0)
+    // note: read by /props, which must also work while the model is unloaded
+    server_prompt_cache * prompt_cache = nullptr;
 
     const common_params & params;
     server_context_impl & ctx_server;

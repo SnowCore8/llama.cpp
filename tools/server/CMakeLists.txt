@@ -31,6 +31,16 @@ add_library(${TARGET} STATIC
     server-mcp.h
     server-schema.cpp
     server-schema.h
+    server-responses-store.cpp
+    server-responses-store.h
+    server-chat-completions-store.cpp
+    server-chat-completions-store.h
+    server-openai-persist.cpp
+    server-openai-persist.h
+    server-responses.cpp
+    server-responses.h
+    server-web-search.cpp
+    server-web-search.h
 )
 
 if (BUILD_SHARED_LIBS)

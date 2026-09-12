@@ -50,6 +50,7 @@ public:
     ~server_queue() { worker_stop(); }
 
     // Add a new task to the end of the queue
+    // if front = true, the task goes to the front of the queue (high priority)
     int post(server_task && task, bool front = false);
 
     // multi-task version of post()
@@ -175,6 +176,9 @@ public:
 
     // remove multiple tasks from waiting list
     void remove_waiting_task_ids(const std::unordered_set<int> & id_tasks);
+
+    // true while the HTTP side is still waiting (false after cancel / disconnect)
+    bool is_waiting_for(int id_task);
 
     // This function blocks the thread until there is a response for one of the id_tasks
     server_task_result_ptr recv(const std::unordered_set<int> & id_tasks);
