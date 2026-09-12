@@ -1,6 +1,6 @@
 # Official API Acceptance — Scope & Change Risk
 
-SDK pin (tests venv): `openai==2.54.0` (latest at run time).
+SDK pin (tests venv): `openai==3.11.0` (latest at run time).
 
 **对齐目标：** Responses、OpenAI Completions（`/v1/completions`）均按**官方公开 API 形状**对齐（标准 3：可本地观测的行为加深；云端专用能力合法值接受或形状校验，非法 → 400）。
 
@@ -25,7 +25,7 @@ everything durable/local that clients call through the public SDK should be scor
 
 | Surface | Why |
 |---------|-----|
-| Files / Uploads / Batches / Moderations / cloud QoS (`service_tier`, `inference_geo`, `container`, `user_profile_id`) | Cloud-only surfaces: local simulacra were removed, no local implementation here |
+| Files / Uploads / Batches / Moderations / cloud QoS (`service_tier`, `inference_geo`, `container`, `user_profile_id`) | Cloud-only surfaces: no local implementation here (`service_tier` accepts the official enum and is echoed, `fast`→`priority` like the official response, but changes no scheduling; the rest are ignored or rejected) |
 | Other hosted tools (`file_search`, remote `mcp`, `code_interpreter`, `code_execution_*`, …) | No cloud backends — **explicit HTTP 400** (not silent skip). **Exception:** local `web_search` deepen (below). |
 | `client.beta.*` product APIs | Platform Beta, not stable local HTTP body contract |
 | Byte-identical cloud responses | Local models + templates differ |
@@ -33,22 +33,24 @@ everything durable/local that clients call through the public SDK should be scor
 **Implemented (local):**
 - Chat Completions `store=true` CRUD — durable under `--openai-files-path/chat_completions/` (memory if path unset).
 - Hosted cloud tools **explicit reject** — Responses non-`function` tools (except `web_search`/`web_search_preview`), Chat `audio` modalities → 400.
-- **Local web_search deepen（完整本地托管形态）** — 多后端：`LLAMA_WEB_SEARCH_FIXTURE` / `LLAMA_WEB_SEARCH_LOCAL_DIR` / `LLAMA_WEB_SEARCH_URL` / DuckDuckGo IA+HTML SERP；无命中时 `provider=none`（不伪造空 stub 结果）；fixture/local 命中后跳过远程 SERP；`search_context_size`→结果数+`open_page`/`find_in_page`；`filters.allowed/blocked_domains`（含 Chat `web_search_options.filters`）；Responses：`web_search_call`（`queries`；`include` 门控 `action.sources` / `results`）+ `url_citation` + 流式 `web_search_call.completed`；Chat：`message.annotations`（含流式终块）。
+- **Local web_search deepen（完整本地托管形态）** — 多后端：`LLAMA_WEB_SEARCH_FIXTURE` / `LLAMA_WEB_SEARCH_LOCAL_DIR` / `LLAMA_WEB_SEARCH_URL` / DuckDuckGo IA+HTML SERP；无命中时 `provider=none`（不伪造空 stub 结果）；fixture/local 命中后跳过远程 SERP；`search_context_size`→结果数+`open_page`/`find_in_page`；`filters.allowed/blocked_domains`（含 Chat `web_search_options.filters`）；Responses：`web_search_call`（`queries`；`include` 门控 `action.sources` / `results`）+ `url_citation` + 流式 `output_item.added` → `web_search_call.in_progress` → `.searching` → `.completed` → `output_item.done`，`output_text.done` 之后每个 citation 一条 `output_text.annotation.added`，`content_part`/`output_item` done 事件携带最终 annotations；Chat：`message.annotations`（含流式终块）。
 - MCP / local tools visibility — `GET /v1/tools` (+ `?format=openai`); collision `warnings`.
 - **Responses store** — durable under `--openai-files-path/responses/` for `previous_response_id` / retrieve/delete; interrupted `in_progress`/`queued` entries finalized as `failed` on restart.
-- **Conversations API** — conversation objects + ordered items, durable under `--openai-files-path/conversations/` (memory if path unset, shares `--responses-store-max`/`--responses-store-ttl`); eight endpoints (create/retrieve/update/delete, items add/list/get/delete, list defaults `limit=20`+`order=desc`, 20-item add cap, `include` gating); Responses create `conversation` prepends the stored items and appends the finished turn back (append survives `store=false`; cancelled/failed turns are not appended).
+- **Conversations API** — conversation objects + ordered items, durable under `--openai-files-path/conversations/` (memory if path unset, shares `--responses-store-max`/`--responses-store-ttl`); eight endpoints (create/retrieve/update/delete, items add/list/get/delete, list defaults `limit=20`+`order=desc`, 20-item add cap); `include` gating uses the official 8-value enum (any other value → 400; array encodings `include[]=a&include[]=b`, repeated `include=a&include=b`, or one comma-separated value all accepted), item ids fall back to the `item_` prefix for types without a dedicated one (`msg_`/`fc_`/`fco_`/`rs_`), and with the store disabled (`--responses-store-max 0`) write endpoints → 501 while reads simply miss (404); Responses create `conversation` prepends the stored items and appends the finished turn back (append survives `store=false`; cancelled/failed turns are not appended).
 - **Responses `prompt.id`** — file templates under `--openai-files-path/prompts/<id>.json` (`instructions`/`input` + `{{variables}}`); unknown id → 400 (no built-in stub fallback).
 - **Responses compact** — local opaque `encrypted_content` (`local.` + base64 JSON of folded non-user items); compact result is **stored** and expandable on subsequent `previous_response_id` (not cloud crypto).
 - **Restart durability (local)** — under `--openai-files-path`: interrupted Responses (`in_progress`/`queued`/`cancelling`) → `failed` + `error.code=server_restart`; completed Responses / Chat Completions entries reload; prompt-cache key TTLs are read back from `prompt_cache_keys/`.
 - **Acceptance coverage** — `local_durability_acceptance` asserts `/v1/tools`, `/props.slot_save_path`, Slot KV save/restore/erase, compact expand, and the restart matrix above.
-- **Responses create deepen (local behavior)** - `max_tool_calls` drops calls beyond the cap (excess attempts ignored, no `incomplete` marker); `context_management` compaction auto-folds long history **and expands `local.` back into real messages for the model** (not a placeholder); `stream_options.include_obfuscation` toggles SSE `obfuscation`; `background` async + retrieve/cancel to terminal + resumable stream (`GET /v1/responses/{id}?stream=true` with optional `starting_after` cursor; 404 without a session, 400 when the replay prefix was dropped); `conversation` membership (prepend stored items, append the finished turn); assistant message `phase` (`commentary`/`final_answer`, invalid → 400).
+- **Responses create deepen (local behavior)** - `max_tool_calls` drops calls beyond the cap (excess attempts ignored, no `incomplete` marker); `context_management` compaction auto-folds long history **and expands `local.` back into real messages for the model** (not a placeholder); `stream_options.include_obfuscation` toggles SSE `obfuscation`; `background` async + retrieve/cancel to terminal + resumable stream (`GET /v1/responses/{id}?stream=true` with optional `starting_after` cursor; a resume without cursor follows from the oldest whole event still retained; 404 without a session, 400 when the replay prefix was dropped, and a following client whose replay window is evicted gets a terminal SSE `error` event instead of a silent end); `conversation` membership (prepend stored items, append the finished turn); assistant message `phase` (`commentary`/`final_answer`, invalid → 400).
+- **Streaming phases (local)** - no queue stage: the official `response.queued` event is never emitted, `response.created`/`response.in_progress` are followed directly by generation events.
 - Slot KV persistence — `--slot-save-path`; startup script enables by default; acceptance exercises `/slots/{id}?action=save|restore|erase`.
 
 ### Responses create fields: real behavior vs echo-only
 
 | Kind | Fields |
 |------|--------|
-| **正向行为** | `model`, `input`（`input_text`/`input_image`；assistant 消息可选 `phase`=`commentary`/`final_answer`，非法值 → 400）, `instructions`, `previous_response_id`, `conversation`（会话 items 前置 + 本轮回合追加；与 `previous_response_id` 互斥）, `store`, `stream`, `temperature`/`top_p`/`max_output_tokens`, `tools`/`tool_choice`/`parallel_tool_calls`（`false` 时 emit 最多 1 个 function_call；`type=web_search`→本地搜索 + `web_search_call`；`type=allowed_tools`→子集过滤，`mode=required` 无匹配 → 400）, `text`（`verbosity` hint；`format`→`response_format`/grammar：`json_object`/`json_schema`）, `reasoning`（`effort`→thinking + **budget 阶梯** minimal…max；`context=current_turn`；`summary`/`generate_summary`；`mode=pro`）, `background`, `max_tool_calls`, `context_management`, `stream_options.include_obfuscation`, `include`（`message.output_text.logprobs`→非流式 `output_text` parts + 流式 delta/done 条目；`reasoning.encrypted_content`→`local.` blob）, `truncation`, `metadata`/`user`/`safety_identifier`, `prompt_cache_key`（本地 KV 前缀缓存 + slot 亲和）, `prompt_cache_retention`/`prompt_cache_options`（`cache_prompt`；`implicit` 自动 key；`ttl=5m`/`30m`/`1h`/`24h`；`explicit` 须 key）, `prompt.id`（`--openai-files-path/prompts/<id>.json` 模板展开，未知 id → 400） |
+| **正向行为** | `model`, `input`（`input_text`/`input_image`；assistant 消息可选 `phase`=`commentary`/`final_answer`，非法值 → 400）, `instructions`, `previous_response_id`, `conversation`（会话 items 前置 + 本轮回合追加；与 `previous_response_id` 互斥）, `store`, `stream`, `temperature`/`top_p`/`max_output_tokens`, `tools`/`tool_choice`/`parallel_tool_calls`（`false` 时 emit 最多 1 个 function_call；`type=web_search`→本地搜索 + `web_search_call`；`type=allowed_tools`→子集过滤，`mode=required` 无匹配 → 400）, `text`（`verbosity` hint；`format`→`response_format`/grammar：`json_object`/`json_schema`）, `reasoning`（`effort`→thinking + **budget 阶梯** minimal…max；`context=current_turn`；`summary`/`generate_summary`；`mode=pro`）, `background`, `max_tool_calls`, `context_management`, `stream_options.include_obfuscation`, `include`（`message.output_text.logprobs`→非流式 `output_text` parts + 流式 delta/done 条目；`reasoning.encrypted_content`→`local.` blob）, `top_logprobs`（单独设置即启用 logprobs 记录并控制 top-N，官方该字段只定义数量上限——见「本地契约」）, `truncation`, `metadata`/`user`/`safety_identifier`, `prompt_cache_key`（本地 KV 前缀缓存 + slot 亲和）, `prompt_cache_retention`/`prompt_cache_options`（`cache_prompt`；`implicit` 自动 key；`ttl=5m`/`30m`/`1h`/`24h`；`explicit` 须 key）, `prompt.id`（`--openai-files-path/prompts/<id>.json` 模板展开，未知 id → 400） |
+| **Accept-ignore** | `moderation`（官方 create 字段：本地接受但不运行审核，任何形状都不报错、不生效） |
 
 ### Chat Completions create fields (shared validators)
 
@@ -99,7 +101,7 @@ Inference create/stream/parse, create-param catalogs, tools/`tool_choice`, reaso
 
 **Done (observable, acceptance-backed):** Responses truncation/TTL/compaction/web_search/verbosity/json_schema/`prompt_cache_*`/conversations/background stream resume/streaming logprobs/`phase`/`allowed_tools`；Completions echo/`best_of`/FIM/logprobs/temp0/stop/penalties/`max_tokens` cap；Chat store/cache/stop/top_p/retention/implicit/ttl/verbosity/penalties/prediction。
 
-**Intentionally not deepen (still shape/echo or non-goal):** hosted `file_search`/`mcp`/`code_interpreter`（显式 400）；Files/Uploads/Batches/Moderations 与云端 QoS 字段（`service_tier`/`inference_geo`/`container`/`user_profile_id`）无本地实现（忽略或拒绝）；byte-identical cloud payloads；scenario 字符串匹配 `PARTIAL`（模型表述噪声，非 API 最小实现）；云端 ramp-rate 计费降级（本地无 TPM 计量，不模拟）；soft FIM（无 FIM vocab 时的 prompt 加深，非真 infill token）；`local.` compaction blob（非云端加密）。
+**Intentionally not deepen (still shape/echo or non-goal):** hosted `file_search`/`mcp`/`code_interpreter`（显式 400）；Files/Uploads/Batches/Moderations 与云端 QoS 字段无本地实现（`service_tier` 接受官方枚举并回显、`fast`→`priority`，不改执行；`inference_geo`/`container`/`user_profile_id` 忽略或拒绝）；byte-identical cloud payloads；scenario 字符串匹配 `PARTIAL`（模型表述噪声，非 API 最小实现）；云端 ramp-rate 计费降级（本地无 TPM 计量，不模拟）；soft FIM（无 FIM vocab 时的 prompt 加深，非真 infill token）；`local.` compaction blob（非云端加密）。
 
 **Stub inventory dissolved (this fork):** `prompt.id` file templates only；web_search empty → `provider=none`。
 
@@ -107,10 +109,15 @@ When the rows above stay green, the “消解最小化实现” campaign for in-
 
 ## Suite-only fixes (no server risk)
 
-- OpenAI SDK 2.54 `responses.delete` returns `None` — assert delete + retrieve 404, not `deleted=true` object
+- OpenAI SDK `responses.delete` returns `None` — assert delete + retrieve 404, not `deleted=true` object
 - Chat `max_tokens` is optional on OpenAI — do not require 400 when omitted
 - Completions stream markers avoid model “safety” refusals (`/no_think` + short sentinel)
 - Document `betas` as ignored stable-surface header (PASS)
 - Chat stream `delta.reasoning_content` forced via `reasoning_effort=low`
 - Responses/Chat `verbosity` / `prediction` / Completions `echo`/`best_of`(logprob 排名) / `suffix` FIM 已正向行为
 - Responses `prompt.id` 本地模板展开；`prompt_cache_*` 本地调度/亲和语义
+
+## Local contracts (not cloud)
+
+- **Conversations error codes** — 400 invalid input (including `include` values outside the official enum), 404 missing conversation/item, 500 write failure, 501 store disabled (`--responses-store-max 0`); the usual `{code, message, type}` error envelope.
+- **Responses `top_logprobs` without `include`** — local extension: setting `top_logprobs` alone enables logprob recording; officially the arrays are enabled through `include: ["message.output_text.logprobs"]` and `top_logprobs` only caps the count.

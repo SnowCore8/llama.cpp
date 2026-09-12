@@ -1605,7 +1605,7 @@ OpenAI **web_search** is deepened locally (not a cloud search backend):
 
 Default remote providers: DuckDuckGo Instant Answer + HTML/Lite SERP; when fixture/local_dir already returned hits, remote SERP is skipped (offline-friendly). When no backend returns hits, `provider` is `none` (no fake stub URLs). `search_context_size=medium|high` also fetches pages (`open_page` / `find_in_page` actions) unless results are purely offline. Tool `filters.allowed_domains` / `blocked_domains` are honored.
 
-- **Responses**: `web_search_call` items (`queries`; `action.sources` / `results` when `include` requests them); `url_citation` annotations on `output_text`; streaming emits `response.web_search_call.completed`.
+- **Responses**: `web_search_call` items (`queries`; `action.sources` / `results` when `include` requests them); `url_citation` annotations on `output_text`; streaming emits `response.output_item.added` -> `response.web_search_call.in_progress` -> `response.web_search_call.searching` -> `response.web_search_call.completed` -> `response.output_item.done`, and after `response.output_text.done` one `response.output_text.annotation.added` per citation, before the `content_part` / `output_item` done events that carry the final annotations.
 - **Chat Completions** `web_search_options`: inject system context + `message.annotations` (including stream terminal chunk).
 
 Other hosted tools (`file_search`, remote `mcp`, `code_interpreter`, …) still receive **HTTP 400** — not silently dropped.
@@ -1632,7 +1632,7 @@ curl -s http://localhost:8080/v1/responses \
 
 `stream: true` follows the official SSE phases, and every event carries a monotonic `sequence_number`: `response.created` and `response.in_progress` come first, then for each output item `response.output_item.added`, `response.content_part.added`, the incremental events (`response.output_text.delta`, `response.function_call_arguments.delta`, `response.reasoning_summary_text.delta`), the matching `*.done` events, and a terminal `response.completed` / `response.incomplete`.
 
-`background: true` answers immediately with an `in_progress` response (the streaming variant starts its stream immediately) that stays retrievable via `GET /v1/responses/{id}` and cancellable via `POST /v1/responses/{id}/cancel` while it runs. A background stream that loses its connection keeps running server side and can be reattached with `GET /v1/responses/{id}?stream=true`, optionally with `starting_after=<sequence_number>` to replay buffered events after that cursor before following live output. Reattaching to a response without a resumable stream session returns HTTP 404, and a cursor whose replay prefix was already dropped returns HTTP 400 (meaning: restart without `starting_after`).
+`background: true` answers immediately with an `in_progress` response (the streaming variant starts its stream immediately) that stays retrievable via `GET /v1/responses/{id}` and cancellable via `POST /v1/responses/{id}/cancel` while it runs; a `store: false` background response is still retained for this, but remains invalid as `previous_response_id`. A background stream that loses its connection keeps running server side and can be reattached with `GET /v1/responses/{id}?stream=true`, optionally with `starting_after=<sequence_number>` to replay buffered events after that cursor before following live output. Reattaching to a response without a resumable stream session returns HTTP 404, and a cursor whose replay prefix was already dropped returns HTTP 400 (meaning: restart without `starting_after`); a resume without a cursor follows from the oldest whole event still retained. If a following client falls behind far enough that its replay window is evicted, the server sends a terminal SSE `error` event (`code: server_error`) and closes the stream instead of ending silently.
 
 #### Token logprobs on streaming output
 
@@ -1640,7 +1640,7 @@ Text logprobs are returned when requested with `include: ["message.output_text.l
 
 #### Conversation membership (`conversation`)
 
-Passing `conversation` (a conversation id string, or `{"id": ...}`) makes the request a turn of that conversation: its stored items are prepended to the request input, and the finished turn (this request's own input items plus the response output items) is appended back when the response completes. `store=false` only controls `previous_response_id` retention, the conversation still receives the turn. `conversation` cannot be combined with `previous_response_id` (HTTP 400) and an unknown id returns HTTP 400. Response objects echo the conversation as `{"id": ...}`.
+Passing `conversation` (a conversation id string, or `{"id": ...}`) makes the request a turn of that conversation: its stored items are prepended to the request input, and the finished turn (this request's own input items plus the response output items) is appended back when the response completes. `store=false` keeps the response out of later retrieval and `previous_response_id` chains (a background response is still retained for GET/cancel while it runs), but the conversation still receives the turn. `conversation` cannot be combined with `previous_response_id` (HTTP 400) and an unknown id returns HTTP 400. Response objects echo the conversation as `{"id": ...}`.
 
 ### Conversations: `/v1/conversations`
 
@@ -1657,7 +1657,7 @@ Implements the official Conversations API for managing conversation objects and 
 | `GET` | `/v1/conversations/{id}/items/{item_id}` | Retrieve one item |
 | `DELETE` | `/v1/conversations/{id}/items/{item_id}` | Delete one item; returns the conversation object |
 
-Items receive server-side ids by type (`msg_`, `fc_`, `fco_`, `rs_`), message content is normalized to content parts, and `include` gates the same fields as Responses (logprobs, search results, image urls, `reasoning.encrypted_content`). Conversations live in the durable store together with responses: JSON files under `--openai-files-path/conversations/` (memory-only without the flag), sharing `--responses-store-max` and `--responses-store-ttl`.
+Items receive server-side ids by type (`msg_`, `fc_`, `fco_`, `rs_`, and `item_` for any other type), message content is normalized to content parts, and `include` gates the same fields as Responses (logprobs, search results, image urls, `reasoning.encrypted_content`); it is accepted on item create/list/retrieve, any value outside the official enum is rejected with HTTP 400, and array encodings all work (`include[]=a&include[]=b`, repeated `include=a&include=b`, or one comma-separated value - the official SDK sends `include[]`). Conversations live in the durable store together with responses: JSON files under `--openai-files-path/conversations/` (memory-only without the flag), sharing `--responses-store-max` and `--responses-store-ttl`; with the store disabled (`--responses-store-max 0`) the write endpoints answer HTTP 501 and lookups miss (404).
 
 Example:
 
