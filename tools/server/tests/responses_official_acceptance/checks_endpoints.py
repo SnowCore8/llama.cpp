@@ -330,19 +330,24 @@ def run_endpoint_checks(
         strip_events = parse_sse(raw_strip) if c_strip == 200 else []
         keep_has = any(isinstance(obj, dict) and "obfuscation" in obj for _t, obj in keep_events)
         strip_has = any(isinstance(obj, dict) and "obfuscation" in obj for _t, obj in strip_events)
+        # stripping must drop only the obfuscation field: same events, same sequence numbers
+        keep_seq = [(t, obj.get("sequence_number")) for t, obj in keep_events if isinstance(obj, dict)]
+        strip_seq = [(t, obj.get("sequence_number")) for t, obj in strip_events if isinstance(obj, dict)]
+        same_events = keep_seq == strip_seq
         ok_obf = (
             c_keep == 200
             and keep_has
             and c_strip == 200
             and len(strip_events) > 0
             and not strip_has
+            and same_events
         )
         report.add(
             "endpoint",
             "GET /v1/responses/{id}?stream=true (include_obfuscation)",
             "PASS" if ok_obf else "FAIL",
             f"keep HTTP {c_keep} n={len(keep_events)} has_obf={keep_has}; "
-            f"strip HTTP {c_strip} n={len(strip_events)} has_obf={strip_has}",
+            f"strip HTTP {c_strip} n={len(strip_events)} has_obf={strip_has} same_events={same_events}",
         )
     else:
         report.add(
