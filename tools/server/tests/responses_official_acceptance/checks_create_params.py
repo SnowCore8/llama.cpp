@@ -922,6 +922,64 @@ def run_create_param_checks(
         f"text={output_text(data2)!r}",
     )
 
+    # previous_response_id with prior reasoning kept: expanding a stored reasoning item
+    # (summary only, no content array) must not break the follow-up turn.
+    # Regression: the replay used to fail with "item['content'] is not an array".
+    code1, data1 = create(
+        {
+            "reasoning": {"effort": "low"},
+            "input": "Think briefly, then reply with exactly: RS_PREV_A",
+            "max_output_tokens": 512,
+            "temperature": 0,
+            "store": True,
+        }
+    )
+    rid1 = data1.get("id") if isinstance(data1, dict) else None
+    n_reason_out = sum(
+        1
+        for x in (data1.get("output") or [])
+        if isinstance(x, dict) and x.get("type") == "reasoning"
+    )
+    code2, data2 = create(
+        {
+            "previous_response_id": rid1,
+            "reasoning": {},  # keep prior reasoning (no context=current_turn)
+            "input": "Reply with exactly: RS_PREV_B",
+            "max_output_tokens": 32,
+            "temperature": 0,
+            "store": True,
+        }
+    )
+    n_reason_in = -1
+    if isinstance(data2, dict) and data2.get("id"):
+        icode, items = client.get_json(f"/v1/responses/{data2['id']}/input_items")
+        if icode == 200 and isinstance(items, dict):
+            n_reason_in = sum(
+                1
+                for x in (items.get("data") or [])
+                if isinstance(x, dict) and x.get("type") == "reasoning"
+            )
+    # The t2 text may echo the t1 prompt instead of RS_PREV_B (model behavior);
+    # the regression is the follow-up turn completing with a message at all.
+    t2_has_message = any(
+        isinstance(x, dict) and x.get("type") == "message"
+        for x in ((data2.get("output") or []) if isinstance(data2, dict) else [])
+    )
+    replay_ok = (
+        code1 == 200
+        and n_reason_out >= 1
+        and rid1
+        and code2 == 200
+        and t2_has_message
+    )
+    report.add(
+        "create_param",
+        "previous_response_id.reasoning_replay",
+        "PASS" if replay_ok else "FAIL",
+        f"t1={code1} n_rs_out={n_reason_out} t2={code2} n_rs_in={n_reason_in} "
+        f"text={output_text(data2)!r}",
+    )
+
     # remaining official create params: accept + retrieve round-trip (deeper than echo-only)
     already = {
         "model",

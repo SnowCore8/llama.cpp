@@ -266,24 +266,47 @@ json server_chat_convert_responses_to_chatcmpl(const json & response_body) {
                 item.at("type") == "reasoning") {
                 // #responses_create-input-input_item_list-item-reasoning
 
-                if (!exists_and_is_array(item, "content")) {
-                    throw std::invalid_argument("item['content'] is not an array");
+                // Official input reasoning items carry summary (+ optional encrypted_content)
+                // and no content; the local conversion prefers content[0].text when present.
+                std::string reasoning_text;
+                if (exists_and_is_array(item, "content") && !item.at("content").empty()) {
+                    if (!exists_and_is_string(item.at("content")[0], "text")) {
+                        throw std::invalid_argument("item['content']['text'] is not a string");
+                    }
+                    reasoning_text = item.at("content")[0].at("text").get<std::string>();
+                } else {
+                    if (exists_and_is_array(item, "summary")) {
+                        for (const auto & part : item.at("summary")) {
+                            if (exists_and_is_string(part, "text")) {
+                                if (!reasoning_text.empty()) {
+                                    reasoning_text += "\n";
+                                }
+                                reasoning_text += part.at("text").get<std::string>();
+                            }
+                        }
+                    }
+                    if (reasoning_text.empty()) {
+                        const std::string enc = json_value(item, "encrypted_content", std::string());
+                        json folded;
+                        if (!enc.empty() && server_responses_expand_local_blob(enc, folded) &&
+                                folded.contains("text") && folded.at("text").is_string()) {
+                            reasoning_text = folded.at("text").get<std::string>();
+                        }
+                    }
                 }
-                if (item.at("content").empty()) {
-                    throw std::invalid_argument("item['content'] is empty");
-                }
-                if (!exists_and_is_string(item.at("content")[0], "text")) {
-                    throw std::invalid_argument("item['content']['text'] is not a string");
+                if (reasoning_text.empty()) {
+                    // nothing to replay (empty summary and no local encrypted content)
+                    continue;
                 }
 
                 if (merge_prev) {
                     auto & prev_msg = chatcmpl_messages.back();
-                    prev_msg["reasoning_content"] = item.at("content")[0].at("text");
+                    prev_msg["reasoning_content"] = reasoning_text;
                 } else {
                     chatcmpl_messages.push_back(json {
                         {"role", "assistant"},
                         {"content", json::array()},
-                        {"reasoning_content", item.at("content")[0].at("text")},
+                        {"reasoning_content", reasoning_text},
                     });
                 }
             } else {
