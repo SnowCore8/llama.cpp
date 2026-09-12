@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from .catalog import create_param_names
-from .http_client import ResponsesHttpClient, output_text
+from .http_client import ResponsesHttpClient, output_text, parse_sse
 from .report import Report
 
 
@@ -989,6 +989,119 @@ def run_create_param_checks(
         verdict,
         f"t1={code1} n_rs_out={n_reason_out} t2={code2} n_rs_in={n_reason_in} "
         f"text={output_text(data2)!r}",
+    )
+
+    # --- generate:false warmup (guide-only official field; the WS guide defines it and
+    # the same create route accepts it over HTTP: no model output, a chainable id) ---
+    warm_body: dict[str, Any] = {
+        "model": model,
+        "input": "Reply with exactly: WARMUP",
+        "max_output_tokens": 48,
+        "reasoning": {"effort": "none"},
+        **extra,
+        "temperature": 0,
+        "store": True,
+        "generate": False,
+    }
+    code, data = client.post_json("/v1/responses", warm_body)
+    warm = data if isinstance(data, dict) else {}
+    wid = warm.get("id") if isinstance(warm.get("id"), str) else None
+    warm_shape_ok = (
+        code == 200
+        and warm.get("object") == "response"
+        and warm.get("status") == "completed"
+        and warm.get("output") == []
+        and warm.get("error") is None
+        and warm.get("incomplete_details") is None
+        and output_text(warm) == ""
+    )
+    chain_code, chain_id, chain_text = 0, None, ""
+    if wid is not None:
+        follow = {k: v for k, v in warm_body.items() if k != "generate"}
+        follow["previous_response_id"] = wid
+        chain_code, chain_data = client.post_json("/v1/responses", follow)
+        if isinstance(chain_data, dict):
+            chain_id = chain_data.get("id")
+            chain_text = output_text(chain_data)
+    chain_ok = (
+        chain_code == 200
+        and isinstance(chain_id, str)
+        and chain_id != wid
+        and chain_text != ""
+    )
+    report.add(
+        "create_param",
+        "generate.false.warmup",
+        "PASS" if warm_shape_ok and chain_ok else "FAIL",
+        f"HTTP {code} id={wid!r} status={warm.get('status')!r} out={warm.get('output')!r} "
+        f"chain={chain_code}/{chain_id!r} text={chain_text[:24]!r}",
+    )
+
+    # streaming: response.created + response.completed only (no in_progress, no deltas)
+    code, _, raw = client.request(
+        "POST", "/v1/responses", {**warm_body, "stream": True}, stream=True
+    )
+    events = parse_sse(raw)
+    stream_types = [t for t, _ in events]
+    term = next((o for t, o in events if t == "response.completed"), {})
+    term_resp = term.get("response") if isinstance(term, dict) else {}
+    if not isinstance(term_resp, dict):
+        term_resp = {}
+    seq_ok = all(isinstance(o.get("sequence_number"), int) for _, o in events)
+    stream_ok = (
+        code == 200
+        and stream_types == ["response.created", "response.completed"]
+        and term_resp.get("status") == "completed"
+        and term_resp.get("output") == []
+        and output_text(term_resp) == ""
+        and seq_ok
+    )
+    report.add(
+        "create_param",
+        "generate.false.stream",
+        "PASS" if stream_ok else "FAIL",
+        f"HTTP {code} events={stream_types} status={term_resp.get('status')!r} "
+        f"out={term_resp.get('output')!r} seq_ok={seq_ok}",
+    )
+
+    # a non-boolean generate is an invalid request
+    code, data = client.post_json("/v1/responses", {**warm_body, "generate": "yes"})
+    err = data.get("error") if isinstance(data, dict) else None
+    err = err if isinstance(err, dict) else {}
+    bad_ok = (
+        code == 400
+        and err.get("type") == "invalid_request_error"
+        and "boolean" in str(err.get("message", ""))
+    )
+    report.add(
+        "create_param",
+        "generate.invalid",
+        "PASS" if bad_ok else "FAIL",
+        f"HTTP {code} error={err!r}",
+    )
+
+    # a warmup turn does not join a conversation, and the response echoes no conversation key
+    conv_code, conv = client.post_json("/v1/conversations", {})
+    conv_id = conv.get("id") if isinstance(conv, dict) else None
+    n0 = n1 = -1
+    warm_no_conv = False
+    if isinstance(conv_id, str):
+        i0_code, i0 = client.get_json(f"/v1/conversations/{conv_id}/items")
+        w_code, w_data = client.post_json(
+            "/v1/responses", {**warm_body, "conversation": conv_id}
+        )
+        i1_code, i1 = client.get_json(f"/v1/conversations/{conv_id}/items")
+        n0 = len(i0.get("data") or []) if isinstance(i0, dict) else -1
+        n1 = len(i1.get("data") or []) if isinstance(i1, dict) else -1
+        warm_no_conv = isinstance(w_data, dict) and "conversation" not in w_data
+        conv_ok = i0_code == i1_code == w_code == 200 and n0 == 0 and n1 == 0
+    else:
+        conv_ok = False
+    report.add(
+        "create_param",
+        "generate.false.no_conversation_turn",
+        "PASS" if conv_ok and warm_no_conv else "FAIL",
+        f"conv={conv_code}/{conv_id!r} items={n0}->{n1} no_conv_key={warm_no_conv}",
     )
 
     # remaining official create params: accept + retrieve round-trip (deeper than echo-only)
