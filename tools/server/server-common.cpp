@@ -272,6 +272,69 @@ void server_openai_validate_cloud_shaped_fields(const json & body, bool allow_pr
         }
     }
     if (allow_prompt) {
+        // Responses-only fields: the chatcmpl conversion strips these before the
+        // chat path could validate them, so check the official shape here.
+        if (body.contains("metadata") && !body.at("metadata").is_null()) {
+            const json & metadata = body.at("metadata");
+            if (!metadata.is_object()) {
+                throw std::invalid_argument("'metadata' must be an object");
+            }
+            if (metadata.size() > 16) {
+                throw std::invalid_argument("'metadata' must have at most 16 key-value pairs");
+            }
+            for (const auto & el : metadata.items()) {
+                if (!el.value().is_string()) {
+                    throw std::invalid_argument("'metadata' values must be strings");
+                }
+                if (el.key().size() > 64) {
+                    throw std::invalid_argument("'metadata' keys must be at most 64 characters");
+                }
+                if (el.value().get<std::string>().size() > 512) {
+                    throw std::invalid_argument("'metadata' values must be at most 512 characters");
+                }
+            }
+        }
+        if (body.contains("safety_identifier") && !body.at("safety_identifier").is_null()) {
+            if (!body.at("safety_identifier").is_string()) {
+                throw std::invalid_argument("'safety_identifier' must be a string");
+            }
+            if (body.at("safety_identifier").get<std::string>().size() > 64) {
+                throw std::invalid_argument("'safety_identifier' must be at most 64 characters");
+            }
+        }
+        if (body.contains("service_tier") && !body.at("service_tier").is_null()) {
+            if (!body.at("service_tier").is_string()) {
+                throw std::invalid_argument(
+                    "'service_tier' must be one of: auto, default, flex, scale, priority, fast, ultrafast");
+            }
+            const std::string tier = body.at("service_tier").get<std::string>();
+            if (tier != "auto" && tier != "default" && tier != "flex" && tier != "scale" &&
+                    tier != "priority" && tier != "fast" && tier != "ultrafast") {
+                throw std::invalid_argument(
+                    "'service_tier' must be one of: auto, default, flex, scale, priority, fast, ultrafast");
+            }
+        }
+        if (body.contains("include") && !body.at("include").is_null()) {
+            if (!body.at("include").is_array()) {
+                throw std::invalid_argument("'include' must be an array");
+            }
+            for (const auto & item : body.at("include")) {
+                if (!item.is_string()) {
+                    throw std::invalid_argument("'include' entries must be strings");
+                }
+                const std::string inc = item.get<std::string>();
+                if (inc != "web_search_call.action.sources" &&
+                        inc != "code_interpreter_call.outputs" &&
+                        inc != "computer_call_output.output.image_url" &&
+                        inc != "file_search_call.results" &&
+                        inc != "message.input_image.image_url" &&
+                        inc != "message.output_text.logprobs" &&
+                        inc != "reasoning.encrypted_content" &&
+                        inc != "web_search_call.results") {
+                    throw std::invalid_argument("Unknown 'include' value: " + inc);
+                }
+            }
+        }
         server_openai_validate_responses_text_object(body);
     }
 }
@@ -1860,6 +1923,51 @@ json oaicompat_chat_params_parse(
             const std::string tc_type = json_value(tc, "type", std::string("auto"));
             if (tc_type == "none" || tc_type == "auto" || tc_type == "required") {
                 tool_choice = tc_type;
+            } else if (tc_type == "allowed_tools") {
+                // Restrict callable tools to the listed subset (official ToolChoiceAllowed).
+                const std::string mode = json_value(tc, "mode", std::string("auto"));
+                if (mode != "auto" && mode != "required") {
+                    throw std::invalid_argument("'tool_choice.mode' must be 'auto' or 'required'");
+                }
+                if (!tc.contains("tools") || !tc.at("tools").is_array()) {
+                    throw std::invalid_argument("'tool_choice.tools' must be an array");
+                }
+                std::unordered_set<std::string> allowed_names;
+                for (const auto & entry : tc.at("tools")) {
+                    if (!entry.is_object()) {
+                        throw std::invalid_argument("'tool_choice.tools' entries must be objects");
+                    }
+                    if (json_value(entry, "type", std::string()) == "function") {
+                        const std::string name = json_value(entry, "name", std::string());
+                        if (!name.empty()) {
+                            allowed_names.insert(name);
+                        }
+                    }
+                }
+                if (has_tools) {
+                    json filtered = json::array();
+                    for (const auto & tool : tools) {
+                        if (!tool.is_object()) {
+                            continue;
+                        }
+                        std::string name;
+                        if (tool.contains("function") && tool.at("function").is_object()) {
+                            name = json_value(tool.at("function"), "name", std::string());
+                        } else {
+                            name = json_value(tool, "name", std::string());
+                        }
+                        if (allowed_names.count(name)) {
+                            filtered.push_back(tool);
+                        }
+                    }
+                    tools = std::move(filtered);
+                    has_tools = !tools.empty();
+                }
+                if (mode == "required" && !has_tools) {
+                    throw std::invalid_argument(
+                        "tool_choice requires at least one allowed tool present in 'tools'");
+                }
+                tool_choice = mode;
             } else if (tc_type == "function" || tc_type == "tool") {
                 if (tc.contains("function") && tc.at("function").is_object()) {
                     forced_tool_name = json_value(tc.at("function"), "name", std::string());

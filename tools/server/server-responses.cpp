@@ -568,6 +568,11 @@ json server_responses_enrich_response(json response_obj, const json & request_bo
             response_obj[key] = request_body.at(key);
         }
     }
+    // Fast mode: official responses show service_tier=priority for request fast or priority.
+    if (response_obj.contains("service_tier") && response_obj.at("service_tier").is_string() &&
+            response_obj.at("service_tier").get<std::string>() == "fast") {
+        response_obj["service_tier"] = "priority";
+    }
 
     // OpenAI SDK treats these as required on every Response object.
     if (!response_obj.contains("tools") || response_obj.at("tools").is_null()) {

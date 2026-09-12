@@ -311,6 +311,69 @@ def run_create_param_checks(
         f"HTTP {code_mcp} body={str(data_mcp)[:160]}",
     )
 
+    # allowed_tools constraint: web_search only stays when listed in the allowed set
+    code_deny, data_deny = create(
+        {
+            "tools": [
+                {"type": "web_search", "search_context_size": "medium"},
+                {
+                    "type": "function",
+                    "name": "echo_tool",
+                    "description": "echo",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"x": {"type": "string"}},
+                        "required": ["x"],
+                    },
+                },
+            ],
+            "tool_choice": {
+                "type": "allowed_tools",
+                "mode": "auto",
+                "tools": [{"type": "function", "name": "echo_tool"}],
+            },
+            "reasoning": {"effort": "none"},
+            "input": "What is example.com used for? Reply briefly.",
+            "max_output_tokens": 96,
+        }
+    )
+    ws_deny = [
+        o
+        for o in (data_deny.get("output") or [])
+        if isinstance(o, dict) and o.get("type") == "web_search_call"
+    ]
+    report.add(
+        "create_param",
+        "tools.web_search.denied_by_allowed_tools",
+        "PASS" if code_deny == 200 and not ws_deny else "FAIL",
+        f"HTTP {code_deny} ws_calls={len(ws_deny)}",
+    )
+
+    code_allow, data_allow = create(
+        {
+            "tools": [{"type": "web_search", "search_context_size": "medium"}],
+            "tool_choice": {
+                "type": "allowed_tools",
+                "mode": "auto",
+                "tools": [{"type": "web_search"}],
+            },
+            "reasoning": {"effort": "none"},
+            "input": "What is example.com used for? Reply briefly.",
+            "max_output_tokens": 96,
+        }
+    )
+    ws_allow = [
+        o
+        for o in (data_allow.get("output") or [])
+        if isinstance(o, dict) and o.get("type") == "web_search_call"
+    ]
+    report.add(
+        "create_param",
+        "tools.web_search.allowed_by_allowed_tools",
+        "PASS" if code_allow == 200 and ws_allow else "FAIL",
+        f"HTTP {code_allow} ws_calls={len(ws_allow)}",
+    )
+
     tools_fc = [
         {
             "type": "function",
@@ -383,6 +446,128 @@ def run_create_param_checks(
         "tool_choice.none",
         "PASS" if code == 200 and not fcs and "NONE_OK" in output_text(data) else "FAIL",
         f"HTTP {code} n_fc={len(fcs)} text={output_text(data)!r}",
+    )
+
+    # --- tool_choice.allowed_tools: only the listed subset stays callable ---
+    tools_two = tools_fc + [
+        {
+            "type": "function",
+            "name": "other_tool",
+            "description": "another tool",
+            "parameters": {
+                "type": "object",
+                "properties": {"y": {"type": "string"}},
+                "required": ["y"],
+            },
+        }
+    ]
+    code, data = create(
+        {
+            "tools": tools_two,
+            "tool_choice": {
+                "type": "allowed_tools",
+                "mode": "required",
+                "tools": [{"type": "function", "name": "echo_tool"}],
+            },
+            "input": "call other_tool with y=hi",
+            "max_output_tokens": 128,
+        }
+    )
+    fcs = [
+        x
+        for x in (data.get("output") or [])
+        if isinstance(x, dict) and x.get("type") == "function_call"
+    ]
+    report.add(
+        "create_param",
+        "tool_choice.allowed_tools",
+        "PASS"
+        if code == 200 and fcs and all(fc.get("name") == "echo_tool" for fc in fcs)
+        else "FAIL",
+        f"HTTP {code} names={[fc.get('name') for fc in fcs]}",
+    )
+
+    code, data = create(
+        {
+            "tools": tools_fc,
+            "tool_choice": {"type": "allowed_tools", "mode": "bogus", "tools": []},
+            "input": "hi",
+            "max_output_tokens": 16,
+        }
+    )
+    report.add(
+        "create_param",
+        "tool_choice.allowed_tools.bad_mode",
+        "PASS" if code == 400 else "FAIL",
+        f"HTTP {code}",
+    )
+
+    code, data = create(
+        {
+            "tools": tools_fc,
+            "tool_choice": {
+                "type": "allowed_tools",
+                "mode": "required",
+                "tools": [{"type": "function", "name": "missing_tool"}],
+            },
+            "input": "hi",
+            "max_output_tokens": 16,
+        }
+    )
+    report.add(
+        "create_param",
+        "tool_choice.allowed_tools.required_no_match",
+        "PASS" if code == 400 else "FAIL",
+        f"HTTP {code}",
+    )
+
+    # --- official field limits: metadata / safety_identifier / service_tier / include ---
+    code_md_ok, _ = create({"metadata": {"k" * 64: "v" * 512}})
+    code_md_many, _ = create(
+        {"metadata": {f"k{i}": "v" for i in range(17)}, "input": "hi", "max_output_tokens": 16}
+    )
+    code_md_key, _ = create({"metadata": {"k" * 65: "v"}, "input": "hi", "max_output_tokens": 16})
+    code_md_val, _ = create({"metadata": {"k": "v" * 513}, "input": "hi", "max_output_tokens": 16})
+    md_ok = code_md_ok == 200 and code_md_many == 400 and code_md_key == 400 and code_md_val == 400
+    report.add(
+        "create_param",
+        "metadata.limits",
+        "PASS" if md_ok else "FAIL",
+        f"ok={code_md_ok} pairs17={code_md_many} key65={code_md_key} value513={code_md_val}",
+    )
+
+    code, data = create({"safety_identifier": "s" * 65, "input": "hi", "max_output_tokens": 16})
+    report.add(
+        "create_param",
+        "safety_identifier.too_long",
+        "PASS" if code == 400 else "FAIL",
+        f"HTTP {code}",
+    )
+
+    code, data = create({"service_tier": "bogus", "input": "hi", "max_output_tokens": 16})
+    report.add(
+        "create_param",
+        "service_tier.invalid",
+        "PASS" if code == 400 else "FAIL",
+        f"HTTP {code}",
+    )
+
+    code, data = create(
+        {"service_tier": "fast", "input": "Reply with exactly: TIER", "temperature": 0}
+    )
+    report.add(
+        "create_param",
+        "service_tier.fast_normalized",
+        "PASS" if code == 200 and data.get("service_tier") == "priority" else "FAIL",
+        f"HTTP {code} service_tier={data.get('service_tier')!r}",
+    )
+
+    code, data = create({"include": ["not.a.real.includable"], "input": "hi", "max_output_tokens": 16})
+    report.add(
+        "create_param",
+        "include.invalid_value",
+        "PASS" if code == 400 else "FAIL",
+        f"HTTP {code}",
     )
 
     # reasoning disabled via effort none (when supported) / no reasoning block

@@ -1104,8 +1104,31 @@ json server_web_search_run(const server_web_search_options & opt_in) {
     };
 }
 
+// tool_choice=allowed_tools without web_search: the model may not call web search.
+static bool server_web_search_denied_by_allowed_tools(const json & body) {
+    if (!body.contains("tool_choice") || !body.at("tool_choice").is_object()) {
+        return false;
+    }
+    const json & tc = body.at("tool_choice");
+    if (json_value(tc, "type", std::string()) != "allowed_tools") {
+        return false;
+    }
+    if (!tc.contains("tools") || !tc.at("tools").is_array()) {
+        return false; // malformed shape: rejected by the tool_choice validator
+    }
+    for (const auto & entry : tc.at("tools")) {
+        if (entry.is_object() && server_web_search_is_tool_type(json_value(entry, "type", std::string()))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void server_web_search_apply(json & body) {
     if (json_value(body, "__oai_web_search", false)) {
+        return;
+    }
+    if (server_web_search_denied_by_allowed_tools(body)) {
         return;
     }
 
