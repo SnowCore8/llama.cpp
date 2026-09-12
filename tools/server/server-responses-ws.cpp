@@ -1261,8 +1261,14 @@ static void ws_handle_message(const std::shared_ptr<ws_session> & sess_ptr, cons
     payload->prev_id = json_value(ev, "previous_response_id", std::string());
 
     // a continuation of a steered target picks up its queued input; the steers
-    // are carried until this create's response.created (or returned if it fails)
-    ws_prepend_steers(sess, ev, payload);
+    // are carried until this create's response.created (or returned if it fails).
+    // a warmup create (generate:false) has no model output and must not consume
+    // them: they stay queued for the next real successor or explicit create
+    const bool is_warmup = ev.contains("generate") && ev.at("generate").is_boolean() &&
+        !ev.at("generate").get<bool>();
+    if (!is_warmup) {
+        ws_prepend_steers(sess, ev, payload);
+    }
 
     payload->body = ev.dump();
     ws_lane_enqueue(sess, stream_id, std::move(payload));

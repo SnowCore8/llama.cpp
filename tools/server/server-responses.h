@@ -77,6 +77,16 @@ void server_responses_reset_seq(const std::string & resp_id);
 // Enrich a completed/non-stream response object with commonly expected OpenAI fields.
 json server_responses_enrich_response(json response_obj, const json & request_body);
 
+// response.create with generate:false: a completed warmup Response with no model
+// output; it is remembered (chainable / retrievable) but does not join a conversation turn.
+json server_responses_build_warmup_response(const json & prepared, const std::string & resp_id);
+
+// SSE events for a streaming warmup: response.created + response.completed only.
+json server_responses_build_warmup_sse_events(
+    const std::string & resp_id,
+    const std::string & model,
+    const json & request_body);
+
 // Mid-stream tail only: error + response.failed (created/in_progress already sent).
 json server_responses_build_error_failed_sse_events(
     const std::string & resp_id,

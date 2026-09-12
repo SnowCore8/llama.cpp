@@ -1204,6 +1204,67 @@ static json server_responses_usage_zero() {
     };
 }
 
+// Build the warmup Response (generate:false) and persist it; a warmup produces no
+// model output, so it must not join a conversation turn.
+static json server_responses_warmup_build_store(
+        const json & prepared, const std::string & resp_id, const std::string & model) {
+    const int64_t t = server_responses_now_unix();
+    json warmup = {
+        {"id",           resp_id},
+        {"object",       "response"},
+        {"created_at",   t},
+        {"completed_at", t},
+        {"model",        model},
+        {"status",       "completed"},
+        {"output",       json::array()},
+        {"error",        nullptr},
+        {"incomplete_details", nullptr},
+        {"usage",        server_responses_usage_zero()},
+    };
+    warmup = server_responses_enrich_response(std::move(warmup), prepared);
+    // enrich fills defaults only; force the warmup contract back
+    warmup["status"] = "completed";
+    warmup["output"] = json::array();
+    warmup["error"] = nullptr;
+    warmup["incomplete_details"] = nullptr;
+    warmup.erase("conversation");
+
+    server_responses_remember(
+        warmup,
+        prepared.contains("input") ? prepared.at("input") : json::array(),
+        prepared.contains("instructions") ? prepared.at("instructions") : json(nullptr),
+        json(nullptr),
+        model,
+        json_value(prepared, "__oai_ws_local", std::string()));
+    return warmup;
+}
+
+json server_responses_build_warmup_response(const json & prepared, const std::string & resp_id) {
+    return server_responses_warmup_build_store(
+        prepared, resp_id, json_value(prepared, "model", std::string()));
+}
+
+json server_responses_build_warmup_sse_events(
+        const std::string & resp_id, const std::string & model, const json & request_body) {
+    const json warmup = server_responses_warmup_build_store(request_body, resp_id, model);
+
+    auto push = [&](const std::string & event_name, json data) {
+        data["type"] = event_name;
+        data["sequence_number"] = server_responses_next_seq(resp_id);
+        server_responses_maybe_obfuscate_event(data, request_body);
+        return json {
+            {"event", event_name},
+            {"data",  std::move(data)},
+        };
+    };
+
+    json events = json::array();
+    events.push_back(push("response.created", json { {"response", warmup} }));
+    events.push_back(push("response.completed", json { {"response", warmup} }));
+    server_responses_reset_seq(resp_id);
+    return events;
+}
+
 static json server_responses_input_item_for_list(json item) {
     if (!item.is_object()) {
         return item;

@@ -5647,6 +5647,36 @@ void server_routes::init_routes() {
         const bool want_stream = json_value(prepared, "stream", false);
         const bool want_background = json_value(prepared, "background", false);
 
+        // generate:false warms up request state without model output (official WS guide);
+        // the flag must be a boolean when present
+        if (prepared.contains("generate") && !prepared.at("generate").is_boolean()) {
+            auto res = create_response();
+            res->error(format_error_response("'generate' must be a boolean", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        if (prepared.contains("generate") && !prepared.at("generate").get<bool>()) {
+            const std::string warmup_model = json_value(prepared, "model", meta->model_name);
+            auto res = create_response();
+            if (want_stream) {
+                // local contract: created + completed only, no in_progress phase
+                res->status = 200;
+                res->content_type = "text/event-stream";
+                std::string sse = format_oai_resp_sse(
+                    server_responses_build_warmup_sse_events(resp_id, warmup_model, prepared));
+                res->set_next([sse = std::move(sse)](std::string & out) mutable {
+                    if (sse.empty()) {
+                        return false;
+                    }
+                    out = std::move(sse);
+                    sse.clear();
+                    return true;
+                });
+                return res;
+            }
+            res->ok(server_responses_build_warmup_response(prepared, resp_id));
+            return res;
+        }
+
         json body = server_chat_convert_responses_to_chatcmpl(prepared);
         SRV_DBG("%s\n", "Request converted: OpenAI Responses -> OpenAI Chat Completions");
         SRV_DBG("converted request: %s\n", body.dump().c_str());
