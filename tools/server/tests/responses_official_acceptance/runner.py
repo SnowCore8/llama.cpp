@@ -24,6 +24,7 @@ from .checks_streaming import (
     run_streaming_checks,
     run_web_search_stream_checks,
 )
+from .checks_ws import run_ws_checks
 from .http_client import ResponsesHttpClient
 from .report import Report
 
@@ -40,6 +41,7 @@ SUITE_GROUPS = (
     "semantic",
     "prompt_cache",
     "conversation",
+    "ws",
 )
 
 
@@ -174,6 +176,8 @@ def main(argv: list[str] | None = None) -> int:
         _run_suite(report, "background_stream", run_background_stream_checks, client, report, args.model, extra)
         _run_suite(report, "output_logprobs", run_output_logprobs_stream_checks, client, report, args.model, extra)
         _run_suite(report, "web_search_stream", run_web_search_stream_checks, client, report, args.model, extra)
+    if "ws" in sel:
+        _run_suite(report, "ws", run_ws_checks, client, report, args.model, extra)
     if "conversation" in sel:
         _run_suite(report, "conversation", run_conversation_checks, client, report, args.model, extra)
         _run_suite(report, "conversation", run_conversation_response_checks, client, report, args.model, extra)

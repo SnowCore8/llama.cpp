@@ -61,6 +61,7 @@ class Report:
             "scenario",
             "semantic",
             "cache",
+            "ws",
             "meta",
         ):
             subset = [r for r in self.rows if r.area == area]

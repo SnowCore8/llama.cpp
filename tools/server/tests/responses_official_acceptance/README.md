@@ -72,6 +72,7 @@ runner.py / __main__.py
   ├─ checks_scenarios.py
   ├─ checks_semantics.py
   ├─ checks_prompt_cache.py
+  ├─ checks_ws.py             # WebSocket transport: lanes, stream_id echo, error shapes
   ├─ validators.py
   └─ report.py
 ```
@@ -101,10 +102,13 @@ python -m responses_official_acceptance --only streaming,conversation
 
 `--only` accepts a comma-separated list of groups:
 `endpoint`, `models`, `completions`, `create_param`, `sdk`, `streaming`,
-`scenario`, `semantic`, `prompt_cache`, `conversation`.
+`scenario`, `semantic`, `prompt_cache`, `conversation`, `ws`.
 `streaming` covers the SSE event checks, `background_stream`, `output_logprobs`
 and `web_search_stream`; `conversation` covers the Conversations API and the
-response<->conversation membership checks. A crash in one suite is recorded as a
+response<->conversation membership checks; `ws` covers the Responses WebSocket
+transport (default/named lanes, `stream_id` echo + validation, error envelopes,
+lane FIFO and the 32-named-stream limit; the 16 in-flight and 60-minute
+connection caps are `SKIP`). A crash in one suite is recorded as a
 `FAIL` row and later suites still run.
 
 Environment overrides: `RESPONSES_BASE_URL`, `RESPONSES_API_KEY`,
