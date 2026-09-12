@@ -851,13 +851,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
         }
 
         const int item_index = (int) output.size() + ws_off;
-        push_evt("response.output_text.done", json {
-            {"item_id", oai_resp_message_id},
-            {"text",    json_value(content_part, "text", std::string())},
-            {"output_index", item_index},
-            {"content_index", 0},
-            {"logprobs", lp_all},
-        });
+        // emit the citations before the text is finalized, so clients can resolve them while streaming
         if (content_part.contains("annotations") && content_part.at("annotations").is_array()) {
             const json & annotations = content_part.at("annotations");
             for (size_t i = 0; i < annotations.size(); ++i) {
@@ -870,6 +864,13 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
                 });
             }
         }
+        push_evt("response.output_text.done", json {
+            {"item_id", oai_resp_message_id},
+            {"text",    json_value(content_part, "text", std::string())},
+            {"output_index", item_index},
+            {"content_index", 0},
+            {"logprobs", lp_all},
+        });
 
         push_evt("response.content_part.done", json {
             {"item_id", oai_resp_message_id},
