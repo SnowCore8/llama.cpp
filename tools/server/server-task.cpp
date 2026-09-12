@@ -639,6 +639,18 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat_stream() {
     return deltas;
 }
 
+// output logprobs for the Responses API: the sampled EOG token carries no text,
+// skip it so the entries line up with the output text
+static json responses_output_logprobs_json(const std::vector<completion_token_output> & probs, bool post_sampling_probs) {
+    json out = json::array();
+    for (auto & e : completion_token_output::probs_vector_to_json(probs, post_sampling_probs)) {
+        if (!json_value(e, "token", std::string()).empty()) {
+            out.push_back(std::move(e));
+        }
+    }
+    return out;
+}
+
 json server_task_result_cmpl_final::to_json_oaicompat_resp() {
     common_chat_msg msg;
     if (!oaicompat_msg.empty()) {
@@ -674,7 +686,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
     if (msg.content != "") {
         json logprobs = json::array();
         if (server_responses_wants_output_logprobs(req_early) && !probs_output.empty()) {
-            logprobs = completion_token_output::probs_vector_to_json(probs_output, post_sampling_probs);
+            logprobs = responses_output_logprobs_json(probs_output, post_sampling_probs);
         }
         output.push_back(json {
             {"content", json::array({ json {
@@ -824,7 +836,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
     if (oaicompat_msg.content != "") {
         json lp_all = json::array();
         if (want_lp && !probs_output.empty()) {
-            lp_all = completion_token_output::probs_vector_to_json(probs_output, post_sampling_probs);
+            lp_all = responses_output_logprobs_json(probs_output, post_sampling_probs);
         }
 
         json content_part = json {

@@ -121,3 +121,4 @@ When the rows above stay green, the “消解最小化实现” campaign for in-
 
 - **Conversations error codes** — 400 invalid input (including `include` values outside the official enum), 404 missing conversation/item, 500 write failure, 501 store disabled (`--responses-store-max 0`); the usual `{code, message, type}` error envelope.
 - **Responses `top_logprobs` without `include`** — local extension: setting `top_logprobs` alone enables logprob recording; officially the arrays are enabled through `include: ["message.output_text.logprobs"]` and `top_logprobs` only caps the count.
+- **Responses output logprobs drop zero-length tokens** — the sampled EOG token carries no text and is not listed in the `output_text` / `output_text.done` logprob entries, so the entries line up with the output text (Chat Completions keeps the upstream behavior).
