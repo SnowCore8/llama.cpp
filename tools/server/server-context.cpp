@@ -4898,6 +4898,8 @@ static json get_res_model_info(const server_context_meta & meta) {
         {"object",   "model"},
         {"created",  std::time(0)},
         {"owned_by", "llamacpp"},
+        // local models never shut down, so the official field stays null
+        {"shutdown_date", nullptr},
         {"meta",     {
             {"vocab_type",  meta.model_vocab_type},
             {"n_vocab",     meta.model_vocab_n_tokens},
@@ -6032,6 +6034,32 @@ void server_routes::init_routes() {
         } else {
             res->ok(get_res_models(*meta));
         }
+        return res;
+    };
+
+    this->get_model = [this](const server_http_req & req) {
+        auto res = create_response(true);
+        // note: do NOT use ctx_server here, this endpoint must be accessible during sleep
+        const std::string id = req.get_param("model");
+        if (id.empty()) {
+            res->error(format_error_response("missing model id", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        if (queue_tasks.is_sleeping()) {
+            std::unique_lock<std::mutex> lock(mutex_cache);
+            if (cached_models.contains("data") && cached_models.at("data").is_array()) {
+                for (const auto & model : cached_models.at("data")) {
+                    if (json_value(model, "id", std::string()) == id) {
+                        res->ok(model);
+                        return res;
+                    }
+                }
+            }
+        } else if (id == meta->model_name) {
+            res->ok(get_res_model_info(*meta));
+            return res;
+        }
+        res->error(format_error_response("The model '" + id + "' does not exist", ERROR_TYPE_NOT_FOUND));
         return res;
     };
 

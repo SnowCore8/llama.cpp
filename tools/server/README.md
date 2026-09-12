@@ -1330,6 +1330,7 @@ Example:
             "object": "model",
             "created": 1735142223,
             "owned_by": "llamacpp",
+            "shutdown_date": null,
             "meta": {
                 "vocab_type": 2,
                 "n_vocab": 128256,
@@ -1340,6 +1341,20 @@ Example:
             }
         }
     ]
+}
+```
+
+### GET `/v1/models/{model}`: OpenAI-compatible Model Retrieve API
+
+Returns the `Model` object for the given id. The id must match the model `id` field from `GET /v1/models` (the `--alias` value when set); any other id returns HTTP 404. `shutdown_date` is always `null` because local models never shut down.
+
+```json
+{
+    "id": "gpt-4o-mini",
+    "object": "model",
+    "created": 1735142223,
+    "owned_by": "llamacpp",
+    "shutdown_date": null
 }
 ```
 
@@ -2057,6 +2072,10 @@ Note: for "downloading" state, there can be multiple files be downloading in par
   }
 }
 ```
+
+### GET `/models/{model}`: Retrieve a model
+
+Returns the same `Model` object as one entry of `GET /models` for the given id, or HTTP 404 when the id is unknown or hidden by a preset. Also available as `GET /v1/models/{model}` for OpenAI-compatible clients.
 
 ### POST `/models/load`: Load a model
 

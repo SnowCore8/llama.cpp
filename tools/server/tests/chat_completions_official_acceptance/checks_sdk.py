@@ -141,6 +141,18 @@ def run_sdk_checks(
     except Exception as e:
         report.add("sdk", "models.list", "FAIL", f"{type(e).__name__}: {e}"[:200])
 
+    try:
+        m = client.models.retrieve(model)
+        shutdown = getattr(m, "shutdown_date", "missing")
+        report.add(
+            "sdk",
+            "models.retrieve",
+            "PASS" if m.id == model and shutdown is None else "FAIL",
+            f"id={m.id!r} shutdown_date={shutdown!r}",
+        )
+    except Exception as e:
+        report.add("sdk", "models.retrieve", "FAIL", f"{type(e).__name__}: {e}"[:200])
+
     # Stored Chat Completions CRUD (store=true)
     stored_id: str | None = None
     try:

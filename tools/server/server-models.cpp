@@ -2018,6 +2018,68 @@ static std::optional<server_model_meta> resolve_child_for_conv(
     return std::nullopt;
 }
 
+// OAI-compat model object for /models and /models/{model}
+static json router_model_to_json(const server_model_meta & meta, std::time_t t) {
+    json status {
+        {"value",  server_model_status_to_string(meta.status)},
+        {"args",   meta.args},
+    };
+    if (!meta.preset.name.empty()) {
+        common_preset preset_copy = meta.preset;
+        unset_reserved_args(preset_copy, false);
+        preset_copy.unset_option("LLAMA_ARG_HOST");
+        preset_copy.unset_option("LLAMA_ARG_PORT");
+        preset_copy.unset_option("LLAMA_ARG_ALIAS");
+        preset_copy.unset_option("LLAMA_ARG_TAGS");
+        status["preset"] = preset_copy.to_ini();
+    }
+    if (meta.is_failed()) {
+        status["exit_code"] = meta.exit_code;
+        status["failed"]    = true;
+    }
+
+    // pi coding agent multimodal compatibility
+    json input_modalities = json::array({"text"});
+    if (meta.multimodal.inp_vision) {
+        input_modalities.push_back("image");
+    }
+    if (meta.multimodal.inp_audio) {
+        input_modalities.push_back("audio");
+    }
+    json architecture {
+        {"input_modalities",  input_modalities},
+        {"output_modalities", json::array({"text"})},
+    };
+
+    json model_info = json {
+        {"id",            meta.name},
+        {"aliases",       meta.aliases},
+        {"tags",          meta.tags},
+        {"object",        "model"},    // for OAI-compat
+        {"owned_by",      "llamacpp"}, // for OAI-compat
+        {"created",       t},          // for OAI-compat
+        // local models never shut down, so the official field stays null
+        {"shutdown_date", nullptr},
+        {"status",        status},
+        {"architecture",  architecture},
+        {"source",        server_model_source_to_string(meta.source)},
+        {"can_remove",    meta.source == SERVER_MODEL_SOURCE_CACHE},
+        {"no_evict",      meta.no_evict},
+        // {"need_download", meta.need_download},
+        // TODO: add other fields, may require reading GGUF metadata
+    };
+
+    // merge with loaded_info from the child process if available
+    if (meta.is_running()) {
+        for (auto it = meta.loaded_info.begin(); it != meta.loaded_info.end(); ++it) {
+            if (!model_info.contains(it.key())) {
+                model_info[it.key()] = it.value();
+            }
+        }
+    }
+    return model_info;
+}
+
 void server_models_routes::init_routes() {
     if (!common_subproc::is_supported()) {
         throw std::runtime_error("subprocess is not enabled on this build");
@@ -2185,67 +2247,28 @@ void server_models_routes::init_routes() {
             if (meta.hidden) {
                 continue; // cache model deduplicated by a preset
             }
-            json status {
-                {"value",  server_model_status_to_string(meta.status)},
-                {"args",   meta.args},
-            };
-            if (!meta.preset.name.empty()) {
-                common_preset preset_copy = meta.preset;
-                unset_reserved_args(preset_copy, false);
-                preset_copy.unset_option("LLAMA_ARG_HOST");
-                preset_copy.unset_option("LLAMA_ARG_PORT");
-                preset_copy.unset_option("LLAMA_ARG_ALIAS");
-                preset_copy.unset_option("LLAMA_ARG_TAGS");
-                status["preset"] = preset_copy.to_ini();
-            }
-            if (meta.is_failed()) {
-                status["exit_code"] = meta.exit_code;
-                status["failed"]    = true;
-            }
-
-            // pi coding agent multimodal compatibility
-            json input_modalities = json::array({"text"});
-            if (meta.multimodal.inp_vision) {
-                input_modalities.push_back("image");
-            }
-            if (meta.multimodal.inp_audio) {
-                input_modalities.push_back("audio");
-            }
-            json architecture {
-                {"input_modalities",  input_modalities},
-                {"output_modalities", json::array({"text"})},
-            };
-
-            json model_info = json {
-                {"id",            meta.name},
-                {"aliases",       meta.aliases},
-                {"tags",          meta.tags},
-                {"object",        "model"},    // for OAI-compat
-                {"owned_by",      "llamacpp"}, // for OAI-compat
-                {"created",       t},          // for OAI-compat
-                {"status",        status},
-                {"architecture",  architecture},
-                {"source",        server_model_source_to_string(meta.source)},
-                {"can_remove",    meta.source == SERVER_MODEL_SOURCE_CACHE},
-                {"no_evict",      meta.no_evict},
-                // {"need_download", meta.need_download},
-                // TODO: add other fields, may require reading GGUF metadata
-            };
-
-            // merge with loaded_info from the child process if available
-            if (meta.is_running()) {
-                for (auto it = meta.loaded_info.begin(); it != meta.loaded_info.end(); ++it) {
-                    if (!model_info.contains(it.key())) {
-                        model_info[it.key()] = it.value();
-                    }
-                }
-            }
-            models_json.push_back(model_info);
+            models_json.push_back(router_model_to_json(meta, t));
         }
         res_ok(res, {
             {"data", models_json},
             {"object", "list"},
         });
+        return res;
+    };
+
+    this->get_router_model = [this](const server_http_req & req) {
+        auto res = std::make_unique<server_http_res>();
+        const std::string name = req.get_param("model");
+        if (name.empty()) {
+            res_err(res, format_error_response("missing model id", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        auto meta = models.get_meta(name);
+        if (!meta.has_value() || meta->hidden) {
+            res_err(res, format_error_response("The model '" + name + "' does not exist", ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+        res_ok(res, router_model_to_json(*meta, std::time(0)));
         return res;
     };
 

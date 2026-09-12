@@ -227,3 +227,40 @@ def run_endpoint_checks(
         "PASS" if ucode == 404 else "FAIL",
         f"HTTP {ucode}",
     )
+
+    # GET /v1/models/{model} — official retrieve; shutdown_date is null locally
+    list_code, list_data = client.get_json("/v1/models")
+    entry = None
+    if isinstance(list_data, dict):
+        for c in list_data.get("data") or []:
+            if c.get("id") == model:
+                entry = c
+                break
+    mcode, mdata = client.get_json(f"/v1/models/{model}")
+    retrieve_ok = (
+        mcode == 200
+        and isinstance(mdata, dict)
+        and mdata.get("id") == model
+        and mdata.get("object") == "model"
+        and "shutdown_date" in mdata
+        and mdata.get("shutdown_date") is None
+        and entry is not None
+        and entry.get("object") == "model"
+        and "shutdown_date" in entry
+        and entry.get("shutdown_date") is None
+    )
+    report.add(
+        "endpoint",
+        "GET /v1/models/{model}",
+        "PASS" if retrieve_ok else "FAIL",
+        f"retrieve_HTTP={mcode} list_HTTP={list_code} "
+        f"shutdown_date={mdata.get('shutdown_date') if isinstance(mdata, dict) else None}",
+    )
+
+    umcode, _ = client.get_json("/v1/models/no-such-model")
+    report.add(
+        "endpoint",
+        "GET /v1/models/{model} (unknown id)",
+        "PASS" if umcode == 404 else "FAIL",
+        f"HTTP {umcode}",
+    )
