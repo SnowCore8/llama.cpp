@@ -9,7 +9,14 @@ from typing import Any
 
 from openai import OpenAI
 
-from .http_client import ResponsesHttpClient, output_text, parse_sse
+from .http_client import (
+    ResponsesHttpClient,
+    as_dict as _as_dict,
+    as_list as _as_list,
+    openai_base,
+    output_text,
+    parse_sse,
+)
 from .report import Report
 
 ITEM_TEXT = {"type": "message", "role": "user", "content": "hello"}
@@ -27,9 +34,9 @@ ITEM_ASSISTANT_LP = {
             "logprobs": [
                 {
                     "token": "LP_TEXT",
-                    "bytes": [76, 80],
+                    "bytes": list(b"LP_TEXT"),
                     "logprob": -0.5,
-                    "top_logprobs": [{"token": "LP_TEXT", "bytes": [76, 80], "logprob": -0.5}],
+                    "top_logprobs": [{"token": "LP_TEXT", "bytes": list(b"LP_TEXT"), "logprob": -0.5}],
                 }
             ],
         }
@@ -37,12 +44,14 @@ ITEM_ASSISTANT_LP = {
 }
 
 
-def _openai_base(base_url: str) -> str:
-    u = base_url.rstrip("/")
-    return u if u.endswith("/v1") else f"{u}/v1"
+def _first_content_part(item: dict[str, Any]) -> dict[str, Any]:
+    parts = item.get("content")
+    return _as_dict(parts[0]) if isinstance(parts, list) and parts else {}
 
 
-def _content_text(item: dict[str, Any]) -> str:
+def _content_text(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
     for part in item.get("content") or []:
         if isinstance(part, dict) and isinstance(part.get("text"), str):
             return part["text"]
@@ -89,15 +98,15 @@ def run_conversation_checks(
     )
     add("create", shape_ok, f"HTTP {code} id={cid} body={json.dumps(conv)[:200]}")
 
-    code, empty = client.post_json("/v1/conversations", {})
+    code_empty, empty = client.post_json("/v1/conversations", {})
     add(
         "create.empty_body",
-        code == 200
+        code_empty == 200
         and isinstance(empty, dict)
         and empty.get("object") == "conversation"
         and isinstance(empty.get("created_at"), int)
         and (empty.get("metadata") in ({}, None)),
-        f"HTTP {code} body={json.dumps(empty)[:160]}",
+        f"HTTP {code_empty} body={json.dumps(empty)[:160]}",
     )
 
     code, too_many = client.post_json("/v1/conversations", {"items": [dict(ITEM_TEXT) for _ in range(21)]})
@@ -105,13 +114,13 @@ def run_conversation_checks(
 
     if shape_ok:
         code, page = client.get_json(f"/v1/conversations/{cid}/items")
-        data = page.get("data") if isinstance(page, dict) else None
+        page_d = _as_dict(page)
+        data = _as_list(page_d.get("data"))
         stored_ok = (
             code == 200
-            and isinstance(page, dict)
-            and page.get("object") == "list"
-            and isinstance(data, list)
+            and page_d.get("object") == "list"
             and len(data) == 2
+            and all(isinstance(x, dict) for x in data)
             and data[0].get("id", "").startswith("msg_")
             and data[1].get("id", "").startswith("msg_")
             and _content_text(data[0]) == "world"
@@ -119,33 +128,33 @@ def run_conversation_checks(
             and data[0].get("role") == "user"
             and data[0].get("status") == "completed"
             and data[0].get("type") == "message"
-            and page.get("has_more") is False
-            and page.get("first_id") == data[0].get("id")
-            and page.get("last_id") == data[1].get("id")
+            and page_d.get("has_more") is False
+            and page_d.get("first_id") == data[0].get("id")
+            and page_d.get("last_id") == data[1].get("id")
         )
         add("create.items_stored", stored_ok, f"HTTP {code} page={json.dumps(page)[:240]}")
 
         code, got = client.get_json(f"/v1/conversations/{cid}")
+        got_d = _as_dict(got)
         add(
             "get",
             code == 200
-            and isinstance(got, dict)
-            and got.get("id") == cid
-            and got.get("object") == "conversation"
-            and got.get("metadata") == {"topic": "demo"},
+            and got_d.get("id") == cid
+            and got_d.get("object") == "conversation"
+            and got_d.get("metadata") == {"topic": "demo"},
             f"HTTP {code} body={json.dumps(got)[:160]}",
         )
 
         code, updated = client.post_json(f"/v1/conversations/{cid}", {"metadata": {"topic": "demo2", "k": "v"}})
         code_get, after_update = client.get_json(f"/v1/conversations/{cid}")
+        updated_d = _as_dict(updated)
         add(
             "update",
             code == 200
-            and isinstance(updated, dict)
-            and updated.get("metadata") == {"topic": "demo2", "k": "v"}
+            and updated_d.get("metadata") == {"topic": "demo2", "k": "v"}
             and code_get == 200
-            and after_update.get("metadata") == {"topic": "demo2", "k": "v"},
-            f"HTTP {code} metadata={json.dumps(updated.get('metadata'))[:120]}",
+            and _as_dict(after_update).get("metadata") == {"topic": "demo2", "k": "v"},
+            f"HTTP {code} metadata={json.dumps(updated_d.get('metadata'))[:120]}",
         )
 
         code, _ = client.post_json(f"/v1/conversations/{cid}", {"metadata": {f"k{i}": "v" for i in range(17)}})
@@ -155,11 +164,15 @@ def run_conversation_checks(
             code == 400 and code_bad_value == 400,
             f"17_pairs={code} non_string={code_bad_value} (want 400/400)",
         )
+
+        code_no_md, _ = client.post_json(f"/v1/conversations/{cid}", {})
+        add("update.no_metadata", code_no_md == 400, f"HTTP {code_no_md} (want 400)")
     else:
         report.add(cat, "create.items_stored", "FAIL", "create failed, cannot verify stored items")
         report.add(cat, "get", "FAIL", "create failed")
         report.add(cat, "update", "FAIL", "create failed")
         report.add(cat, "update.invalid_metadata", "FAIL", "create failed")
+        report.add(cat, "update.no_metadata", "FAIL", "create failed")
 
     code, _ = client.get_json("/v1/conversations/conv_does_not_exist")
     add("get.missing", code == 404, f"HTTP {code} (want 404)")
@@ -173,8 +186,10 @@ def run_conversation_checks(
         for name in (
             "items.add",
             "items.add.too_many",
+            "items.add.invalid",
             "items.list.default_desc",
             "items.list.asc",
+            "items.list.desc_after",
             "items.list.limit_after",
             "items.list.invalid",
             "items.get",
@@ -185,68 +200,140 @@ def run_conversation_checks(
             report.add(cat, name, "FAIL", f"second create failed (HTTP {code})")
     else:
         code, added = client.post_json(f"/v1/conversations/{cid2}/items", {"items": [ITEM_TEXT, ITEM_FC, ITEM_FCO]})
-        adata = added.get("data") if isinstance(added, dict) else None
-        add(
-            "items.add",
+        added_d = _as_dict(added)
+        adata = _as_list(added_d.get("data"))
+        ids = [i.get("id") if isinstance(i, dict) else None for i in adata]
+        add_ok = (
             code == 200
-            and isinstance(added, dict)
-            and added.get("object") == "list"
-            and isinstance(adata, list)
+            and added_d.get("object") == "list"
             and len(adata) == 3
-            and adata[0].get("id", "").startswith("msg_")
-            and adata[1].get("id", "").startswith("fc_")
-            and adata[2].get("id", "").startswith("fco_")
+            and all(isinstance(i, dict) for i in adata)
+            and all(isinstance(x, str) and x for x in ids)
+            and ids[0].startswith("msg_")
+            and ids[1].startswith("fc_")
+            and ids[2].startswith("fco_")
             and adata[1].get("call_id") == "call_1"
             and adata[2].get("output") == "42"
-            and added.get("has_more") is False
-            and added.get("first_id") == adata[0].get("id")
-            and added.get("last_id") == adata[2].get("id"),
-            f"HTTP {code} ids={[i.get('id') for i in adata] if isinstance(adata, list) else None}",
+            and added_d.get("has_more") is False
+            and added_d.get("first_id") == ids[0]
+            and added_d.get("last_id") == ids[2]
         )
+        add("items.add", add_ok, f"HTTP {code} ids={ids}")
 
         code, _ = client.post_json(f"/v1/conversations/{cid2}/items", {"items": [dict(ITEM_TEXT) for _ in range(21)]})
         add("items.add.too_many", code == 400, f"HTTP {code} (want 400)")
 
-        code, desc = client.get_json(f"/v1/conversations/{cid2}/items")
-        ddata = desc.get("data") if isinstance(desc, dict) else None
-        ids_desc = [i.get("id") for i in ddata] if isinstance(ddata, list) else []
+        code_missing, _ = client.post_json(f"/v1/conversations/{cid2}/items", {})
+        code_bad_role, _ = client.post_json(
+            f"/v1/conversations/{cid2}/items",
+            {"items": [{"type": "message", "role": "bogus", "content": "x"}]},
+        )
+        code_no_content, _ = client.post_json(
+            f"/v1/conversations/{cid2}/items", {"items": [{"type": "message", "role": "user"}]}
+        )
         add(
-            "items.list.default_desc",
-            code == 200
-            and ids_desc == [adata[2]["id"], adata[1]["id"], adata[0]["id"]]
-            and desc.get("first_id") == ids_desc[0]
-            and desc.get("last_id") == ids_desc[-1],
-            f"HTTP {code} ids={ids_desc}",
+            "items.add.invalid",
+            code_missing == 400 and code_bad_role == 400 and code_no_content == 400,
+            f"missing_items={code_missing} bad_role={code_bad_role} no_content={code_no_content} (want 400s)",
         )
 
-        code, asc = client.get_json(f"/v1/conversations/{cid2}/items?order=asc")
-        adata2 = asc.get("data") if isinstance(asc, dict) else None
-        ids_asc = [i.get("id") for i in adata2] if isinstance(adata2, list) else []
-        add(
-            "items.list.asc",
-            code == 200 and ids_asc == [adata[0]["id"], adata[1]["id"], adata[2]["id"]],
-            f"HTTP {code} ids={ids_asc}",
-        )
+        if not add_ok:
+            for name in (
+                "items.list.default_desc",
+                "items.list.asc",
+                "items.list.desc_after",
+                "items.list.limit_after",
+                "items.get",
+                "items.delete",
+                "items.delete.missing",
+            ):
+                report.add(cat, name, "FAIL", "items.add failed; cannot verify")
+        else:
+            code, desc = client.get_json(f"/v1/conversations/{cid2}/items")
+            desc_d = _as_dict(desc)
+            ddata = _as_list(desc_d.get("data"))
+            ids_desc = [i.get("id") if isinstance(i, dict) else None for i in ddata]
+            add(
+                "items.list.default_desc",
+                code == 200
+                and ids_desc == [ids[2], ids[1], ids[0]]
+                and desc_d.get("first_id") == ids_desc[0]
+                and desc_d.get("last_id") == ids_desc[-1],
+                f"HTTP {code} ids={ids_desc}",
+            )
 
-        code, page1 = client.get_json(f"/v1/conversations/{cid2}/items?order=asc&limit=2")
-        p1 = page1.get("data") if isinstance(page1, dict) else None
-        code2, page2 = client.get_json(
-            f"/v1/conversations/{cid2}/items?order=asc&limit=2&after={adata[1]['id']}"
-        )
-        p2 = page2.get("data") if isinstance(page2, dict) else None
-        add(
-            "items.list.limit_after",
-            code == 200
-            and isinstance(p1, list)
-            and [i.get("id") for i in p1] == [adata[0]["id"], adata[1]["id"]]
-            and page1.get("has_more") is True
-            and code2 == 200
-            and isinstance(p2, list)
-            and [i.get("id") for i in p2] == [adata[2]["id"]]
-            and page2.get("has_more") is False,
-            f"HTTP {code}/{code2} first={len(p1) if isinstance(p1, list) else None} "
-            f"more={page1.get('has_more')} second={len(p2) if isinstance(p2, list) else None}",
-        )
+            code, asc = client.get_json(f"/v1/conversations/{cid2}/items?order=asc")
+            adata2 = _as_list(_as_dict(asc).get("data"))
+            ids_asc = [i.get("id") if isinstance(i, dict) else None for i in adata2]
+            add(
+                "items.list.asc",
+                code == 200 and ids_asc == [ids[0], ids[1], ids[2]],
+                f"HTTP {code} ids={ids_asc}",
+            )
+
+            code_da, desc_after = client.get_json(
+                f"/v1/conversations/{cid2}/items?order=desc&after={ids[1]}"
+            )
+            da_data = _as_list(_as_dict(desc_after).get("data"))
+            ids_da = [i.get("id") if isinstance(i, dict) else None for i in da_data]
+            add(
+                "items.list.desc_after",
+                code_da == 200 and ids_da == [ids[0]],
+                f"HTTP {code_da} after={ids[1]} ids={ids_da}",
+            )
+
+            code, page1 = client.get_json(f"/v1/conversations/{cid2}/items?order=asc&limit=2")
+            page1_d = _as_dict(page1)
+            p1 = _as_list(page1_d.get("data"))
+            code2, page2 = client.get_json(
+                f"/v1/conversations/{cid2}/items?order=asc&limit=2&after={ids[1]}"
+            )
+            page2_d = _as_dict(page2)
+            p2 = _as_list(page2_d.get("data"))
+            add(
+                "items.list.limit_after",
+                code == 200
+                and [i.get("id") if isinstance(i, dict) else None for i in p1] == [ids[0], ids[1]]
+                and page1_d.get("has_more") is True
+                and code2 == 200
+                and [i.get("id") if isinstance(i, dict) else None for i in p2] == [ids[2]]
+                and page2_d.get("has_more") is False,
+                f"HTTP {code}/{code2} first={len(p1)} more={page1_d.get('has_more')} second={len(p2)}",
+            )
+
+            code, item = client.get_json(f"/v1/conversations/{cid2}/items/{ids[1]}")
+            item_d = _as_dict(item)
+            add(
+                "items.get",
+                code == 200
+                and item_d.get("id") == ids[1]
+                and item_d.get("type") == "function_call"
+                and item_d.get("name") == "lookup",
+                f"HTTP {code} body={json.dumps(item)[:160]}",
+            )
+
+            code, conv_after_delete = client.delete_json(f"/v1/conversations/{cid2}/items/{ids[1]}")
+            cad = _as_dict(conv_after_delete)
+            code_items, left = client.get_json(f"/v1/conversations/{cid2}/items?order=asc")
+            left_ids = [
+                i.get("id") if isinstance(i, dict) else None
+                for i in _as_list(_as_dict(left).get("data"))
+            ]
+            code_gone, _ = client.get_json(f"/v1/conversations/{cid2}/items/{ids[1]}")
+            add(
+                "items.delete",
+                code == 200
+                and cad.get("id") == cid2
+                and cad.get("object") == "conversation"
+                and isinstance(cad.get("created_at"), int)
+                and code_items == 200
+                and left_ids == [ids[0], ids[2]]
+                and code_gone == 404,
+                f"HTTP {code} object={cad.get('object')} left={left_ids} gone={code_gone}",
+            )
+
+            code, _ = client.delete_json(f"/v1/conversations/{cid2}/items/{ids[1]}")
+            add("items.delete.missing", code == 404, f"HTTP {code} (want 404)")
 
         code_order, _ = client.get_json(f"/v1/conversations/{cid2}/items?order=bogus")
         code_zero, _ = client.get_json(f"/v1/conversations/{cid2}/items?limit=0")
@@ -255,43 +342,59 @@ def run_conversation_checks(
         add(
             "items.list.invalid",
             code_order == 400 and code_zero == 400 and code_big == 400 and code_after == 400,
-            f"order={code_order} limit0={code_zero} limit101={code_big} after={code_after} (want 400s)",
-        )
-
-        code, item = client.get_json(f"/v1/conversations/{cid2}/items/{adata[1]['id']}")
-        add(
-            "items.get",
-            code == 200
-            and isinstance(item, dict)
-            and item.get("id") == adata[1]["id"]
-            and item.get("type") == "function_call"
-            and item.get("name") == "lookup",
-            f"HTTP {code} body={json.dumps(item)[:160]}",
+            f"order={code_order} limit0={code_zero} limit101={code_big} after={code_after} (want 400s) (local contract)",
         )
 
         code, _ = client.get_json(f"/v1/conversations/{cid2}/items/msg_does_not_exist")
         add("items.get.missing", code == 404, f"HTTP {code} (want 404)")
 
-        code, conv_after_delete = client.delete_json(f"/v1/conversations/{cid2}/items/{adata[1]['id']}")
-        code_items, left = client.get_json(f"/v1/conversations/{cid2}/items?order=asc")
-        left_ids = [i.get("id") for i in left.get("data", [])] if isinstance(left, dict) else []
-        code_gone, _ = client.get_json(f"/v1/conversations/{cid2}/items/{adata[1]['id']}")
+    # empty conversation item list has null cursors
+    eid = _as_dict(empty).get("id", "")
+    if not eid:
+        report.add(cat, "items.list.empty", "FAIL", f"no empty conversation id (HTTP {code_empty})")
+    else:
+        code, page_e = client.get_json(f"/v1/conversations/{eid}/items")
+        page_e_d = _as_dict(page_e)
         add(
-            "items.delete",
+            "items.list.empty",
             code == 200
-            and isinstance(conv_after_delete, dict)
-            and conv_after_delete.get("id") == cid2
-            and conv_after_delete.get("object") == "conversation"
-            and isinstance(conv_after_delete.get("created_at"), int)
-            and code_items == 200
-            and left_ids == [adata[0]["id"], adata[2]["id"]]
-            and code_gone == 404,
-            f"HTTP {code} object={conv_after_delete.get('object') if isinstance(conv_after_delete, dict) else None} "
-            f"left={left_ids} gone={code_gone}",
+            and page_e_d.get("object") == "list"
+            and _as_list(page_e_d.get("data")) == []
+            and page_e_d.get("first_id") is None
+            and page_e_d.get("last_id") is None
+            and page_e_d.get("has_more") is False,
+            f"HTTP {code} body={json.dumps(page_e)[:200]}",
         )
 
-        code, _ = client.delete_json(f"/v1/conversations/{cid2}/items/{adata[1]['id']}")
-        add("items.delete.missing", code == 404, f"HTTP {code} (want 404)")
+    # official default page size is 20
+    code, conv20 = client.post_json(
+        "/v1/conversations",
+        {"items": [{"type": "message", "role": "user", "content": f"m{i}"} for i in range(20)]},
+    )
+    lid = _as_dict(conv20).get("id", "")
+    if not lid:
+        report.add(cat, "items.list.default_limit", "FAIL", f"create failed (HTTP {code})")
+    else:
+        code_add1, _ = client.post_json(
+            f"/v1/conversations/{lid}/items",
+            {"items": [{"type": "message", "role": "user", "content": "m20"}]},
+        )
+        code_def, page_def = client.get_json(f"/v1/conversations/{lid}/items")
+        page_def_d = _as_dict(page_def)
+        code_all, page_all = client.get_json(f"/v1/conversations/{lid}/items?limit=100")
+        page_all_d = _as_dict(page_all)
+        add(
+            "items.list.default_limit",
+            code_add1 == 200
+            and code_def == 200
+            and len(_as_list(page_def_d.get("data"))) == 20
+            and page_def_d.get("has_more") is True
+            and code_all == 200
+            and len(_as_list(page_all_d.get("data"))) == 21
+            and page_all_d.get("has_more") is False,
+            f"HTTP {code_def}/{code_all} default_n={len(_as_list(page_def_d.get('data')))} "
+            f"more={page_def_d.get('has_more')} limit100_n={len(_as_list(page_all_d.get('data')))}",
+        )
 
     # include gating: assistant output_text logprobs are stored but hidden by default
     code, c3 = client.post_json("/v1/conversations", {"items": [ITEM_ASSISTANT_LP]})
@@ -300,18 +403,19 @@ def run_conversation_checks(
         report.add(cat, "items.include.logprobs", "FAIL", f"create failed (HTTP {code})")
     else:
         code_list, listing = client.get_json(f"/v1/conversations/{cid3}/items")
-        ldata = listing.get("data", []) if isinstance(listing, dict) else []
-        lp_item = ldata[0] if ldata else {}
-        lp_part = (lp_item.get("content") or [{}])[0] if isinstance(lp_item.get("content"), list) else {}
+        ldata = _as_list(_as_dict(listing).get("data"))
+        lp_item = _as_dict(ldata[0]) if ldata else {}
+        lp_part = _first_content_part(lp_item)
+        lp_id = lp_item.get("id") if isinstance(lp_item.get("id"), str) else ""
         code_inc, included = client.get_json(
             f"/v1/conversations/{cid3}/items?include=message.output_text.logprobs"
         )
-        idata = included.get("data", []) if isinstance(included, dict) else []
-        inc_part = (idata[0].get("content") or [{}])[0] if idata and isinstance(idata[0].get("content"), list) else {}
+        idata = _as_list(_as_dict(included).get("data"))
+        inc_part = _first_content_part(_as_dict(idata[0]) if idata else {})
         code_one, one = client.get_json(
-            f"/v1/conversations/{cid3}/items/{lp_item.get('id', '')}?include=message.output_text.logprobs"
+            f"/v1/conversations/{cid3}/items/{lp_id}?include=message.output_text.logprobs"
         )
-        one_part = (one.get("content") or [{}])[0] if isinstance(one, dict) and isinstance(one.get("content"), list) else {}
+        one_part = _first_content_part(_as_dict(one))
         add(
             "items.include.logprobs",
             code_list == 200
@@ -322,21 +426,21 @@ def run_conversation_checks(
             and code_one == 200
             and one_part.get("logprobs") == ITEM_ASSISTANT_LP["content"][0]["logprobs"],
             f"HTTP {code_list}/{code_inc}/{code_one} default_has_lp={'logprobs' in lp_part} "
-            f"included_n={len(inc_part.get('logprobs') or [])}",
+            f"included_n={len(_as_list(inc_part.get('logprobs')))}",
         )
 
     # delete conversation returns the deleted resource and removes it
     if cid:
         code, deleted = client.delete_json(f"/v1/conversations/{cid}")
+        deleted_d = _as_dict(deleted)
         code_get, _ = client.get_json(f"/v1/conversations/{cid}")
         code_again, _ = client.delete_json(f"/v1/conversations/{cid}")
         add(
             "delete",
             code == 200
-            and isinstance(deleted, dict)
-            and deleted.get("id") == cid
-            and deleted.get("object") == "conversation.deleted"
-            and deleted.get("deleted") is True
+            and deleted_d.get("id") == cid
+            and deleted_d.get("object") == "conversation.deleted"
+            and deleted_d.get("deleted") is True
             and code_get == 404
             and code_again == 404,
             f"HTTP {code} body={json.dumps(deleted)[:160]} get={code_get} again={code_again}",
@@ -351,19 +455,22 @@ def run_conversation_checks(
         report.add(cat, "persistence.disk", "SKIP", "no LLAMA_OPENAI_FILES_PATH/conversations dir")
     else:
         code, conv_p = client.post_json("/v1/conversations", {"metadata": {"persist": "1"}, "items": [ITEM_TEXT]})
-        pid = conv_p.get("id", "") if isinstance(conv_p, dict) else ""
+        pid = _as_dict(conv_p).get("id", "")
         found = False
         for path in conv_dir.glob("*.json"):
             try:
                 doc = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
+            if not isinstance(doc, dict):
+                continue
+            items_p = _as_list(doc.get("items"))
             if (
                 doc.get("id") == pid
                 and doc.get("metadata") == {"persist": "1"}
-                and isinstance(doc.get("items"), list)
-                and len(doc["items"]) == 1
-                and doc["items"][0].get("role") == "user"
+                and len(items_p) == 1
+                and isinstance(items_p[0], dict)
+                and items_p[0].get("role") == "user"
             ):
                 found = True
                 break
@@ -371,7 +478,7 @@ def run_conversation_checks(
 
     # official Python SDK surfaces the same resource tree
     try:
-        sdk = OpenAI(api_key=client.api_key, base_url=_openai_base(client.base_url), timeout=60.0)
+        sdk = OpenAI(api_key=client.api_key, base_url=openai_base(client.base_url), timeout=60.0)
         sdk_conv = sdk.conversations.create(
             metadata={"sdk": "1"},
             items=[{"type": "message", "role": "user", "content": "sdk hello"}],
@@ -420,13 +527,15 @@ def run_conversation_response_checks(
         report.add(cat, name, "PASS" if cond else "FAIL", detail)
 
     def body_for(cid: Any, text: str, **more: Any) -> dict[str, Any]:
+        # explicit probe fields win over vendor extra; thinking off keeps exact-text probes observable
         return {
+            **extra,
             "model": model,
             "input": text,
             "max_output_tokens": 24,
             "temperature": 0,
+            "reasoning": {"effort": "none"},
             "conversation": cid,
-            **extra,
             **more,
         }
 
@@ -451,10 +560,11 @@ def run_conversation_response_checks(
             and "TURN_OK" in text
             and code_l == 200
             and len(items) == 3
+            and all(isinstance(i, dict) for i in items)
             and items[0].get("role") == "user"
             and texts[0] == "hello"
             and items[1].get("role") == "user"
-            and "TURN_OK" in texts[1]
+            and texts[1] == "Reply with exactly: TURN_OK"
             and items[2].get("role") == "assistant"
             and items[2].get("id", "").startswith("msg_")
             and "TURN_OK" in texts[2],
@@ -477,6 +587,7 @@ def run_conversation_response_checks(
             and resp_o["conversation"].get("id") == cid2
             and code_ol == 200
             and len(items_o) == 2
+            and all(isinstance(i, dict) for i in items_o)
             and items_o[0].get("role") == "user"
             and items_o[1].get("role") == "assistant",
             f"HTTP {code_o} items={len(items_o)}",
@@ -494,9 +605,10 @@ def run_conversation_response_checks(
             code_s == 200
             and code_sl == 200
             and len(items_s) == 2
+            and all(isinstance(i, dict) for i in items_s)
             and items_s[0].get("role") == "user"
             and items_s[1].get("role") == "assistant",
-            f"HTTP {code_s} items={len(items_s)}",
+            f"HTTP {code_s} items={len(items_s)} (local contract)",
         )
 
         # streaming create appends the turn too (separate remember call site)
@@ -507,15 +619,17 @@ def run_conversation_response_checks(
         code_st, _, raw = client.request("POST", "/v1/responses", body_s, stream=True)
         events = parse_sse(raw) if code_st == 200 else []
         done = next((obj for t, obj in events if t == "response.completed"), None)
+        done_resp = _as_dict(_as_dict(done).get("response"))
         code_stl, items_st = _conversation_items(client, cid4)
         add(
             "responses.conversation.stream",
             code_st == 200
             and isinstance(done, dict)
-            and isinstance(done.get("response", {}).get("conversation"), dict)
-            and done["response"]["conversation"].get("id") == cid4
+            and isinstance(done_resp.get("conversation"), dict)
+            and done_resp["conversation"].get("id") == cid4
             and code_stl == 200
             and len(items_st) == 2
+            and all(isinstance(i, dict) for i in items_st)
             and items_st[1].get("role") == "assistant",
             f"HTTP {code_st} items={len(items_st)}",
         )
@@ -546,21 +660,36 @@ def run_conversation_response_checks(
 
     # validation: mutually exclusive with previous_response_id, 400 on missing or bad shape
     code_prev, first = client.post_json("/v1/responses", {"model": model, "input": "Reply with exactly: X", **extra})
-    prev_id = first.get("id", "") if isinstance(first, dict) else ""
-    code_pe, _ = client.post_json(
-        "/v1/responses",
-        {"model": model, "input": "hi", "previous_response_id": prev_id, "conversation": "conv_x", **extra},
-    )
-    add(
-        "responses.conversation.mutual_exclusion",
-        code_pe == 400,
-        f"HTTP {code_pe} (want 400) previous_response_id={prev_id}",
-    )
+    prev_id = _as_dict(first).get("id", "")
+    code_me, me_conv = client.post_json("/v1/conversations", {})
+    me_cid = _as_dict(me_conv).get("id", "")
+    if code_prev != 200 or not prev_id or code_me != 200 or not me_cid:
+        report.add(
+            cat,
+            "responses.conversation.mutual_exclusion",
+            "FAIL",
+            f"prereq failed: first_http={code_prev} previous_response_id={prev_id or None} "
+            f"conv_http={code_me} conv_id={me_cid or None}",
+        )
+    else:
+        code_pe, _ = client.post_json(
+            "/v1/responses",
+            {"model": model, "input": "hi", "previous_response_id": prev_id, "conversation": me_cid, **extra},
+        )
+        add(
+            "responses.conversation.mutual_exclusion",
+            code_pe == 400,
+            f"HTTP {code_pe} (want 400) first_http={code_prev} previous_response_id={prev_id} conversation={me_cid}",
+        )
 
     code_missing, _ = client.post_json(
         "/v1/responses", {"model": model, "input": "hi", "conversation": "conv_does_not_exist", **extra}
     )
-    add("responses.conversation.missing", code_missing == 400, f"HTTP {code_missing} (want 400)")
+    add(
+        "responses.conversation.missing",
+        code_missing == 400,
+        f"HTTP {code_missing} (want 400) (local contract)",
+    )
 
     code_shape, _ = client.post_json("/v1/responses", {"model": model, "input": "hi", "conversation": 123, **extra})
     add("responses.conversation.bad_shape", code_shape == 400, f"HTTP {code_shape} (want 400)")

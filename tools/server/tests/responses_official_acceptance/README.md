@@ -3,7 +3,8 @@
 ## Purpose
 
 Accept or reject a server against the **public OpenAI stable API**:
-Responses (+ helpers), Completions, Models — using docs + `openai` Python SDK.
+Responses (+ helpers), Conversations, Completions, Models - using docs +
+`openai` Python SDK.
 
 **Out of scope:** Codex wire shapes; `client.beta.*` platform extras;
 hosted cloud tool *execution*.
@@ -12,7 +13,7 @@ hosted cloud tool *execution*.
 Normative sources (priority order):
 
 1. [OpenAI Responses API reference](https://platform.openai.com/docs/api-reference/responses)
-2. Completions + Models references
+2. Conversations, Completions + Models references
 3. Types & resources in the `openai` Python SDK
 
 ## Pass rule
@@ -24,11 +25,12 @@ Exit `0` only with no `FAIL` / `PARTIAL` / `NOT_IMPLEMENTED`. `SKIP` is allowed.
 | Resource | Paths |
 |----------|-------|
 | Responses | `POST/GET/DELETE /v1/responses…`, cancel, compact, input_items, input_tokens |
+| Conversations | `POST/GET/DELETE /v1/conversations…`, update, items sub-resource (add/list/get/delete) |
 | Completions | `POST /v1/completions` (+ stream) |
 | Models | `GET /v1/models` (OpenAI `Model` shape) |
 
 Also: create-param catalog, forced SSE, live SDK (`responses.create/stream/parse`,
-`models.*`, `completions.create`), image `input_image`, `tool_choice`
+`models.*`, `completions.create`, `conversations.*`), image `input_image`, `tool_choice`
 `{auto,required,function,none}`, `reasoning.effort=none`.
 
 ## Design principles
@@ -65,7 +67,8 @@ runner.py / __main__.py
   ├─ checks_completions.py
   ├─ checks_create_params.py
   ├─ checks_sdk.py            # live openai SDK
-  ├─ checks_streaming.py
+  ├─ checks_streaming.py      # SSE events, background resume, logprobs, web_search stream
+  ├─ checks_conversations.py  # Conversations + items, response<->conversation membership
   ├─ checks_scenarios.py
   ├─ checks_semantics.py
   ├─ checks_prompt_cache.py
@@ -91,10 +94,30 @@ python -m responses_official_acceptance \
   --model Qwen3.5-9B-Q4_K_M \
   --extra-json '{"chat_template_kwargs":{"enable_thinking":false}}' \
   --report-json /tmp/responses-official-report.json
+
+# run a subset by suite group (default: all)
+python -m responses_official_acceptance --only streaming,conversation
 ```
 
+`--only` accepts a comma-separated list of groups:
+`endpoint`, `models`, `completions`, `create_param`, `sdk`, `streaming`,
+`scenario`, `semantic`, `prompt_cache`, `conversation`.
+`streaming` covers the SSE event checks, `background_stream`, `output_logprobs`
+and `web_search_stream`; `conversation` covers the Conversations API and the
+response<->conversation membership checks. A crash in one suite is recorded as a
+`FAIL` row and later suites still run.
+
 Environment overrides: `RESPONSES_BASE_URL`, `RESPONSES_API_KEY`,
-`RESPONSES_MODEL`, `RESPONSES_EXTRA_JSON`.
+`RESPONSES_MODEL`, `RESPONSES_EXTRA_JSON`, `RESPONSES_ONLY`.
+
+Notable check families:
+
+- `web_search_stream.events` / `web_search_stream.annotation`: streaming
+  `response.web_search_call.*` lifecycle order and `url_citation` annotations
+  (both `SKIP` when the search provider returns no sources).
+- `stream_delta_logprobs.local` and friends: local logprob semantics (`include`
+  or `top_logprobs>0` both emit logprobs).
+- `items.list.default_limit`: official default page size is 20.
 
 Prompt-template checks (`prompt.id`) need `pmpt_local_*.json` under the server's
 `--openai-files-path/prompts/`. The runner installs them from `../fixtures/prompts/`

@@ -8,14 +8,9 @@ from typing import Any
 from openai import NotFoundError, OpenAI
 from pydantic import BaseModel
 
+from .http_client import openai_base
 from .report import Report
 from .validators import validate_response
-
-
-def _openai_base(base_url: str) -> str:
-    """OpenAI Python SDK expects the versioned root (…/v1)."""
-    u = base_url.rstrip("/")
-    return u if u.endswith("/v1") else f"{u}/v1"
 
 
 def run_sdk_checks(
@@ -26,7 +21,7 @@ def run_sdk_checks(
     model: str,
     extra: dict[str, Any],
 ) -> None:
-    client = OpenAI(api_key=api_key, base_url=_openai_base(base_url), timeout=180.0)
+    client = OpenAI(api_key=api_key, base_url=openai_base(base_url), timeout=180.0)
     extra_body = dict(extra) if extra else {}
     # Keep exact-text SDK probes observable when the server runs with --reasoning-preserve.
     extra_body.setdefault("reasoning", {"effort": "none"})

@@ -2,16 +2,41 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from .catalog import CONDITIONAL_STREAM_EVENTS, CORE_STREAM_EVENTS
-from .http_client import ResponsesHttpClient, iter_sse, parse_sse
+from .http_client import (
+    ResponsesHttpClient,
+    as_dict as _as_dict,
+    as_list as _as_list,
+    iter_sse,
+    parse_sse,
+)
 from .report import Report
 from .validators import validate_event, validate_response
 
 
 def _types(events: list[tuple[str | None, dict[str, Any]]]) -> list[str]:
     return [t for t, _ in events if t]
+
+
+def _lp_entry_ok(e: Any) -> bool:
+    """Local logprob entry contract: non-empty token, numeric logprob <= 0."""
+    return (
+        isinstance(e, dict)
+        and isinstance(e.get("token"), str)
+        and e["token"] != ""
+        and isinstance(e.get("logprob"), (int, float))
+        and e["logprob"] <= 0
+    )
+
+
+def _lp_top_ok(e: Any) -> bool:
+    """Local contract: every top_logprobs entry has a non-empty token."""
+    tops = _as_list(_as_dict(e).get("top_logprobs"))
+    return bool(tops) and all(
+        isinstance(t, dict) and isinstance(t.get("token"), str) and t["token"] != "" for t in tops
+    )
 
 
 def _mark_conditional(
@@ -413,8 +438,9 @@ def run_background_stream_checks(
     cat = "background_stream"
     body = {
         "model": model,
-        "input": "Reply with exactly: RESUME_OK",
-        "max_output_tokens": 64,
+        # long generation: the client disconnect below must happen while it is still running
+        "input": "Write a long detailed essay about the history of mathematics.",
+        "max_output_tokens": 256,
         "temperature": 0,
         "background": True,
         "stream": True,
@@ -442,27 +468,27 @@ def run_background_stream_checks(
         resp.close()
     types = _types(first)
     created = next((obj for t, obj in first if t == "response.created"), None)
-    created_resp = created.get("response") if isinstance(created, dict) else None
+    created_resp = _as_dict(_as_dict(created).get("response"))
     immediate = (
         "response.created" in types
-        and isinstance(created_resp, dict)
-        and created_resp.get("status") == "in_progress"
+        and isinstance(created, dict)
+        and created_resp.get("status") in ("in_progress", "queued")
         and created_resp.get("background") is True
     )
     report.add(
         cat,
         "background_stream.immediate",
         "PASS" if immediate else "FAIL",
-        f"types={types[:4]} status={(created_resp or {}).get('status')!r}",
+        f"types={types[:4]} status={created_resp.get('status')!r}",
     )
     rid = _first_response_id(first)
-    cursor = max((obj.get("sequence_number", -1) for _, obj in first), default=-1)
+    cursor = max((s for s in (obj.get("sequence_number") for _, obj in first) if isinstance(s, int)), default=-1)
     if not rid or cursor < 0:
         report.add(cat, "background_stream.resume", "FAIL", f"no id/cursor in first events (rid={rid!r}, cursor={cursor})")
         report.add(cat, "background_stream.retrieve_after_disconnect", "FAIL", "no id")
     else:
         # GET /v1/responses/{id}?stream=true&starting_after=N
-        # must replay only events after the cursor and finish with response.completed
+        # must replay only events after the cursor, gap-free, through a terminal event
         try:
             resume = client.open_stream(
                 f"/v1/responses/{rid}?stream=true&starting_after={cursor}",
@@ -477,24 +503,29 @@ def run_background_stream_checks(
                 resume.close()
             rest_seqs = [obj.get("sequence_number") for _, obj in rest]
             rest_types = _types(rest)
+            expected_seqs = list(range(cursor + 1, cursor + 1 + len(rest_seqs)))
+            terminal = [t for t in rest_types if t in ("response.completed", "response.incomplete")]
             ok_resume = (
                 len(rest) > 0
-                and all(isinstance(s, int) and s > cursor for s in rest_seqs)
-                and "response.completed" in rest_types
+                and all(isinstance(s, int) for s in rest_seqs)
+                and rest_seqs == expected_seqs
+                and bool(terminal)
             )
             report.add(
                 cat,
                 "background_stream.resume",
                 "PASS" if ok_resume else "FAIL",
-                f"cursor={cursor} n={len(rest)} seq head={rest_seqs[:2]} completed={'response.completed' in rest_types}",
+                f"cursor={cursor} n={len(rest)} seq head={rest_seqs[:3]} "
+                f"gap_free={rest_seqs == expected_seqs} terminal={terminal[:1]}",
             )
         code, data = client.get_json(f"/v1/responses/{rid}")
-        ok_get = code == 200 and isinstance(data, dict) and data.get("status") == "completed"
+        data_d = _as_dict(data)
+        ok_get = code == 200 and data_d.get("status") in ("completed", "incomplete")
         report.add(
             cat,
             "background_stream.retrieve_after_disconnect",
             "PASS" if ok_get else "FAIL",
-            f"HTTP {code} status={(data or {}).get('status')!r}",
+            f"HTTP {code} status={data_d.get('status')!r}",
         )
 
     # cancel: a live background stream must stop promptly and flip the stored status
@@ -507,28 +538,31 @@ def run_background_stream_checks(
         "stream": True,
         **extra,
     }
+    resp2 = None
     try:
         resp2 = client.open_stream("/v1/responses", cancel_body, timeout=60.0)
+        state: dict[str, Any] = {}
         head2: list[tuple[str | None, dict[str, Any]]] = []
-        for ev in iter_sse(resp2, max_events=2):
+        for ev in iter_sse(resp2, max_events=2, state=state):
             head2.append(ev)
         rid2 = _first_response_id(head2)
         if not rid2:
-            resp2.close()
             report.add(cat, "background_stream.cancel", "FAIL", "no response id in first events")
         else:
             code_c, _ = client.post_json(f"/v1/responses/{rid2}/cancel", {})
+            # the cancelled stream must end: a terminal event or EOF, not a socket timeout
             ended = False
             try:
-                for _ in iter_sse(resp2):  # the cancelled stream must terminate
-                    pass
-                ended = True
+                for t, _obj in iter_sse(resp2, state=state):
+                    if t in ("response.completed", "response.incomplete", "response.failed"):
+                        ended = True
+                        break
+                if not ended and state.get("_eof"):
+                    ended = True
             except Exception:
                 ended = False
-            finally:
-                resp2.close()
             code_g, data_g = client.get_json(f"/v1/responses/{rid2}")
-            status = (data_g or {}).get("status")
+            status = _as_dict(data_g).get("status")
             ok_cancel = code_c == 200 and ended and status == "cancelled"
             report.add(
                 cat,
@@ -538,6 +572,9 @@ def run_background_stream_checks(
             )
     except Exception as e:
         report.add(cat, "background_stream.cancel", "FAIL", f"{e!r}")
+    finally:
+        if resp2 is not None:
+            resp2.close()
 
     # a plain (non-background) stream has no resumable session
     code, _, raw = client.request(
@@ -572,7 +609,7 @@ def run_output_logprobs_stream_checks(
     model: str,
     extra: dict[str, Any],
 ) -> None:
-    """Official streaming logprobs: deltas and text done carry real token logprobs on request."""
+    """Streaming logprobs (local contract: include or top_logprobs>0 emits them)."""
     cat = "output_logprobs"
 
     def stream_events(body: dict[str, Any]) -> tuple[int, list[tuple[str | None, dict[str, Any]]]]:
@@ -590,31 +627,23 @@ def run_output_logprobs_stream_checks(
     }
     code, events = stream_events(include_body)
     deltas = [obj for t, obj in events if t == "response.output_text.delta"]
-    lp_entries = [e for obj in deltas for e in (obj.get("logprobs") or [])]
-    lp_ok = (
-        len(deltas) > 0
-        and len(lp_entries) > 0
-        and all(
-            isinstance(e.get("token"), str) and isinstance(e.get("logprob"), (int, float))
-            for e in lp_entries
-        )
-    )
+    lp_entries = [e for obj in deltas for e in _as_list(obj.get("logprobs"))]
+    lp_ok = len(deltas) > 0 and len(lp_entries) > 0 and all(_lp_entry_ok(e) for e in lp_entries)
     report.add(
         cat,
-        "stream_delta_logprobs",
+        "stream_delta_logprobs.local",
         "PASS" if lp_ok else "FAIL",
-        f"HTTP {code} deltas={len(deltas)} entries={len(lp_entries)} sample={lp_entries[:1]}",
+        f"local: include or top_logprobs>0 yields logprobs. HTTP {code} deltas={len(deltas)} "
+        f"entries={len(lp_entries)} sample={lp_entries[:1]}",
     )
     done = next((obj for t, obj in events if t == "response.output_text.done"), None)
-    done_lp = (done or {}).get("logprobs") or []
-    done_ok = len(done_lp) > 0 and all(
-        isinstance(e.get("token"), str) and e.get("logprob") is not None for e in done_lp
-    )
+    done_lp = _as_list(_as_dict(done).get("logprobs"))
+    done_ok = len(done_lp) > 0 and all(_lp_entry_ok(e) for e in done_lp)
     report.add(
         cat,
-        "stream_done_logprobs",
+        "stream_done_logprobs.local",
         "PASS" if done_ok else "FAIL",
-        f"entries={len(done_lp)} sample={done_lp[:1]}",
+        f"local: entries={len(done_lp)} sample={done_lp[:1]}",
     )
 
     top_body = {
@@ -628,15 +657,14 @@ def run_output_logprobs_stream_checks(
     }
     code_t, events_t = stream_events(top_body)
     deltas_t = [obj for t, obj in events_t if t == "response.output_text.delta"]
-    lp_t = [e for obj in deltas_t for e in (obj.get("logprobs") or [])]
-    top_ok = len(lp_t) > 0 and all(
-        isinstance(e.get("top_logprobs"), list) and len(e["top_logprobs"]) > 0 for e in lp_t
-    )
+    lp_t = [e for obj in deltas_t for e in _as_list(obj.get("logprobs"))]
+    top_ok = len(lp_t) > 0 and all(_lp_top_ok(e) for e in lp_t)
     report.add(
         cat,
-        "stream_delta_top_logprobs",
+        "stream_delta_top_logprobs.local",
         "PASS" if top_ok else "FAIL",
-        f"HTTP {code_t} deltas={len(deltas_t)} entries={len(lp_t)} top0={(lp_t[0].get('top_logprobs') if lp_t else None)}",
+        f"local: top_logprobs>0 yields logprobs. HTTP {code_t} deltas={len(deltas_t)} "
+        f"entries={len(lp_t)} top0={_as_list(_as_dict(lp_t[0]).get('top_logprobs')) if lp_t else None}",
     )
 
     plain_body = {
@@ -655,4 +683,128 @@ def run_output_logprobs_stream_checks(
         "stream_logprobs_omitted_by_default",
         "PASS" if plain_ok else "FAIL",
         f"HTTP {code_p} deltas={len(deltas_p)}",
+    )
+
+
+def run_web_search_stream_checks(
+    client: ResponsesHttpClient,
+    report: Report,
+    model: str,
+    extra: dict[str, Any],
+) -> None:
+    """Official streaming web_search: call lifecycle events + url_citation annotations.
+
+    Under a web-search fixture the server is deterministic; when no source shows up
+    (e.g. provider=none), the probes are not judgeable and report SKIP.
+    """
+    cat = "web_search_stream"
+    body = {
+        "model": model,
+        "input": "What is example.com used for? Reply briefly and cite the sources.",
+        "max_output_tokens": 128,
+        "temperature": 0,
+        "stream": True,
+        "tools": [
+            {
+                "type": "web_search",
+                "search_context_size": "medium",
+                "filters": {"allowed_domains": ["example.com", "iana.org", "rfc-editor.org"]},
+            }
+        ],
+        "include": ["web_search_call.action.sources"],
+        "reasoning": {"effort": "none"},
+        **extra,
+    }
+    code, _, raw = client.request("POST", "/v1/responses", body, stream=True)
+    if code != 200:
+        report.add(cat, "web_search_stream.events", "FAIL", f"HTTP {code}")
+        report.add(cat, "web_search_stream.annotation", "FAIL", f"HTTP {code}")
+        return
+    events = parse_sse(raw)
+
+    def is_ws_call(obj: dict[str, Any]) -> bool:
+        return _as_dict(obj.get("item")).get("type") == "web_search_call"
+
+    ws_items: list[dict[str, Any]] = []
+    for t, obj in events:
+        if t in ("response.output_item.added", "response.output_item.done") and is_ws_call(obj):
+            ws_items.append(_as_dict(obj.get("item")))
+        if t in ("response.completed", "response.incomplete", "response.failed"):
+            for it in _as_list(_as_dict(obj.get("response")).get("output")):
+                if _as_dict(it).get("type") == "web_search_call":
+                    ws_items.append(_as_dict(it))
+    sources = [s for it in ws_items for s in _as_list(_as_dict(it.get("action")).get("sources"))]
+    ws_events = [t for t, _ in events if t is not None and t.startswith("response.web_search_call.")]
+    search_seen = bool(ws_items) or bool(ws_events)
+
+    if not search_seen or not sources:
+        reason = (
+            "no web_search_call observed"
+            if not search_seen
+            else "search returned no sources (provider=none?)"
+        )
+        report.add(cat, "web_search_stream.events", "SKIP", f"{reason}; not judgeable")
+        report.add(cat, "web_search_stream.annotation", "SKIP", f"{reason}; not judgeable")
+        return
+
+    def first_idx(pred: Callable[[str, dict[str, Any]], bool]) -> int | None:
+        return next((i for i, (t, o) in enumerate(events) if t is not None and pred(t, o)), None)
+
+    # call lifecycle: added -> in_progress -> searching -> completed -> done (others may interleave)
+    idx = {
+        "output_item.added": first_idx(lambda t, o: t == "response.output_item.added" and is_ws_call(o)),
+        "in_progress": first_idx(lambda t, _o: t == "response.web_search_call.in_progress"),
+        "searching": first_idx(lambda t, _o: t == "response.web_search_call.searching"),
+        "completed": first_idx(lambda t, _o: t == "response.web_search_call.completed"),
+        "output_item.done": first_idx(lambda t, o: t == "response.output_item.done" and is_ws_call(o)),
+    }
+    i_added = idx["output_item.added"]
+    i_in_progress = idx["in_progress"]
+    i_searching = idx["searching"]
+    i_completed = idx["completed"]
+    i_done = idx["output_item.done"]
+    order_ok = (
+        all(v is not None for v in idx.values())
+        and i_added < i_in_progress < i_searching < i_completed < i_done
+    )
+    report.add(
+        cat,
+        "web_search_stream.events",
+        "PASS" if order_ok else "FAIL",
+        f"indices={idx} (want added<in_progress<searching<completed<done)",
+    )
+
+    # url_citation annotations arrive before output_text.done and echo in content_part.done
+    ann_url = [
+        o
+        for t, o in events
+        if t == "response.output_text.annotation.added"
+        and _as_dict(o.get("annotation")).get("type") == "url_citation"
+        and isinstance(_as_dict(o.get("annotation")).get("start_index"), int)
+        and isinstance(_as_dict(o.get("annotation")).get("end_index"), int)
+    ]
+    i_first_ann = first_idx(
+        lambda t, o: t == "response.output_text.annotation.added"
+        and _as_dict(o.get("annotation")).get("type") == "url_citation"
+    )
+    i_text_done = first_idx(lambda t, _o: t == "response.output_text.done")
+    before_done = (
+        i_first_ann is not None and i_text_done is not None and i_first_ann < i_text_done
+    )
+    part_done_ok = any(
+        _as_dict(o.get("part")).get("type") == "output_text"
+        and any(
+            _as_dict(a).get("type") == "url_citation"
+            for a in _as_list(_as_dict(o.get("part")).get("annotations"))
+        )
+        for t, o in events
+        if t == "response.content_part.done"
+    )
+    ann_ok = bool(ann_url) and before_done and part_done_ok
+    report.add(
+        cat,
+        "web_search_stream.annotation",
+        "PASS" if ann_ok else "FAIL",
+        f"url_citations={len(ann_url)} before_text_done={before_done} "
+        f"part_done_annotations={part_done_ok} sources={len(sources)}",
     )

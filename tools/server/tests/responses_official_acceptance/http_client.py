@@ -8,6 +8,22 @@ import urllib.request
 from typing import Any
 
 
+def openai_base(base_url: str) -> str:
+    """OpenAI Python SDK expects the versioned root (.../v1)."""
+    u = base_url.rstrip("/")
+    return u if u.endswith("/v1") else f"{u}/v1"
+
+
+def as_dict(v: Any) -> dict[str, Any]:
+    """Normalize a JSON value to a dict; anything else becomes {}."""
+    return v if isinstance(v, dict) else {}
+
+
+def as_list(v: Any) -> list[Any]:
+    """Normalize a JSON value to a list; anything else becomes []."""
+    return v if isinstance(v, list) else []
+
+
 class ResponsesHttpClient:
     def __init__(self, base_url: str, api_key: str, timeout: float = 300.0):
         self.base_url = base_url.rstrip("/")
@@ -115,13 +131,17 @@ def parse_sse(raw: bytes) -> list[tuple[str | None, dict[str, Any]]]:
     return events
 
 
-def iter_sse(resp, max_events: int = 0):
+def iter_sse(resp, max_events: int = 0, state: dict[str, Any] | None = None):
     """Yield (event, obj) incrementally from an open HTTP response.
 
     Reads in fixed-size chunks until EOF; stops early after max_events (>0).
-    The caller keeps ownership of the response.
+    Pass the same state dict to continue later without losing read-ahead bytes;
+    it also records EOF so a second call returns at once. The caller keeps
+    ownership of the response.
     """
-    buf = ""
+    if state is None:
+        state = {}
+    buf: str = state.pop("_buf", "")
     n = 0
     while True:
         while "\n\n" in buf:
@@ -131,9 +151,13 @@ def iter_sse(resp, max_events: int = 0):
                 yield parsed
                 n += 1
                 if max_events and n >= max_events:
+                    state["_buf"] = buf
                     return
+        if state.get("_eof"):
+            return
         chunk = resp.read(8192)
         if not chunk:
+            state["_eof"] = True
             # flush a trailing block that arrived without the final blank line
             parsed = parse_sse_block(buf)
             if parsed is not None:

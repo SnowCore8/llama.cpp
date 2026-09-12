@@ -370,29 +370,47 @@ def run_create_param_checks(
         f"HTTP {code_mcp} body={str(data_mcp)[:160]}",
     )
 
-    # allowed_tools constraint: web_search only stays when listed in the allowed set
+    # allowed_tools constraint: web_search only stays when listed in the allowed set.
+    # Each row needs a control run (same payload minus tool_choice) proving the model
+    # actually searches for this prompt; otherwise the row is not judgeable -> SKIP.
+    ws_prompt = "What is example.com used for? Reply briefly."
+    ws_echo_tool = {
+        "type": "function",
+        "name": "echo_tool",
+        "description": "echo",
+        "parameters": {
+            "type": "object",
+            "properties": {"x": {"type": "string"}},
+            "required": ["x"],
+        },
+    }
+
+    def ws_control(tools: list[dict[str, Any]]) -> tuple[bool, str]:
+        ccode, cdata = create(
+            {
+                "tools": tools,
+                "reasoning": {"effort": "none"},
+                "input": ws_prompt,
+                "max_output_tokens": 96,
+            }
+        )
+        calls = [
+            o
+            for o in (cdata.get("output") or [])
+            if isinstance(o, dict) and o.get("type") == "web_search_call"
+        ]
+        return ccode == 200 and bool(calls), f"control HTTP {ccode} ws_calls={len(calls)}"
+
     code_deny, data_deny = create(
         {
-            "tools": [
-                {"type": "web_search", "search_context_size": "medium"},
-                {
-                    "type": "function",
-                    "name": "echo_tool",
-                    "description": "echo",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"x": {"type": "string"}},
-                        "required": ["x"],
-                    },
-                },
-            ],
+            "tools": [{"type": "web_search", "search_context_size": "medium"}, ws_echo_tool],
             "tool_choice": {
                 "type": "allowed_tools",
                 "mode": "auto",
                 "tools": [{"type": "function", "name": "echo_tool"}],
             },
             "reasoning": {"effort": "none"},
-            "input": "What is example.com used for? Reply briefly.",
+            "input": ws_prompt,
             "max_output_tokens": 96,
         }
     )
@@ -401,12 +419,23 @@ def run_create_param_checks(
         for o in (data_deny.get("output") or [])
         if isinstance(o, dict) and o.get("type") == "web_search_call"
     ]
-    report.add(
-        "create_param",
-        "tools.web_search.denied_by_allowed_tools",
-        "PASS" if code_deny == 200 and not ws_deny else "FAIL",
-        f"HTTP {code_deny} ws_calls={len(ws_deny)}",
+    ctrl_deny_ok, ctrl_deny_detail = ws_control(
+        [{"type": "web_search", "search_context_size": "medium"}, ws_echo_tool]
     )
+    if not ctrl_deny_ok:
+        report.add(
+            "create_param",
+            "tools.web_search.denied_by_allowed_tools",
+            "SKIP",
+            f"control run saw no web_search_call; not judgeable ({ctrl_deny_detail})",
+        )
+    else:
+        report.add(
+            "create_param",
+            "tools.web_search.denied_by_allowed_tools",
+            "PASS" if code_deny == 200 and not ws_deny else "FAIL",
+            f"HTTP {code_deny} ws_calls={len(ws_deny)}; basis={ctrl_deny_detail}",
+        )
 
     code_allow, data_allow = create(
         {
@@ -417,7 +446,7 @@ def run_create_param_checks(
                 "tools": [{"type": "web_search"}],
             },
             "reasoning": {"effort": "none"},
-            "input": "What is example.com used for? Reply briefly.",
+            "input": ws_prompt,
             "max_output_tokens": 96,
         }
     )
@@ -426,12 +455,21 @@ def run_create_param_checks(
         for o in (data_allow.get("output") or [])
         if isinstance(o, dict) and o.get("type") == "web_search_call"
     ]
-    report.add(
-        "create_param",
-        "tools.web_search.allowed_by_allowed_tools",
-        "PASS" if code_allow == 200 and ws_allow else "FAIL",
-        f"HTTP {code_allow} ws_calls={len(ws_allow)}",
-    )
+    ctrl_allow_ok, ctrl_allow_detail = ws_control([{"type": "web_search", "search_context_size": "medium"}])
+    if not ctrl_allow_ok:
+        report.add(
+            "create_param",
+            "tools.web_search.allowed_by_allowed_tools",
+            "SKIP",
+            f"control run saw no web_search_call; not judgeable ({ctrl_allow_detail})",
+        )
+    else:
+        report.add(
+            "create_param",
+            "tools.web_search.allowed_by_allowed_tools",
+            "PASS" if code_allow == 200 and ws_allow else "FAIL",
+            f"HTTP {code_allow} ws_calls={len(ws_allow)}; basis={ctrl_allow_detail}",
+        )
 
     tools_fc = [
         {
