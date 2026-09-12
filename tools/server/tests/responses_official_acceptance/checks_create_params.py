@@ -972,10 +972,15 @@ def run_create_param_checks(
         and code2 == 200
         and t2_has_message
     )
+    if code1 == 200 and n_reason_out == 0 and code2 == 200:
+        # model-dependent: without a stored reasoning item there is nothing to replay
+        verdict = "SKIP"
+    else:
+        verdict = "PASS" if replay_ok else "FAIL"
     report.add(
         "create_param",
         "previous_response_id.reasoning_replay",
-        "PASS" if replay_ok else "FAIL",
+        verdict,
         f"t1={code1} n_rs_out={n_reason_out} t2={code2} n_rs_in={n_reason_in} "
         f"text={output_text(data2)!r}",
     )
