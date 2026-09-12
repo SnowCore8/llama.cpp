@@ -72,11 +72,14 @@ enum server_stream_resume_status {
 
 // build an SSE producer that replays a stored response stream and follows live bytes,
 // forwarding only events with sequence_number > starting_after (negative forwards all).
+// without a cursor a partial replay is fine: it starts at the oldest buffered event.
+// next_seq stamps the terminal error event sent when a following reader falls behind.
 // returns NOT_FOUND when no session exists, OFFSET_LOST when the replay prefix was dropped
 server_stream_resume_status server_stream_make_response_resume(
         const std::string & response_id,
         int64_t starting_after,
         const std::function<bool()> & should_stop,
+        const std::function<int64_t()> & next_seq,
         std::function<bool(std::string &)> & next);
 
 // implement tee-style pipe (spipe) for "stream replay" functionality

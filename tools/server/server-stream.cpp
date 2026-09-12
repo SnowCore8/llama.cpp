@@ -708,21 +708,26 @@ server_stream_resume_status server_stream_make_response_resume(
         const std::string & response_id,
         int64_t starting_after,
         const std::function<bool()> & should_stop,
+        const std::function<int64_t()> & next_seq,
         std::function<bool(std::string &)> & next) {
     auto session = g_stream_sessions.get(response_id);
     if (!session) {
         return SERVER_STREAM_RESUME_NOT_FOUND;
     }
-    if (session->dropped_prefix() > 0) {
+    // a cursor that points into the dropped prefix cannot be replayed; without a cursor the
+    // client accepts a partial replay, so follow what is still buffered
+    const size_t dropped = session->dropped_prefix();
+    if (starting_after >= 0 && dropped > 0) {
         return SERVER_STREAM_RESUME_OFFSET_LOST;
     }
     // consumer pipe: read-only, does not finalize the session on destruction
-    auto pipe    = stream_pipe_consumer::create(session);
-    auto offset  = std::make_shared<size_t>(0);
-    auto pending = std::make_shared<std::string>();
-    next = [pipe, offset, pending, starting_after, should_stop](std::string & out) -> bool {
+    auto pipe         = stream_pipe_consumer::create(session);
+    auto offset       = std::make_shared<size_t>(dropped);
+    auto pending      = std::make_shared<std::string>();
+    auto skip_partial = std::make_shared<bool>(dropped > 0);
+    next = [pipe, offset, pending, skip_partial, starting_after, should_stop, next_seq](std::string & out) -> bool {
         bool got_any = false;
-        pipe->read(*offset,
+        const stream_read_status status = pipe->read(*offset,
             [&](const char * d, size_t n) {
                 pending->append(d, n);
                 *offset += n;
@@ -730,8 +735,36 @@ server_stream_resume_status server_stream_make_response_resume(
                 return false;
             },
             should_stop);
+        if (status == stream_read_status::OFFSET_LOST) {
+            // the bytes this reader is following were evicted: surface it instead of ending silently
+            LOG_WRN("%s: stream replay buffer overflowed while following\n", __func__);
+            out += format_oai_resp_sse(json {
+                {"event", "error"},
+                {"data", json {
+                    {"type",            "error"},
+                    {"code",            "server_error"},
+                    {"message",         "stream replay buffer overflowed, the client fell behind"},
+                    {"param",           nullptr},
+                    {"sequence_number", next_seq ? next_seq() : -1},
+                }},
+            });
+            return false;
+        }
         if (!got_any) {
             return false;
+        }
+        if (*skip_partial) {
+            // a drop can cut an event in half: resume at the first whole event
+            if (pending->size() >= 7 && pending->compare(0, 7, "event: ") == 0) {
+                *skip_partial = false;
+            } else {
+                const size_t boundary = pending->find("\n\n");
+                if (boundary == std::string::npos) {
+                    return true; // keep reading until the boundary is in
+                }
+                pending->erase(0, boundary + 2);
+                *skip_partial = false;
+            }
         }
         // forward only complete events past the client cursor: the buffer always starts at
         // offset 0, so events the client already saw are dropped by sequence_number here

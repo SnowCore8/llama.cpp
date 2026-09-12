@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <numeric>
@@ -48,6 +49,17 @@
 #endif
 
 constexpr int HTTP_POLLING_SECONDS = 1;
+
+// parse a full integer parameter; trailing garbage ("12abc") must not pass
+static bool parse_int64_param(const std::string & s, int64_t & out) {
+    if (s.empty()) {
+        return false;
+    }
+    const char * begin = s.data();
+    const char * end   = begin + s.size();
+    const auto res = std::from_chars(begin, end, out);
+    return res.ec == std::errc() && res.ptr == end;
+}
 
 static common_speculative_output_limits server_output_limits(const common_params & params) {
     if (params.embedding ||
@@ -5661,16 +5673,16 @@ void server_routes::init_routes() {
             int64_t starting_after = -1;
             const std::string starting_after_str = req.get_param("starting_after");
             if (!starting_after_str.empty()) {
-                try {
-                    starting_after = std::stoll(starting_after_str);
-                } catch (const std::exception &) {
+                if (!parse_int64_param(starting_after_str, starting_after)) {
                     res->error(format_error_response("invalid 'starting_after' value", ERROR_TYPE_INVALID_REQUEST));
                     return res;
                 }
             }
             std::function<bool(std::string &)> next;
             const server_stream_resume_status status = server_stream_make_response_resume(
-                resp_id, starting_after, req.should_stop, next);
+                resp_id, starting_after, req.should_stop,
+                [resp_id]() { return server_responses_next_seq(resp_id); },
+                next);
             if (status == SERVER_STREAM_RESUME_NOT_FOUND) {
                 res->error(format_error_response(
                     "no resumable stream for response (only background streams can be resumed): " + resp_id,
@@ -5679,7 +5691,7 @@ void server_routes::init_routes() {
             }
             if (status == SERVER_STREAM_RESUME_OFFSET_LOST) {
                 res->error(format_error_response(
-                    "stream replay offset was dropped, restart without starting_after",
+                    "stream replay cursor was dropped, restart without starting_after",
                     ERROR_TYPE_INVALID_REQUEST));
                 return res;
             }
@@ -5826,9 +5838,7 @@ void server_routes::init_routes() {
         int64_t limit = 20; // official default
         const std::string limit_str = req.get_param("limit");
         if (!limit_str.empty()) {
-            try {
-                limit = std::stoll(limit_str);
-            } catch (const std::exception &) {
+            if (!parse_int64_param(limit_str, limit)) {
                 throw std::invalid_argument("'limit' must be an integer");
             }
         }
