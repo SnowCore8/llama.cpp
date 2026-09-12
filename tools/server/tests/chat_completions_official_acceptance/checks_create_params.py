@@ -663,18 +663,116 @@ def run_create_param_checks(
             cid = data.get("id") if isinstance(data, dict) else None
             gcode, got = client.get_json(f"/v1/chat/completions/{cid}") if cid else (0, {})
             md = got.get("metadata") if isinstance(got, dict) else None
-            ok = (
+            roundtrip_ok = (
                 code == 200
                 and gcode == 200
                 and isinstance(md, dict)
                 and md.get("k") == "v"
                 and md.get("run") == "acceptance"
             )
+            # official shape limits: <=16 pairs, keys <=64 chars, string values <=512 chars
+            code_many, _ = create(
+                {
+                    "store": True,
+                    "metadata": {f"k{i}": "v" for i in range(17)},
+                    "messages": [{"role": "user", "content": "x"}],
+                },
+                max_tokens=8,
+            )
+            code_key, _ = create(
+                {
+                    "store": True,
+                    "metadata": {"k" * 65: "v"},
+                    "messages": [{"role": "user", "content": "x"}],
+                },
+                max_tokens=8,
+            )
+            code_val, _ = create(
+                {
+                    "store": True,
+                    "metadata": {"k": "v" * 513},
+                    "messages": [{"role": "user", "content": "x"}],
+                },
+                max_tokens=8,
+            )
+            # values exactly at the limits must still be accepted
+            at_limit: dict[str, Any] = {f"k{i}": "v" for i in range(14)}
+            at_limit["k" * 64] = "v"
+            at_limit["k64"] = "v" * 512
+            code_at, _ = create(
+                {
+                    "store": True,
+                    "metadata": at_limit,
+                    "messages": [{"role": "user", "content": "x"}],
+                },
+                max_tokens=8,
+            )
+            limits_ok = code_many == 400 and code_key == 400 and code_val == 400 and code_at == 200
+            # official list filter: metadata[key]=value pairs combined with AND
+            code2, data2 = create(
+                {
+                    "store": True,
+                    "metadata": {"k": "other", "suite": "metadata-filter"},
+                    "messages": [{"role": "user", "content": "x"}],
+                },
+                max_tokens=8,
+            )
+            code3, data3 = create(
+                {
+                    "store": True,
+                    "metadata": {"k": "other"},
+                    "messages": [{"role": "user", "content": "x"}],
+                },
+                max_tokens=8,
+            )
+            lcode, listed = client.get_json(
+                "/v1/chat/completions"
+                "?metadata%5Bk%5D=other&metadata%5Bsuite%5D=metadata-filter&limit=100&order=desc"
+            )
+            ids = (
+                [c.get("id") for c in (listed.get("data") or [])]
+                if isinstance(listed, dict)
+                else []
+            )
+            id2 = data2.get("id") if isinstance(data2, dict) else None
+            id3 = data3.get("id") if isinstance(data3, dict) else None
+            filter_ok = (
+                code2 == 200
+                and code3 == 200
+                and lcode == 200
+                and id2 is not None
+                and id2 in ids
+                and id3 is not None
+                and id3 not in ids
+            )
+            # official update: Metadata object or null (null clears), shape validated
+            if cid:
+                ucode, udata = client.post_json(
+                    f"/v1/chat/completions/{cid}", {"metadata": {"k": "v2"}}
+                )
+                ncode, ndata = client.post_json(f"/v1/chat/completions/{cid}", {"metadata": None})
+                bcode, _ = client.post_json(
+                    f"/v1/chat/completions/{cid}", {"metadata": {"k": "v" * 513}}
+                )
+            else:
+                ucode = ncode = bcode = 0
+                udata = ndata = {}
+            update_ok = (
+                ucode == 200
+                and isinstance(udata, dict)
+                and (udata.get("metadata") or {}).get("k") == "v2"
+                and ncode == 200
+                and isinstance(ndata, dict)
+                and ndata.get("metadata", "missing") is None
+                and bcode == 400
+            )
+            ok = roundtrip_ok and limits_ok and filter_ok and update_ok
             report.add(
                 "create_param",
                 field,
                 "PASS" if ok else "FAIL",
-                f"create={code} get={gcode} metadata={md!r}",
+                f"roundtrip={roundtrip_ok} limits={limits_ok} "
+                f"list_filter={filter_ok} update={update_ok}",
             )
             continue
         if field in ("frequency_penalty", "presence_penalty"):

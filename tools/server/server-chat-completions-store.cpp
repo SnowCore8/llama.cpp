@@ -294,7 +294,8 @@ json server_chat_completions_store::list(
     const std::string & after,
     int limit,
     bool order_desc,
-    const std::string & model_filter) {
+    const std::string & model_filter,
+    const std::vector<std::pair<std::string, std::string>> & metadata_filter) {
     std::lock_guard<std::mutex> lock(mutex);
     sync_new_from_disk_unlocked();
     std::vector<server_chat_completions_store_entry> rows;
@@ -305,6 +306,20 @@ json server_chat_completions_store::list(
             continue;
         }
         if (!model_filter.empty() && kv.second.model != model_filter) {
+            continue;
+        }
+        // filters combine with AND; a pair matches only a string value stored under the same key
+        bool metadata_matched = true;
+        for (const auto & filter : metadata_filter) {
+            const json & metadata = kv.second.metadata;
+            if (!metadata.is_object() || !metadata.contains(filter.first) ||
+                    !metadata.at(filter.first).is_string() ||
+                    metadata.at(filter.first).get<std::string>() != filter.second) {
+                metadata_matched = false;
+                break;
+            }
+        }
+        if (!metadata_matched) {
             continue;
         }
         rows.push_back(kv.second);

@@ -217,6 +217,27 @@ static void server_openai_validate_service_tier(const json & body) {
     }
 }
 
+// Validate the official Metadata object: <=16 pairs, keys <=64 chars, string values <=512 chars.
+void server_openai_validate_metadata(const json & metadata) {
+    if (!metadata.is_object()) {
+        throw std::invalid_argument("'metadata' must be an object");
+    }
+    if (metadata.size() > 16) {
+        throw std::invalid_argument("'metadata' must have at most 16 key-value pairs");
+    }
+    for (const auto & el : metadata.items()) {
+        if (!el.value().is_string()) {
+            throw std::invalid_argument("'metadata' values must be strings");
+        }
+        if (el.key().size() > 64) {
+            throw std::invalid_argument("'metadata' keys must be at most 64 characters");
+        }
+        if (el.value().get<std::string>().size() > 512) {
+            throw std::invalid_argument("'metadata' values must be at most 512 characters");
+        }
+    }
+}
+
 void server_openai_validate_cloud_shaped_fields(const json & body, bool allow_prompt) {
     if (allow_prompt && body.contains("prompt") && !body.at("prompt").is_null()) {
         if (!body.at("prompt").is_object()) {
@@ -292,24 +313,7 @@ void server_openai_validate_cloud_shaped_fields(const json & body, bool allow_pr
         // Responses-only fields: the chatcmpl conversion strips these before the
         // chat path could validate them, so check the official shape here.
         if (body.contains("metadata") && !body.at("metadata").is_null()) {
-            const json & metadata = body.at("metadata");
-            if (!metadata.is_object()) {
-                throw std::invalid_argument("'metadata' must be an object");
-            }
-            if (metadata.size() > 16) {
-                throw std::invalid_argument("'metadata' must have at most 16 key-value pairs");
-            }
-            for (const auto & el : metadata.items()) {
-                if (!el.value().is_string()) {
-                    throw std::invalid_argument("'metadata' values must be strings");
-                }
-                if (el.key().size() > 64) {
-                    throw std::invalid_argument("'metadata' keys must be at most 64 characters");
-                }
-                if (el.value().get<std::string>().size() > 512) {
-                    throw std::invalid_argument("'metadata' values must be at most 512 characters");
-                }
-            }
+            server_openai_validate_metadata(body.at("metadata"));
         }
         if (body.contains("safety_identifier") && !body.at("safety_identifier").is_null()) {
             if (!body.at("safety_identifier").is_string()) {
@@ -747,14 +751,7 @@ void server_openai_validate_chat_create_fields(const json & body) {
         }
     }
     if (body.contains("metadata") && !body.at("metadata").is_null()) {
-        if (!body.at("metadata").is_object()) {
-            throw std::invalid_argument("'metadata' must be an object");
-        }
-        for (const auto & el : body.at("metadata").items()) {
-            if (!el.value().is_string()) {
-                throw std::invalid_argument("'metadata' values must be strings");
-            }
-        }
+        server_openai_validate_metadata(body.at("metadata"));
     }
     if (body.contains("user") && !body.at("user").is_null() && !body.at("user").is_string()) {
         throw std::invalid_argument("'user' must be a string");

@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 
@@ -33,7 +34,8 @@ class server_chat_completions_store {
     std::optional<json> update_metadata(const std::string & id, const json & metadata);
     bool erase(const std::string & id);
     json list(const std::string & after, int limit, bool order_desc,
-              const std::string & model_filter);
+              const std::string & model_filter,
+              const std::vector<std::pair<std::string, std::string>> & metadata_filter);
     void clear();
 
     int32_t max_entries() const;

@@ -5396,11 +5396,24 @@ void server_routes::init_routes() {
         try {
             limit = std::stoi(req.get_param("limit", "20"));
         } catch (...) {}
+        // official list filter: metadata[key]=value pairs, combined with AND
+        std::vector<std::pair<std::string, std::string>> metadata_filter;
+        const std::string metadata_prefix = "metadata[";
+        for (const auto & param : req.params) {
+            if (param.first.size() > metadata_prefix.size() + 1 &&
+                    param.first.compare(0, metadata_prefix.size(), metadata_prefix) == 0 &&
+                    param.first.back() == ']') {
+                metadata_filter.emplace_back(
+                    param.first.substr(metadata_prefix.size(), param.first.size() - metadata_prefix.size() - 1),
+                    param.second);
+            }
+        }
         res->ok(server_chat_completions_store::instance().list(
             req.get_param("after"),
             limit,
             order_desc,
-            req.get_param("model")));
+            req.get_param("model"),
+            metadata_filter));
         return res;
     };
 
@@ -5431,6 +5444,10 @@ void server_routes::init_routes() {
         if (!body.contains("metadata")) {
             res->error(format_error_response("'metadata' is required", ERROR_TYPE_INVALID_REQUEST));
             return res;
+        }
+        // official shape: Metadata object or null (null clears it)
+        if (!body.at("metadata").is_null()) {
+            server_openai_validate_metadata(body.at("metadata"));
         }
         auto updated = server_chat_completions_store::instance().update_metadata(id, body.at("metadata"));
         if (!updated.has_value()) {

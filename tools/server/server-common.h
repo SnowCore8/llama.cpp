@@ -329,6 +329,9 @@ json oaicompat_completion_params_parse(const json & body);
 // When allow_prompt is true, also validate Responses `prompt` template object.
 void server_openai_validate_cloud_shaped_fields(const json & body, bool allow_prompt);
 
+// Validate the official Metadata object: <=16 pairs, keys <=64 chars, string values <=512 chars.
+void server_openai_validate_metadata(const json & metadata);
+
 // Local deepen for prompt_cache_* : enable cache_prompt, local anchor, TTL metadata.
 void server_openai_apply_prompt_cache_semantics(json & body);
 
