@@ -409,6 +409,7 @@ def run_streaming_checks(
             "model": model,
             "input": "call ping",
             "max_output_tokens": 64,
+            "temperature": 0,
             "stream": True,
             "max_tool_calls": 0,
             "tools": [

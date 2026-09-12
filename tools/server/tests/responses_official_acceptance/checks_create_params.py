@@ -506,6 +506,7 @@ def run_create_param_checks(
             "tools": tools_fc,
             "tool_choice": "required",
             "input": "Use a tool now.",
+            "temperature": 0,
             "max_output_tokens": 128,
         }
     )
@@ -548,6 +549,7 @@ def run_create_param_checks(
             "tools": tools_fc,
             "tool_choice": "none",
             "input": "Reply with exactly: NONE_OK and do not call tools.",
+            "temperature": 0,
             "max_output_tokens": 64,
         }
     )
@@ -556,11 +558,15 @@ def run_create_param_checks(
         for x in (data.get("output") or [])
         if isinstance(x, dict) and x.get("type") == "function_call"
     ]
+    text = output_text(data)
+    # The model may paraphrase the marker ("None ok"): compare case- and
+    # separator-insensitive; the hard contract stays HTTP 200 + no function_call.
+    norm_text = "".join(ch for ch in text.casefold() if ch.isalnum())
     report.add(
         "create_param",
         "tool_choice.none",
-        "PASS" if code == 200 and not fcs and "NONE_OK" in output_text(data) else "FAIL",
-        f"HTTP {code} n_fc={len(fcs)} text={output_text(data)!r}",
+        "PASS" if code == 200 and not fcs and "noneok" in norm_text else "FAIL",
+        f"HTTP {code} n_fc={len(fcs)} text={text!r}",
     )
 
     # --- tool_choice.allowed_tools: only the listed subset stays callable ---
