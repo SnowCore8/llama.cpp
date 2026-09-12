@@ -339,17 +339,19 @@ json server_responses_prepare_request(
             }
         }
         expanded = true;
-        // Only the request's own items join the conversation; the prepended history is already there.
-        body["__oai_conv_input"] = body.contains("input")
-                                       ? server_responses_normalize_input(body.at("input"))
-                                       : json::array();
         // Official Response objects echo the conversation as an object with an id.
+        // The request's own items join the conversation below, once they are normalized.
         body["conversation"] = json { {"id", conv_id} };
     }
 
     if (!prev_id.empty()) {
         auto prev = server_responses_store::instance().get(prev_id);
         if (!prev.has_value()) {
+            throw std::invalid_argument(
+                "previous_response_id not found or expired: " + prev_id);
+        }
+        // a store=false response is retained for GET/cancel only, never as context
+        if (!json_value(prev->response, "store", true)) {
             throw std::invalid_argument(
                 "previous_response_id not found or expired: " + prev_id);
         }
@@ -390,11 +392,16 @@ json server_responses_prepare_request(
         body.erase("previous_response_id");
     }
 
-    if (!body.contains("input")) {
-        throw std::invalid_argument("'input' is required");
+    // input is optional in the official API; normalize once so the response echo, the
+    // conversation items and the prompt all carry the same item ids
+    const json curr_input = (body.contains("input") && !body.at("input").is_null())
+                                ? server_responses_normalize_input(body.at("input"))
+                                : json::array();
+    body["input"] = curr_input;
+    if (!conv_id.empty()) {
+        // only the request's own items join the conversation; the prepended history is already there
+        body["__oai_conv_input"] = curr_input;
     }
-
-    json curr_input = server_responses_normalize_input(body.at("input"));
     for (const auto & item : curr_input) {
         new_input.push_back(item);
     }
@@ -593,10 +600,11 @@ void server_responses_remember(
     if (!response_obj.contains("id") || !response_obj.at("id").is_string()) {
         return;
     }
-    // OpenAI: store=false means the response must not be retained for previous_response_id.
-    // Default is true when the field is omitted.
-    const bool should_store = json_value(response_obj, "store", true);
-    if (!should_store) {
+    // OpenAI: store=false keeps the response out of previous_response_id chains. Background
+    // responses are still retained: GET and cancel must work while they run.
+    const bool should_store  = json_value(response_obj, "store", true);
+    const bool is_background = json_value(response_obj, "background", false);
+    if (!should_store && !is_background) {
         return;
     }
 
