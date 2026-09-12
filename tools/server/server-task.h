@@ -162,7 +162,6 @@ struct task_result_state {
     std::string oai_resp_id;
     std::string oai_resp_reasoning_id;
     std::string oai_resp_message_id;
-    std::string oai_resp_fc_id; // function call ID for current args delta
 
     // metadata for Response Store (copied from task_params)
     json oaicompat_resp_input        = nullptr;
@@ -409,7 +408,6 @@ struct server_task_result_cmpl_final : server_task_result {
     std::string oai_resp_id;
     std::string oai_resp_reasoning_id;
     std::string oai_resp_message_id;
-    std::string oai_resp_fc_id;
     json oaicompat_resp_input        = nullptr;
     json oaicompat_resp_instructions = nullptr;
     json oaicompat_resp_request      = nullptr;
@@ -427,7 +425,6 @@ struct server_task_result_cmpl_final : server_task_result {
         oai_resp_id = state.oai_resp_id;
         oai_resp_reasoning_id = state.oai_resp_reasoning_id;
         oai_resp_message_id = state.oai_resp_message_id;
-        oai_resp_fc_id = state.oai_resp_fc_id;
         oaicompat_resp_input        = state.oaicompat_resp_input;
         oaicompat_resp_instructions = state.oaicompat_resp_instructions;
         oaicompat_resp_request      = state.oaicompat_resp_request;
@@ -496,7 +493,6 @@ struct server_task_result_cmpl_partial : server_task_result {
     std::string oai_resp_id;
     std::string oai_resp_reasoning_id;
     std::string oai_resp_message_id;
-    std::string oai_resp_fc_id;
     json oaicompat_resp_request = nullptr;
 
     // for Anthropic API: track if any reasoning content has been generated

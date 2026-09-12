@@ -162,6 +162,200 @@ def run_streaming_checks(
         else:
             forced[ev] = "forced tool_choice stream+sdk_ok"
 
+    # --- function_call output_item.added carries the required output_index (G10) and the
+    #     item id matches the position of that call in the final output array ---
+    fc_added = [
+        obj
+        for t, obj in fevents
+        if t == "response.output_item.added" and _as_dict(obj.get("item")).get("type") == "function_call"
+    ]
+    if not fc_added:
+        report.add(
+            "stream_event",
+            "function_call.output_item.added.output_index",
+            "FAIL",
+            f"no function_call output_item.added in forced stream; types={sorted(ftypes)}",
+        )
+    else:
+        fin_out = _as_list(
+            _as_dict(
+                next(
+                    (obj.get("response") for t, obj in fevents
+                     if t in ("response.completed", "response.incomplete")),
+                    None,
+                )
+            ).get("output")
+        )
+        fin_pos = {
+            _as_dict(it).get("id"): i
+            for i, it in enumerate(fin_out)
+            if _as_dict(it).get("type") == "function_call"
+        }
+        added_errs = []
+        for obj in fc_added:
+            ok, detail = validate_event("response.output_item.added", obj)
+            if not ok:
+                added_errs.append(f"sdk={detail}")
+                continue
+            item_id = _as_dict(obj.get("item")).get("id")
+            if obj.get("output_index") != fin_pos.get(item_id):
+                added_errs.append(
+                    f"output_index={obj.get('output_index')!r} final_pos={fin_pos.get(item_id)!r}"
+                )
+        report.add(
+            "stream_event",
+            "function_call.output_item.added.output_index",
+            "PASS" if not added_errs else "FAIL",
+            f"n={len(fc_added)}" + ("" if not added_errs else f" errs={added_errs[:2]}"),
+        )
+
+    # --- response.function_call_arguments.done carries exactly the official fields (G12) ---
+    done_args = [obj for t, obj in fevents if t == "response.function_call_arguments.done"]
+    need_done = {"arguments", "item_id", "output_index", "sequence_number", "type"}
+    bad_extra = [obj for obj in done_args if "name" in obj]
+    bad_missing = [sorted(need_done - set(obj)) for obj in done_args]
+    ok_done = bool(done_args) and not bad_extra and not any(bad_missing)
+    report.add(
+        "stream_event",
+        "function_call_arguments.done.official_fields",
+        "PASS" if ok_done else "FAIL",
+        f"n={len(done_args)} with_name={len(bad_extra)} missing={bad_missing[:1]}",
+    )
+
+    # --- parallel tool calls: unique stable fc_ item ids and per-item output_index (G11) ---
+    pcode, _, praw = client.request(
+        "POST",
+        "/v1/responses",
+        {
+            "model": model,
+            "input": "Call get_weather for Paris and get_time for London. Use both tools in one turn.",
+            "max_output_tokens": 128,
+            "temperature": 0,
+            "stream": True,
+            "parallel_tool_calls": True,
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "get_weather",
+                    "description": "weather",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                        "required": ["city"],
+                    },
+                },
+                {
+                    "type": "function",
+                    "name": "get_time",
+                    "description": "time",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                        "required": ["city"],
+                    },
+                },
+            ],
+            "tool_choice": "required",
+            **extra,
+        },
+        stream=True,
+    )
+    pevents = parse_sse(praw) if pcode == 200 else []
+    p_out = _as_list(
+        _as_dict(
+            next(
+                (obj.get("response") for t, obj in pevents
+                 if t in ("response.completed", "response.incomplete")),
+                None,
+            )
+        ).get("output")
+    )
+    p_fcs = [(i, _as_dict(it)) for i, it in enumerate(p_out) if _as_dict(it).get("type") == "function_call"]
+    if len(p_fcs) >= 2:
+        report.add(
+            "stream_event",
+            "parallel_tool_calls.forced",
+            "PASS",
+            f"n_fc={len(p_fcs)} (parallel_tool_calls=true + tool_choice=required)",
+        )
+    else:
+        report.add(
+            "stream_event",
+            "parallel_tool_calls.forced",
+            "FAIL",
+            f"HTTP {pcode} n_fc={len(p_fcs)}: expected 2 calls from an explicit two-tool prompt",
+        )
+
+    ids_final = [it.get("id") for _, it in p_fcs]
+    pos_of_id = {it.get("id"): i for i, it in p_fcs}
+    p_errs = []
+    if not ids_final:
+        p_errs.append("no function_call items")
+    if not all(isinstance(iid, str) and iid.startswith("fc_") for iid in ids_final):
+        p_errs.append(f"ids not fc_-prefixed: {ids_final[:4]}")
+    if len(set(ids_final)) != len(ids_final):
+        p_errs.append(f"duplicate ids: {ids_final}")
+    added_ids = set()
+    for t, obj in pevents:
+        it = _as_dict(obj.get("item"))
+        if t == "response.output_item.added" and it.get("type") == "function_call":
+            added_ids.add(it.get("id"))
+            if obj.get("output_index") != pos_of_id.get(it.get("id")):
+                p_errs.append(
+                    f"added {it.get('id')!r} output_index={obj.get('output_index')!r} "
+                    f"want={pos_of_id.get(it.get('id'))!r}"
+                )
+        elif t == "response.output_item.done" and it.get("type") == "function_call":
+            if obj.get("output_index") != pos_of_id.get(it.get("id")):
+                p_errs.append(
+                    f"done {it.get('id')!r} output_index={obj.get('output_index')!r} "
+                    f"want={pos_of_id.get(it.get('id'))!r}"
+                )
+        elif t in ("response.function_call_arguments.delta", "response.function_call_arguments.done"):
+            if pos_of_id.get(obj.get("item_id")) != obj.get("output_index"):
+                p_errs.append(
+                    f"{t} item_id={obj.get('item_id')!r} output_index={obj.get('output_index')!r}"
+                )
+    if ids_final and added_ids != set(ids_final):
+        p_errs.append(f"added ids {sorted(added_ids)} != final ids {sorted(set(ids_final))}")
+    report.add(
+        "stream_event",
+        "parallel_tool_calls.unique_stable_ids",
+        "PASS" if not p_errs else "FAIL",
+        f"n_fc={len(p_fcs)} ids={ids_final[:4]} errs={p_errs[:3]}",
+    )
+
+    # --- message items: phase is optional in the official schema ---
+    # local output has no phase source (the field is input-only), so absence is the expected
+    # shape; if a phase ever shows up it must carry one of the two official labels
+    msg_items = []
+    for t, obj in events:
+        if t in ("response.output_item.added", "response.output_item.done"):
+            it = _as_dict(obj.get("item"))
+            if it.get("type") == "message":
+                msg_items.append(it)
+    happy_out = _as_list(
+        _as_dict(
+            next(
+                (obj.get("response") for t, obj in events
+                 if t in ("response.completed", "response.incomplete")),
+                None,
+            )
+        ).get("output")
+    )
+    for it in happy_out:
+        if _as_dict(it).get("type") == "message":
+            msg_items.append(_as_dict(it))
+    phases = [it["phase"] for it in msg_items if "phase" in it]
+    ok_phase = bool(msg_items) and all(p in ("commentary", "final_answer") for p in phases)
+    report.add(
+        "stream_event",
+        "message_phase.optional",
+        "PASS" if ok_phase else "FAIL",
+        f"items={len(msg_items)} with_phase={len(phases)}; official field is optional "
+        f"(local generation has no phase source)",
+    )
+
     # --- force incomplete (max_output_tokens cap) ---
     icode, _, iraw = client.request(
         "POST",

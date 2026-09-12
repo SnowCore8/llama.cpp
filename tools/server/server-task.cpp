@@ -522,6 +522,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat() {
     if (!stream && probs_output.size() > 0) {
         choice["logprobs"] = json{
             {"content", completion_token_output::probs_vector_to_json(probs_output, post_sampling_probs)},
+            {"refusal", nullptr}, // official logprobs object has content and refusal; local has no refusal channel
         };
     }
 
@@ -693,6 +694,12 @@ static json responses_output_logprobs_json(const std::vector<completion_token_ou
         }
     }
     return out;
+}
+
+// stable item id for a streamed function_call; the arguments delta diffs only carry the
+// tool index, so the id is derived from the call position among function_call items
+static std::string responses_fc_item_id(size_t tool_index) {
+    return "fc_" + std::to_string(tool_index);
 }
 
 json server_task_result_cmpl_final::to_json_oaicompat_resp() {
@@ -948,12 +955,11 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
             break;
         }
         const std::string call_id = tool_call.id.empty() ? ("call_" + random_string()) : tool_call.id;
-        const std::string fc_id = oai_resp_fc_id.empty() ? ("fc_" + random_string()) : oai_resp_fc_id;
+        const std::string fc_id = responses_fc_item_id(emitted_tools);
         const int output_index = (int) output.size() + ws_off;
         push_evt("response.function_call_arguments.done", json {
             {"arguments",    tool_call.arguments},
             {"item_id",      fc_id},
-            {"name",         tool_call.name},
             {"output_index", output_index},
         });
         const json output_item = {
@@ -1310,7 +1316,6 @@ void server_task_result_cmpl_partial::update(task_result_state & state) {
     oai_resp_id            = state.oai_resp_id;
     oai_resp_reasoning_id  = state.oai_resp_reasoning_id;
     oai_resp_message_id    = state.oai_resp_message_id;
-    oai_resp_fc_id         = state.oai_resp_fc_id;
     oaicompat_resp_request = state.oaicompat_resp_request;
 
     // track if the accumulated message has any reasoning content
@@ -1350,9 +1355,6 @@ void server_task_result_cmpl_partial::update(task_result_state & state) {
         }
         if (!diff.content_delta.empty() && !state.text_block_started) {
             state.text_block_started = true;
-        }
-        if (!diff.tool_call_delta.name.empty()) {
-            state.oai_resp_fc_id = diff.tool_call_delta.id;
         }
     }
 }
@@ -1494,6 +1496,7 @@ json server_task_result_cmpl_partial::to_json_oaicompat_chat() {
         if (prob_output.probs.size() > 0) {
             last_json.at("choices").at(0)["logprobs"] = json {
                 {"content", completion_token_output::probs_vector_to_json({prob_output}, post_sampling_probs)},
+                {"refusal", nullptr}, // official logprobs object has content and refusal; local has no refusal channel
             };
         }
 
@@ -1669,8 +1672,11 @@ json server_task_result_cmpl_partial::to_json_oaicompat_resp() {
             const std::string call_id = diff.tool_call_delta.id.empty()
                 ? ("call_" + random_string())
                 : diff.tool_call_delta.id;
-            const std::string fc_id = "fc_" + (diff.tool_call_delta.id.empty() ? random_string() : diff.tool_call_delta.id);
+            const int output_index = ws_off + (thinking_block_started ? 1 : 0) +
+                (text_block_started ? 1 : 0) + tc_index;
+            const std::string fc_id = responses_fc_item_id(diff.tool_call_index);
             push_evt("response.output_item.added", json {
+                {"output_index", output_index},
                 {"item", json {
                     {"id",        fc_id},
                     {"arguments", ""},
@@ -1680,7 +1686,6 @@ json server_task_result_cmpl_partial::to_json_oaicompat_resp() {
                     {"status",    "in_progress"},
                 }},
             });
-            oai_resp_fc_id = fc_id;
         }
 
         if (!diff.tool_call_delta.arguments.empty()) {
@@ -1688,12 +1693,12 @@ json server_task_result_cmpl_partial::to_json_oaicompat_resp() {
             if (max_tool_calls >= 0 && tc_index >= max_tool_calls) {
                 continue;
             }
-            const int base = ws_off + (thinking_block_started && text_block_started ? 2
-                                  : (thinking_block_started || text_block_started ? 1 : 0));
+            const int output_index = ws_off + (thinking_block_started ? 1 : 0) +
+                (text_block_started ? 1 : 0) + tc_index;
             push_evt("response.function_call_arguments.delta", json {
                 {"delta",        diff.tool_call_delta.arguments},
-                {"item_id",      oai_resp_fc_id},
-                {"output_index", base},
+                {"item_id",      responses_fc_item_id(diff.tool_call_index)},
+                {"output_index", output_index},
             });
         }
     }

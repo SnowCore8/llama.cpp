@@ -251,19 +251,23 @@ def run_streaming_checks(
         stream=True,
     )
     lchunks = _chunks(parse_sse(lraw) if lcode == 200 else [])
-    saw_lp = any(
-        isinstance((c.get("choices") or [{}])[0].get("logprobs"), dict)
+    lp_objs = [
+        (c.get("choices") or [{}])[0].get("logprobs")
         for c in lchunks
         if c.get("choices")
-    )
-    if (saw_lp):
-        forced["choice.logprobs"] = "forced logprobs stream"
+    ]
+    lp_objs = [lp for lp in lp_objs if isinstance(lp, dict)]
+    # official shape: {"content": [...], "refusal": [...] or null}
+    lp_ok = bool(lp_objs) and all("content" in lp and "refusal" in lp for lp in lp_objs)
+    if lp_ok:
+        forced["choice.logprobs"] = f"forced logprobs stream; content+refusal on {len(lp_objs)} chunk(s)"
     else:
         report.add(
             "stream_event",
             "choice.logprobs.forced",
             "FAIL",
-            f"HTTP {lcode} n_chunks={len(lchunks)}",
+            f"HTTP {lcode} n_chunks={len(lchunks)} lp_objects={len(lp_objs)} "
+            f"keys={[sorted(lp) for lp in lp_objs[:2]]}",
         )
 
     # --- force reasoning_content deltas (thinking on) ---
