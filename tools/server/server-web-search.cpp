@@ -1269,6 +1269,7 @@ json server_web_search_responses_output_items(const json & request_body) {
         }
         json action = action_in;
         const std::string atype = json_value(action, "type", std::string("search"));
+        const size_t idx = out.size();
         if (atype == "search") {
             if (!want_sources) {
                 action.erase("sources");
@@ -1288,8 +1289,14 @@ json server_web_search_responses_output_items(const json & request_body) {
                 }
             }
         }
+        // ids must survive repeated builds: streaming events and the final response both call
+        // this function, and clients match items by id
+        const std::string resp_id = json_value(request_body, "__oai_resp_id", std::string());
+        const std::string ws_id = resp_id.empty()
+                                      ? "ws_" + random_string()
+                                      : "ws_" + resp_id + "_" + std::to_string(idx);
         json item = {
-            {"id",     "ws_" + random_string()},
+            {"id",     ws_id},
             {"type",   "web_search_call"},
             {"status", "completed"},
             {"action", action},

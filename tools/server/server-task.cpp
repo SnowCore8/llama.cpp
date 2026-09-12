@@ -754,6 +754,9 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
     const int emit_tool_cap = server_responses_effective_tool_call_cap(req_stream);
     const bool hit_token_limit = (stop == STOP_TYPE_LIMIT) || truncated;
     const bool want_lp = server_responses_wants_output_logprobs(req_stream);
+    // web_search_call items are emitted once at stream start; enrich prepends them to the
+    // final output, so both index spaces count them
+    const int ws_off = (int) server_web_search_responses_output_items(req_stream).size();
 
     auto push_evt = [&](const std::string & event_name, json data) {
         data["type"] = event_name;
@@ -813,7 +816,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
         }
         push_evt("response.output_item.done", json {
             {"item", output_item},
-            {"output_index", 0},
+            {"output_index", ws_off + 0},
         });
         output.push_back(output_item);
     }
@@ -823,40 +826,63 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
         if (want_lp && !probs_output.empty()) {
             lp_all = completion_token_output::probs_vector_to_json(probs_output, post_sampling_probs);
         }
-        push_evt("response.output_text.done", json {
-            {"item_id", oai_resp_message_id},
-            {"text",    oaicompat_msg.content},
-            {"output_index", (int) output.size()},
-            {"content_index", 0},
-            {"logprobs", lp_all},
-        });
 
-        const json content_part = {
+        json content_part = json {
             {"type",        "output_text"},
             {"annotations", json::array()},
             {"logprobs",    lp_all},
-            {"text",        oaicompat_msg.content}
+            {"text",        oaicompat_msg.content},
         };
-
-        push_evt("response.content_part.done", json {
-            {"item_id", oai_resp_message_id},
-            {"part",    content_part},
-            {"output_index", (int) output.size()},
-            {"content_index", 0},
-        });
-        const json output_item = {
+        json output_item = json {
             {"type",    "message"},
             {"status",  hit_token_limit ? "incomplete" : "completed"},
             {"id",      oai_resp_message_id},
             {"content", json::array({content_part})},
-            {"role",    "assistant"}
+            {"role",    "assistant"},
         };
+        json raw_item = output_item; // enrich annotates the final response once
+        // web_search: enrich annotates the final output later, annotate a copy here so the
+        // done events carry the same url_citations as response.completed
+        if (json_value(req_stream, "__oai_web_search", false)) {
+            json copy = json { {"output", json::array({ output_item })} };
+            server_web_search_annotate_responses_output(copy, req_stream);
+            output_item  = copy.at("output").at(0);
+            content_part = output_item.at("content").at(0);
+        }
+
+        const int item_index = (int) output.size() + ws_off;
+        push_evt("response.output_text.done", json {
+            {"item_id", oai_resp_message_id},
+            {"text",    json_value(content_part, "text", std::string())},
+            {"output_index", item_index},
+            {"content_index", 0},
+            {"logprobs", lp_all},
+        });
+        if (content_part.contains("annotations") && content_part.at("annotations").is_array()) {
+            const json & annotations = content_part.at("annotations");
+            for (size_t i = 0; i < annotations.size(); ++i) {
+                push_evt("response.output_text.annotation.added", json {
+                    {"item_id",          oai_resp_message_id},
+                    {"output_index",     item_index},
+                    {"content_index",    0},
+                    {"annotation_index", (int) i},
+                    {"annotation",       annotations.at(i)},
+                });
+            }
+        }
+
+        push_evt("response.content_part.done", json {
+            {"item_id", oai_resp_message_id},
+            {"part",    content_part},
+            {"output_index", item_index},
+            {"content_index", 0},
+        });
 
         push_evt("response.output_item.done", json {
             {"item", output_item},
-            {"output_index", (int) output.size()},
+            {"output_index", item_index},
         });
-        output.push_back(output_item);
+        output.push_back(std::move(raw_item));
     }
 
     int emitted_tools = 0;
@@ -866,7 +892,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
         }
         const std::string call_id = tool_call.id.empty() ? ("call_" + random_string()) : tool_call.id;
         const std::string fc_id = oai_resp_fc_id.empty() ? ("fc_" + random_string()) : oai_resp_fc_id;
-        const int output_index = (int) output.size();
+        const int output_index = (int) output.size() + ws_off;
         push_evt("response.function_call_arguments.done", json {
             {"arguments",    tool_call.arguments},
             {"item_id",      fc_id},
@@ -1464,13 +1490,24 @@ json server_task_result_cmpl_partial::to_json_oaicompat_resp() {
         json prefix = server_web_search_responses_output_items(req_partial);
         int idx = 0;
         for (auto & item : prefix) {
+            const std::string item_id = json_value(item, "id", std::string());
+            json added_item = item;
+            added_item["status"] = "in_progress";
             push_evt("response.output_item.added", json {
                 {"output_index", idx},
-                {"item", item},
+                {"item", added_item},
+            });
+            push_evt("response.web_search_call.in_progress", json {
+                {"output_index", idx},
+                {"item_id", item_id},
+            });
+            push_evt("response.web_search_call.searching", json {
+                {"output_index", idx},
+                {"item_id", item_id},
             });
             push_evt("response.web_search_call.completed", json {
                 {"output_index", idx},
-                {"item_id", json_value(item, "id", std::string())},
+                {"item_id", item_id},
             });
             push_evt("response.output_item.done", json {
                 {"output_index", idx},

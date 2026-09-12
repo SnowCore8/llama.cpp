@@ -5507,6 +5507,9 @@ void server_routes::init_routes() {
         json body = server_chat_convert_responses_to_chatcmpl(prepared);
         SRV_DBG("%s\n", "Request converted: OpenAI Responses -> OpenAI Chat Completions");
         SRV_DBG("converted request: %s\n", body.dump().c_str());
+        // stable web_search item ids across streaming events and the final response
+        prepared["__oai_resp_id"] = resp_id;
+
         json body_parsed = oaicompat_chat_params_parse(
             body,
             meta->chat_params,
