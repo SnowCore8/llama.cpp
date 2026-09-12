@@ -1584,13 +1584,13 @@ llama-server keeps completed Responses so clients can continue with `previous_re
 
 Missing or expired ids return HTTP 400. Without `--openai-files-path`, the store is process-local (lost on restart / not shared across router child processes).
 
-Local deepenings (not cloud-equivalent): `max_tool_calls` drops calls beyond the cap (excess attempts ignored); `context_management` with `compaction` auto-folds long history into a local opaque item; `stream_options.include_obfuscation` adds SSE `obfuscation` payloads; `truncation=auto` drops oldest input items beyond a local soft limit while `truncation=disabled` returns HTTP 400 when over that limit; Responses + Chat Completions validate OpenAI-shaped `prompt` (Responses only) / `prompt_cache_*`; OpenAI Completions validates `echo`/`suffix`/`best_of`/`n` shapes - see `tools/server/tests/OFFICIAL_API_SCOPE.md`.
+Local deepenings (not cloud-equivalent): `max_tool_calls` drops calls beyond the cap (excess attempts ignored); `context_management` with `compaction` auto-folds long history into a local opaque item; `stream_options.include_obfuscation` adds SSE `obfuscation` payloads; `truncation=auto` drops oldest input items beyond a local soft limit while `truncation=disabled` returns HTTP 400 when over that limit; Responses + Chat Completions validate OpenAI-shaped `prompt` (Responses only) / `prompt_cache_*`; Responses reject invalid `metadata` / `safety_identifier` / `service_tier` / `include` / `phase` values and an unknown `tool_choice: {"type": "allowed_tools"}` mode with HTTP 400; OpenAI Completions validates `echo`/`suffix`/`best_of`/`n` shapes - see `tools/server/tests/OFFICIAL_API_SCOPE.md`.
 
 #### Durable store (`--openai-files-path`)
 
 | Flag / Env | Meaning |
 |------------|---------|
-| `--openai-files-path PATH` / `LLAMA_OPENAI_FILES_PATH` | Root for the durable Responses / Chat Completions stores, Responses prompt templates and prompt-cache keys. Layout: `responses/`, `chat_completions/`, `prompts/`, `prompt_cache_keys/` subdirs. Empty = memory-only. |
+| `--openai-files-path PATH` / `LLAMA_OPENAI_FILES_PATH` | Root for the durable Responses / Chat Completions / Conversations stores, Responses prompt templates and prompt-cache keys. Layout: `responses/`, `chat_completions/`, `conversations/`, `prompts/`, `prompt_cache_keys/` subdirs. Empty = memory-only. |
 
 - Responses `prompt.id` loads `--openai-files-path/prompts/<id>.json` (`instructions` / `input` + `{{variables}}`); unknown id → 400.
 - Responses / Chat Completions stores also persist JSON under the same root (restart-safe); interrupted Responses are marked `failed` with `server_restart`.
@@ -1628,6 +1628,49 @@ curl -s http://localhost:8080/v1/responses \
   -d '{"model":"local","previous_response_id":"resp_...","input":"What is my favorite color?"}'
 ```
 
+#### Streaming and background responses
+
+`stream: true` follows the official SSE phases, and every event carries a monotonic `sequence_number`: `response.created` and `response.in_progress` come first, then for each output item `response.output_item.added`, `response.content_part.added`, the incremental events (`response.output_text.delta`, `response.function_call_arguments.delta`, `response.reasoning_summary_text.delta`), the matching `*.done` events, and a terminal `response.completed` / `response.incomplete`.
+
+`background: true` answers immediately with an `in_progress` response (the streaming variant starts its stream immediately) that stays retrievable via `GET /v1/responses/{id}` and cancellable via `POST /v1/responses/{id}/cancel` while it runs. A background stream that loses its connection keeps running server side and can be reattached with `GET /v1/responses/{id}?stream=true`, optionally with `starting_after=<sequence_number>` to replay buffered events after that cursor before following live output. Reattaching to a response without a resumable stream session returns HTTP 404, and a cursor whose replay prefix was already dropped returns HTTP 400 (meaning: restart without `starting_after`).
+
+#### Token logprobs on streaming output
+
+Text logprobs are returned when requested with `include: ["message.output_text.logprobs"]` or `top_logprobs` greater than 0 (the `include` form asks for the top-1 candidate, raise `top_logprobs` for more). `response.output_text.delta` then carries `logprob` and `top_logprobs` for the delta token, and `response.output_text.done` plus the finished output item carry the full per-token array. Without either request the arrays stay empty; non-streaming responses carry the same entries inside `output_text` content parts.
+
+#### Conversation membership (`conversation`)
+
+Passing `conversation` (a conversation id string, or `{"id": ...}`) makes the request a turn of that conversation: its stored items are prepended to the request input, and the finished turn (this request's own input items plus the response output items) is appended back when the response completes. `store=false` only controls `previous_response_id` retention, the conversation still receives the turn. `conversation` cannot be combined with `previous_response_id` (HTTP 400) and an unknown id returns HTTP 400. Response objects echo the conversation as `{"id": ...}`.
+
+### Conversations: `/v1/conversations`
+
+Implements the official Conversations API for managing conversation objects and their items. All endpoints take the usual `Authorization` header.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/conversations` | Create a conversation from `{items, metadata}` (at most 20 items) |
+| `GET` | `/v1/conversations/{id}` | Retrieve a conversation (404 when missing) |
+| `POST` | `/v1/conversations/{id}` | Replace `metadata` |
+| `DELETE` | `/v1/conversations/{id}` | Delete; returns `{id, deleted: true, object: "conversation.deleted"}` |
+| `POST` | `/v1/conversations/{id}/items` | Append items (at most 20) |
+| `GET` | `/v1/conversations/{id}/items` | List items: `after`, `limit` (1-100, default 20), `order` (`asc`/`desc`, default `desc`), `include`; answers `{object: "list", data, first_id, last_id, has_more}` |
+| `GET` | `/v1/conversations/{id}/items/{item_id}` | Retrieve one item |
+| `DELETE` | `/v1/conversations/{id}/items/{item_id}` | Delete one item; returns the conversation object |
+
+Items receive server-side ids by type (`msg_`, `fc_`, `fco_`, `rs_`), message content is normalized to content parts, and `include` gates the same fields as Responses (logprobs, search results, image urls, `reasoning.encrypted_content`). Conversations live in the durable store together with responses: JSON files under `--openai-files-path/conversations/` (memory-only without the flag), sharing `--responses-store-max` and `--responses-store-ttl`.
+
+Example:
+
+```shell
+# create a conversation, then use it as memory for a response
+curl -s http://localhost:8080/v1/conversations \
+  -H "Content-Type: application/json" \
+  -d '{"items":[{"type":"message","role":"user","content":"My favorite color is blue."}]}'
+
+curl -s http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{"model":"local","conversation":"conv_...","input":"What is my favorite color?"}'
+```
 
 ### POST `/v1/embeddings`: OpenAI-compatible embeddings API
 
