@@ -360,8 +360,8 @@ def run_conversation_checks(
             code == 200
             and page_e_d.get("object") == "list"
             and _as_list(page_e_d.get("data")) == []
-            and page_e_d.get("first_id") is None
-            and page_e_d.get("last_id") is None
+            and page_e_d.get("first_id") == ""
+            and page_e_d.get("last_id") == ""
             and page_e_d.get("has_more") is False,
             f"HTTP {code} body={json.dumps(page_e)[:200]}",
         )

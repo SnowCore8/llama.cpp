@@ -1115,11 +1115,12 @@ json server_responses_list_input_items(const std::string & response_id,
         last_id  = json_value(filtered.back(), "id", std::string());
     }
 
+    // SDK ResponseItemList types first_id/last_id as required strings, empty list included
     return json {
         {"object",    "list"},
         {"data",      std::move(filtered)},
-        {"first_id",  first_id.empty() ? nullptr : json(first_id)},
-        {"last_id",   last_id.empty() ? nullptr : json(last_id)},
+        {"first_id",  first_id},
+        {"last_id",   last_id},
         {"has_more",  has_more},
     };
 }

@@ -401,12 +401,13 @@ static bool include_has(const json & include, const char * name) {
 }
 
 static json item_list_to_json(const std::vector<json> & data, bool has_more) {
+    // SDK ConversationItemList types first_id/last_id as required strings, empty list included
     json out = json{
         {"object",   "list"},
         {"data",     data},
         {"has_more", has_more},
-        {"first_id", data.empty() ? json(nullptr) : data.front().value("id", json(nullptr))},
-        {"last_id",  data.empty() ? json(nullptr) : data.back().value("id", json(nullptr))},
+        {"first_id", data.empty() ? json("") : data.front().value("id", json(""))},
+        {"last_id",  data.empty() ? json("") : data.back().value("id", json(""))},
     };
     return out;
 }
