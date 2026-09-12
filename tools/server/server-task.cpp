@@ -684,16 +684,36 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat_stream() {
     return deltas;
 }
 
-// output logprobs for the Responses API: the sampled EOG token carries no text,
-// skip it so the entries line up with the output text
-static json responses_output_logprobs_json(const std::vector<completion_token_output> & probs, bool post_sampling_probs) {
+// Responses logprobs: drop entries whose own token carries no visible text (the
+// sampled EOG token carries none) and drop inner candidates whose token text is
+// empty (special/control tokens), so every visible entry and candidate has text
+static json responses_logprobs_filter(json entries, bool post_sampling_probs) {
+    const char * top_key = post_sampling_probs ? "top_probs" : "top_logprobs";
     json out = json::array();
-    for (auto & e : completion_token_output::probs_vector_to_json(probs, post_sampling_probs)) {
-        if (!json_value(e, "token", std::string()).empty()) {
-            out.push_back(std::move(e));
+    for (auto & e : entries) {
+        if (!e.is_object() || json_value(e, "token", std::string()).empty()) {
+            continue;
         }
+        const json tops = e.contains(top_key) && e.at(top_key).is_array() ? e.at(top_key) : json::array();
+        json tops_filtered = json::array();
+        for (auto & t : tops) {
+            if (t.is_object() && !json_value(t, "token", std::string()).empty()) {
+                tops_filtered.push_back(std::move(t));
+            }
+        }
+        if (tops_filtered.empty()) {
+            continue;
+        }
+        e[top_key] = std::move(tops_filtered);
+        out.push_back(std::move(e));
     }
     return out;
+}
+
+// output logprobs for the Responses API: entries line up with the output text
+static json responses_output_logprobs_json(const std::vector<completion_token_output> & probs, bool post_sampling_probs) {
+    return responses_logprobs_filter(
+        completion_token_output::probs_vector_to_json(probs, post_sampling_probs), post_sampling_probs);
 }
 
 // stable item id for a streamed function_call; the arguments delta diffs only carry the
@@ -1663,7 +1683,8 @@ json server_task_result_cmpl_partial::to_json_oaicompat_resp() {
             }
             json lp_delta = json::array();
             if (want_lp && !prob_output.probs.empty()) {
-                lp_delta = completion_token_output::probs_vector_to_json({prob_output}, post_sampling_probs);
+                lp_delta = responses_logprobs_filter(
+                    completion_token_output::probs_vector_to_json({prob_output}, post_sampling_probs), post_sampling_probs);
             }
             push_evt("response.output_text.delta", json {
                 {"item_id", oai_resp_message_id},
