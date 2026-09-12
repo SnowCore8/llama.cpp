@@ -146,6 +146,7 @@ struct server_routes {
     server_http_context::handler_t post_chat_completions_tok;
     server_http_context::handler_t get_chat_completions;          // list stored
     server_http_context::handler_t get_chat_completion;           // retrieve by id
+    server_http_context::handler_t get_chat_completion_messages;  // messages of a stored completion
     server_http_context::handler_t post_chat_completion_update;   // update metadata
     server_http_context::handler_t delete_chat_completion;        // delete stored
     server_http_context::handler_t post_control;

@@ -31,7 +31,7 @@ everything durable/local that clients call through the public SDK should be scor
 | Byte-identical cloud responses | Local models + templates differ |
 
 **Implemented (local):**
-- Chat Completions `store=true` CRUD — durable under `--openai-files-path/chat_completions/` (memory if path unset).
+- Chat Completions `store=true` CRUD — durable under `--openai-files-path/chat_completions/` (memory if path unset); stored messages at `GET /v1/chat/completions/{id}/messages` (`after`/`limit`/`order`, default `asc`; one row per choice with a stable `msg_` id).
 - Hosted cloud tools **explicit reject** — Responses non-`function` tools (except `web_search`/`web_search_preview`), Chat `audio` modalities → 400.
 - **Local web_search deepen（完整本地托管形态）** — 多后端：`LLAMA_WEB_SEARCH_FIXTURE` / `LLAMA_WEB_SEARCH_LOCAL_DIR` / `LLAMA_WEB_SEARCH_URL` / DuckDuckGo IA+HTML SERP；无命中时 `provider=none`（不伪造空 stub 结果）；fixture/local 命中后跳过远程 SERP；`search_context_size`→结果数+`open_page`/`find_in_page`；`filters.allowed/blocked_domains`（含 Chat `web_search_options.filters`）；Responses：`web_search_call`（`queries`；`include` 门控 `action.sources` / `results`）+ `url_citation` + 流式 `output_item.added` → `web_search_call.in_progress` → `.searching` → `.completed` → `output_item.done`，`output_text.done` 之前每个 citation 一条 `output_text.annotation.added`，`content_part`/`output_item` done 事件携带最终 annotations；Chat：`message.annotations`（含流式终块）。
 - MCP / local tools visibility — `GET /v1/tools` (+ `?format=openai`); collision `warnings`.

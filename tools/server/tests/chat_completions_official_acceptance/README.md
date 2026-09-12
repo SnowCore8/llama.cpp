@@ -17,7 +17,7 @@ Exit `0` only with no `FAIL` / `PARTIAL` / `NOT_IMPLEMENTED`. `SKIP` is allowed.
 | Resource | Paths |
 |----------|-------|
 | Chat Completions | `POST /v1/chat/completions`, `…/input_tokens` |
-| Store CRUD | list/retrieve/update/delete under `/v1/chat/completions` |
+| Store CRUD | list/retrieve/update/delete + `{id}/messages` under `/v1/chat/completions` |
 | Models | `GET /v1/models` |
 
 ## Server prerequisites

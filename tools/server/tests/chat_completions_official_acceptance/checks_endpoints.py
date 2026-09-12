@@ -159,3 +159,71 @@ def run_endpoint_checks(
         "PASS" if code == 400 else "FAIL",
         f"HTTP {code} {json_preview(data)}",
     )
+
+    # GET /v1/chat/completions/{id}/messages — official stored-messages contract
+    mcode, mdata = client.get_json(f"/v1/chat/completions/{first_id}/messages")
+    msgs = mdata.get("data") if isinstance(mdata, dict) else None
+    msgs_ok = (
+        mcode == 200
+        and isinstance(mdata, dict)
+        and mdata.get("object") == "list"
+        and isinstance(mdata.get("has_more"), bool)
+        and isinstance(msgs, list)
+        and len(msgs) >= 1
+        and mdata.get("first_id") == msgs[0].get("id")
+        and mdata.get("last_id") == msgs[-1].get("id")
+    )
+    msg0_ok = (
+        msgs_ok
+        and isinstance(msgs[0], dict)
+        and isinstance(msgs[0].get("id"), str)
+        and msgs[0]["id"].startswith("msg_")
+        and msgs[0].get("role") == "assistant"
+        and "LIST_A" in str(msgs[0].get("content"))
+        and "content_parts" in msgs[0]
+    )
+    report.add(
+        "endpoint",
+        "GET /v1/chat/completions/{id}/messages",
+        "PASS" if msg0_ok else "FAIL",
+        f"HTTP {mcode} n={len(msgs) if isinstance(msgs, list) else None}",
+    )
+
+    rcode, rdata = client.get_json(f"/v1/chat/completions/{first_id}/messages?order=desc")
+    rmsgs = rdata.get("data") if isinstance(rdata, dict) else []
+    asc_ids = [m.get("id") for m in (msgs or [])]
+    desc_ids = [m.get("id") for m in (rmsgs or [])]
+    report.add(
+        "endpoint",
+        "GET /v1/chat/completions/{id}/messages (order=desc)",
+        "PASS" if rcode == 200 and desc_ids == list(reversed(asc_ids)) else "FAIL",
+        f"HTTP {rcode} asc={asc_ids} desc={desc_ids}",
+    )
+
+    last_msg_id = asc_ids[-1] if asc_ids else "none"
+    acode, adata = client.get_json(
+        f"/v1/chat/completions/{first_id}/messages?after={last_msg_id}"
+    )
+    atail = adata.get("data") if isinstance(adata, dict) else None
+    report.add(
+        "endpoint",
+        "GET /v1/chat/completions/{id}/messages (after)",
+        "PASS" if acode == 200 and atail == [] else "FAIL",
+        f"HTTP {acode} tail={json_preview(atail)}",
+    )
+
+    bcode, bdata = client.get_json(f"/v1/chat/completions/{first_id}/messages?order=bogus")
+    report.add(
+        "endpoint",
+        "GET /v1/chat/completions/{id}/messages (order=bogus)",
+        "PASS" if bcode == 400 else "FAIL",
+        f"HTTP {bcode} {json_preview(bdata)}",
+    )
+
+    ucode, _ = client.get_json("/v1/chat/completions/chatcmpl-not-stored/messages")
+    report.add(
+        "endpoint",
+        "GET /v1/chat/completions/{id}/messages (unknown id)",
+        "PASS" if ucode == 404 else "FAIL",
+        f"HTTP {ucode}",
+    )

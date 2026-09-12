@@ -359,6 +359,8 @@ int llama_server(common_params & params, int argc, char ** argv) {
     ctx_http.get ("/chat/completions",                       ex_wrapper(routes.get_chat_completions));
     ctx_http.get ("/v1/chat/completions/:completion_id",     ex_wrapper(routes.get_chat_completion));
     ctx_http.get ("/chat/completions/:completion_id",        ex_wrapper(routes.get_chat_completion));
+    ctx_http.get ("/v1/chat/completions/:completion_id/messages", ex_wrapper(routes.get_chat_completion_messages));
+    ctx_http.get ("/chat/completions/:completion_id/messages",    ex_wrapper(routes.get_chat_completion_messages));
     ctx_http.post("/v1/chat/completions/:completion_id",     ex_wrapper(routes.post_chat_completion_update));
     ctx_http.post("/chat/completions/:completion_id",        ex_wrapper(routes.post_chat_completion_update));
     ctx_http.del ("/v1/chat/completions/:completion_id",     ex_wrapper(routes.delete_chat_completion));

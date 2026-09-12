@@ -5433,6 +5433,83 @@ void server_routes::init_routes() {
         return res;
     };
 
+    this->get_chat_completion_messages = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string id = req.get_param("completion_id");
+        if (id.empty()) {
+            res->error(format_error_response("missing completion id", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        auto entry = server_chat_completions_store::instance().get(id);
+        if (!entry.has_value()) {
+            res->error(format_error_response("No stored chat completion found for id: " + id, ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+        int limit = 20;
+        const std::string order = req.get_param("order", "asc");
+        if (order != "asc" && order != "desc") {
+            res->error(format_error_response("'order' must be 'asc' or 'desc'", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        try {
+            limit = std::stoi(req.get_param("limit", "20"));
+        } catch (...) {}
+
+        // message rows: one per choice, ids stay stable across calls
+        std::vector<json> rows;
+        const json & choices = entry->completion.contains("choices") && entry->completion.at("choices").is_array()
+                             ? entry->completion.at("choices")
+                             : json::array();
+        for (size_t i = 0; i < choices.size(); i++) {
+            if (!choices.at(i).is_object() || !choices.at(i).contains("message") ||
+                    !choices.at(i).at("message").is_object()) {
+                continue;
+            }
+            json message = choices.at(i).at("message");
+            message["id"] = "msg_" + id + "_" + std::to_string(i);
+            if (!message.contains("content_parts")) {
+                message["content_parts"] = nullptr;
+            }
+            rows.push_back(std::move(message));
+        }
+        if (order == "desc") {
+            std::reverse(rows.begin(), rows.end());
+        }
+
+        size_t start = 0;
+        const std::string after = req.get_param("after");
+        if (!after.empty()) {
+            for (size_t i = 0; i < rows.size(); ++i) {
+                if (json_value(rows[i], "id", std::string()) == after) {
+                    start = i + 1;
+                    break;
+                }
+            }
+        }
+
+        if (limit <= 0) {
+            limit = 20;
+        }
+        if (limit > 100) {
+            limit = 100;
+        }
+        json data = json::array();
+        for (size_t i = start; i < rows.size() && (int) data.size() < limit; ++i) {
+            data.push_back(rows[i]);
+        }
+        json out = {
+            {"object",   "list"},
+            {"data",     data},
+            {"has_more", (start + (size_t) data.size()) < rows.size()},
+        };
+        if (!data.empty()) {
+            out["first_id"] = data.front().at("id");
+            out["last_id"]  = data.back().at("id");
+        }
+        res->ok(out);
+        return res;
+    };
+
     this->post_chat_completion_update = [this](const server_http_req & req) {
         auto res = create_response();
         const std::string id = req.get_param("completion_id");
