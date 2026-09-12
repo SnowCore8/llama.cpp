@@ -525,7 +525,20 @@ static std::string decode_path_component(const std::string & in) {
 static std::map<std::string, std::string> get_params(const httplib::Request & req) {
     std::map<std::string, std::string> params;
     for (const auto & [key, value] : req.params) {
-        params[key] = value;
+        // OpenAI clients send array params as "k[]=a&k[]=b" or repeat "k=a&k=b";
+        // fold every occurrence into one comma separated value
+        const std::string name = key.size() > 2 && key.compare(key.size() - 2, 2, "[]") == 0
+                               ? key.substr(0, key.size() - 2)
+                               : key;
+        auto it = params.find(name);
+        if (it == params.end()) {
+            params[name] = value;
+        } else if (!it->second.empty()) {
+            it->second += ',';
+            it->second += value;
+        } else {
+            it->second = value;
+        }
     }
     for (const auto & [key, value] : req.path_params) {
         params[key] = decode_path_component(value);

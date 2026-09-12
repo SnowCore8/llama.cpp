@@ -83,7 +83,8 @@ void server_conversation_item_normalize(json & item);
 // Drop fields gated behind `include` (logprobs, search results, ...).
 json server_conversation_item_filter(const json & item, const json & include);
 
-// Parse the `include` query parameter (repeated or comma separated values).
+// Parse the `include` query parameter (repeated or comma separated values);
+// throws on values outside the official include enum.
 json server_conversations_include_from_param(const std::string & raw);
 
 // Handlers backend; throw server_conversations_error on failure.
@@ -91,7 +92,7 @@ json server_conversations_create(const json & body);
 json server_conversations_get(const std::string & id);
 json server_conversations_update(const std::string & id, const json & body);
 json server_conversations_delete(const std::string & id);
-json server_conversations_add_items(const std::string & id, const json & body);
+json server_conversations_add_items(const std::string & id, const json & body, const json & include);
 json server_conversations_list_items(const std::string & id, const std::string & after,
                                      const std::string & order, int64_t limit, const json & include);
 json server_conversations_get_item(const std::string & id, const std::string & item_id, const json & include);

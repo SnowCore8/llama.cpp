@@ -524,6 +524,27 @@ json server_conversation_item_filter(const json & item, const json & include) {
     return out;
 }
 
+// official `include` enum for conversation items; unknown values are rejected
+static const char * conversations_include_values[] = {
+    "file_search_call.results",
+    "web_search_call.results",
+    "web_search_call.action.sources",
+    "message.input_image.image_url",
+    "computer_call_output.output.image_url",
+    "code_interpreter_call.outputs",
+    "reasoning.encrypted_content",
+    "message.output_text.logprobs",
+};
+
+static bool include_value_known(const std::string & value) {
+    for (const char * known : conversations_include_values) {
+        if (value == known) {
+            return true;
+        }
+    }
+    return false;
+}
+
 json server_conversations_include_from_param(const std::string & raw) {
     json out = json::array();
     size_t pos = 0;
@@ -535,7 +556,11 @@ json server_conversations_include_from_param(const std::string & raw) {
         while (b < e && (raw[b] == ' ' || raw[b] == '\t')) ++b;
         while (e > b && (raw[e - 1] == ' ' || raw[e - 1] == '\t')) --e;
         if (e > b) {
-            out.push_back(raw.substr(b, e - b));
+            const std::string value = raw.substr(b, e - b);
+            if (!include_value_known(value)) {
+                throw std::invalid_argument("unknown include value: " + value);
+            }
+            out.push_back(value);
         }
         if (comma == std::string::npos) {
             break;
@@ -617,7 +642,7 @@ json server_conversations_delete(const std::string & id) {
     };
 }
 
-json server_conversations_add_items(const std::string & id, const json & body) {
+json server_conversations_add_items(const std::string & id, const json & body, const json & include) {
     require_store();
     if (!body.is_object() || !body.contains("items") || body.at("items").is_null()) {
         throw std::invalid_argument("'items' array is required");
@@ -629,7 +654,12 @@ json server_conversations_add_items(const std::string & id, const json & body) {
         server_conversation_item_normalize(item);
         added.push_back(std::move(item));
     }
-    const json added_list = item_list_to_json(added, false);
+    // stored items keep every field; only the response honors `include`
+    std::vector<json> echoed;
+    for (const auto & item : added) {
+        echoed.push_back(server_conversation_item_filter(item, include));
+    }
+    const json added_list = item_list_to_json(echoed, false);
     const bool found = server_conversations_store::instance().update(id,
         [&](server_conversation_entry & e) {
             for (auto & item : added) {

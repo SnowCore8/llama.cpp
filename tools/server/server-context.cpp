@@ -5818,7 +5818,8 @@ void server_routes::init_routes() {
 
     this->post_conversation_items_oai = conversations_handler([](const server_http_req & req) {
         return server_conversations_add_items(req.get_param("conversation_id"),
-                                              json::parse(req.body.empty() ? "{}" : req.body));
+                                              json::parse(req.body.empty() ? "{}" : req.body),
+                                              server_conversations_include_from_param(req.get_param("include")));
     });
 
     this->get_conversation_items_oai = conversations_handler([](const server_http_req & req) {
