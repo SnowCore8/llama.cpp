@@ -6,6 +6,7 @@
 #include "server-tools.h"
 #include "server-responses-store.h"
 #include "server-chat-completions-store.h"
+#include "server-conversations.h"
 #include "server-openai-persist.h"
 #include "server-common.h"
 
@@ -194,6 +195,8 @@ int llama_server(common_params & params, int argc, char ** argv) {
         store_root.empty() ? "" : openai_persist::join_dir(store_root, "responses");
     const std::string chat_dir =
         store_root.empty() ? "" : openai_persist::join_dir(store_root, "chat_completions");
+    const std::string conversations_dir =
+        store_root.empty() ? "" : openai_persist::join_dir(store_root, "conversations");
 
     // Configure Responses / Chat stores (disk when --openai-files-path set)
     server_responses_store::instance().configure(params.responses_store_max, params.responses_store_ttl, responses_dir);
@@ -202,6 +205,9 @@ int llama_server(common_params & params, int argc, char ** argv) {
     server_chat_completions_store::instance().configure(params.responses_store_max, params.responses_store_ttl, chat_dir);
     SRV_INF("chat completions store: max=%d ttl=%ds path=%s\n", params.responses_store_max, params.responses_store_ttl,
             chat_dir.empty() ? "(memory)" : chat_dir.c_str());
+    server_conversations_store::instance().configure(params.responses_store_max, params.responses_store_ttl, conversations_dir);
+    SRV_INF("conversations store: max=%d ttl=%ds path=%s\n", params.responses_store_max, params.responses_store_ttl,
+            conversations_dir.empty() ? "(memory)" : conversations_dir.c_str());
 
     common_models_handler models_handler;
 
@@ -369,6 +375,14 @@ int llama_server(common_params & params, int argc, char ** argv) {
     ctx_http.post("/responses/:response_id/cancel",    ex_wrapper(routes.post_responses_cancel_oai));
     ctx_http.get ("/v1/responses/:response_id/input_items", ex_wrapper(routes.get_responses_input_items_oai));
     ctx_http.get ("/responses/:response_id/input_items",    ex_wrapper(routes.get_responses_input_items_oai));
+    ctx_http.post("/v1/conversations", ex_wrapper(routes.post_conversations_oai));
+    ctx_http.get ("/v1/conversations/:conversation_id", ex_wrapper(routes.get_conversation_oai));
+    ctx_http.post("/v1/conversations/:conversation_id", ex_wrapper(routes.post_conversation_update_oai));
+    ctx_http.del ("/v1/conversations/:conversation_id", ex_wrapper(routes.delete_conversation_oai));
+    ctx_http.post("/v1/conversations/:conversation_id/items", ex_wrapper(routes.post_conversation_items_oai));
+    ctx_http.get ("/v1/conversations/:conversation_id/items", ex_wrapper(routes.get_conversation_items_oai));
+    ctx_http.get ("/v1/conversations/:conversation_id/items/:item_id", ex_wrapper(routes.get_conversation_item_oai));
+    ctx_http.del ("/v1/conversations/:conversation_id/items/:item_id", ex_wrapper(routes.delete_conversation_item_oai));
 
     // Official Responses WebSocket connect: same path as create, upgrade to WS.
     auto responses_ws = [&routes](

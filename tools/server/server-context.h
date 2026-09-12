@@ -156,6 +156,14 @@ struct server_routes {
     server_http_context::handler_t post_responses_compact_oai;
     server_http_context::handler_t get_responses_input_items_oai;
     server_http_context::handler_t post_responses_tok_oai;
+    server_http_context::handler_t post_conversations_oai;
+    server_http_context::handler_t get_conversation_oai;
+    server_http_context::handler_t post_conversation_update_oai;
+    server_http_context::handler_t delete_conversation_oai;
+    server_http_context::handler_t post_conversation_items_oai;
+    server_http_context::handler_t get_conversation_items_oai;
+    server_http_context::handler_t get_conversation_item_oai;
+    server_http_context::handler_t delete_conversation_item_oai;
     server_http_context::handler_t post_transcriptions_oai;
     server_http_context::handler_t post_anthropic_messages;
     server_http_context::handler_t post_anthropic_count_tokens;

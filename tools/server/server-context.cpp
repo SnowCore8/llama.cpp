@@ -9,6 +9,7 @@
 #include "server-responses.h"
 #include "server-responses-store.h"
 #include "server-chat-completions-store.h"
+#include "server-conversations.h"
 
 #include "build-info.h"
 #include "common.h"
@@ -5782,6 +5783,67 @@ void server_routes::init_routes() {
     this->post_responses_tok_oai = [this](const server_http_req & req) {
         return handle_count_tokens(ctx_server.vocab, ctx_server.mctx, ctx_server.init_opt, req, TASK_RESPONSE_TYPE_OAI_RESP);
     };
+
+    // Official Conversations API: a conversation holds ordered response items.
+    auto conversations_handler = [this](const std::function<json(const server_http_req &)> & fn) {
+        return server_http_context::handler_t([this, fn](const server_http_req & req) {
+            auto res = create_response();
+            try {
+                res->ok(fn(req));
+            } catch (const server_conversations_error & e) {
+                res->error(format_error_response(e.what(), e.not_found ? ERROR_TYPE_NOT_FOUND : ERROR_TYPE_INVALID_REQUEST));
+            } catch (const std::exception & e) {
+                res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+            }
+            return res;
+        });
+    };
+
+    this->post_conversations_oai = conversations_handler([](const server_http_req & req) {
+        return server_conversations_create(json::parse(req.body.empty() ? "{}" : req.body));
+    });
+
+    this->get_conversation_oai = conversations_handler([](const server_http_req & req) {
+        return server_conversations_get(req.get_param("conversation_id"));
+    });
+
+    this->post_conversation_update_oai = conversations_handler([](const server_http_req & req) {
+        return server_conversations_update(req.get_param("conversation_id"),
+                                           json::parse(req.body.empty() ? "{}" : req.body));
+    });
+
+    this->delete_conversation_oai = conversations_handler([](const server_http_req & req) {
+        return server_conversations_delete(req.get_param("conversation_id"));
+    });
+
+    this->post_conversation_items_oai = conversations_handler([](const server_http_req & req) {
+        return server_conversations_add_items(req.get_param("conversation_id"),
+                                              json::parse(req.body.empty() ? "{}" : req.body));
+    });
+
+    this->get_conversation_items_oai = conversations_handler([](const server_http_req & req) {
+        int64_t limit = 20; // official default
+        const std::string limit_str = req.get_param("limit");
+        if (!limit_str.empty()) {
+            try {
+                limit = std::stoll(limit_str);
+            } catch (const std::exception &) {
+                throw std::invalid_argument("'limit' must be an integer");
+            }
+        }
+        return server_conversations_list_items(req.get_param("conversation_id"), req.get_param("after"),
+                                               req.get_param("order", "desc"), limit,
+                                               server_conversations_include_from_param(req.get_param("include")));
+    });
+
+    this->get_conversation_item_oai = conversations_handler([](const server_http_req & req) {
+        return server_conversations_get_item(req.get_param("conversation_id"), req.get_param("item_id"),
+                                             server_conversations_include_from_param(req.get_param("include")));
+    });
+
+    this->delete_conversation_item_oai = conversations_handler([](const server_http_req & req) {
+        return server_conversations_delete_item(req.get_param("conversation_id"), req.get_param("item_id"));
+    });
 
     this->post_transcriptions_oai = [this](const server_http_req & req) {
         auto res = create_response();
