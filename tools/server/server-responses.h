@@ -29,10 +29,13 @@ json server_responses_output_item_to_input(const json & output_item);
 json server_responses_normalize_input(const json & input);
 
 // Build store entry from a completed Responses object + request metadata, then put into store.
+// conversation_input carries the request's own input items; a finished turn also joins the
+// conversation named in @response_obj (see server_conversations_append_turn()).
 void server_responses_remember(
     const json & response_obj,
     const json & prepared_request_input,
-    const json & instructions);
+    const json & instructions,
+    const json & conversation_input = json(nullptr));
 
 // Generate a new response id (resp_...).
 std::string server_responses_new_id();

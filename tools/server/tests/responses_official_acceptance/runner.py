@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 
 from .checks_completions import run_completions_checks
-from .checks_conversations import run_conversation_checks
+from .checks_conversations import run_conversation_checks, run_conversation_response_checks
 from .checks_create_params import run_create_param_checks
 from .checks_endpoints import run_endpoint_checks
 from .checks_models import run_models_checks
@@ -122,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     run_background_stream_checks(client, report, args.model, extra)
     run_output_logprobs_stream_checks(client, report, args.model, extra)
     run_conversation_checks(client, report, args.model, extra)
+    run_conversation_response_checks(client, report, args.model, extra)
     run_scenario_checks(client, report, args.model, extra)
     run_semantic_checks(client, report, args.model, extra)
     cache_stats = run_prompt_cache_checks(client, report, args.model, extra)

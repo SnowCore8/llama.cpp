@@ -9,7 +9,7 @@ from typing import Any
 
 from openai import OpenAI
 
-from .http_client import ResponsesHttpClient
+from .http_client import ResponsesHttpClient, output_text, parse_sse
 from .report import Report
 
 ITEM_TEXT = {"type": "message", "role": "user", "content": "hello"}
@@ -47,6 +47,12 @@ def _content_text(item: dict[str, Any]) -> str:
         if isinstance(part, dict) and isinstance(part.get("text"), str):
             return part["text"]
     return ""
+
+
+def _conversation_items(client: ResponsesHttpClient, cid: str) -> tuple[int, list[dict[str, Any]]]:
+    code, page = client.get_json(f"/v1/conversations/{cid}/items?order=asc")
+    data = page.get("data") if isinstance(page, dict) else None
+    return code, data if isinstance(data, list) else []
 
 
 def _sdk_message_text(item: Any) -> str:
@@ -399,3 +405,162 @@ def run_conversation_checks(
         )
     except Exception as err:  # noqa: BLE001 - surface any SDK failure as a gap
         report.add(cat, "sdk.conversations", "FAIL", f"{type(err).__name__}: {err}")
+
+
+def run_conversation_response_checks(
+    client: ResponsesHttpClient,
+    report: Report,
+    model: str,
+    extra: dict[str, Any],
+) -> None:
+    """Official conversation membership: history is prepended, the finished turn appended."""
+    cat = "conversation"
+
+    def add(name: str, cond: bool, detail: str) -> None:
+        report.add(cat, name, "PASS" if cond else "FAIL", detail)
+
+    def body_for(cid: Any, text: str, **more: Any) -> dict[str, Any]:
+        return {
+            "model": model,
+            "input": text,
+            "max_output_tokens": 24,
+            "temperature": 0,
+            "conversation": cid,
+            **extra,
+            **more,
+        }
+
+    # string form: existing items reach the model, input + output join the conversation
+    code, conv = client.post_json(
+        "/v1/conversations", {"items": [{"type": "message", "role": "user", "content": "hello"}]}
+    )
+    cid = conv.get("id", "") if isinstance(conv, dict) else ""
+    if not cid:
+        add("responses.conversation.turn", False, f"create failed (HTTP {code})")
+    else:
+        code_r, resp = client.post_json("/v1/responses", body_for(cid, "Reply with exactly: TURN_OK"))
+        text = output_text(resp) if isinstance(resp, dict) else ""
+        code_l, items = _conversation_items(client, cid)
+        texts = [_content_text(i) for i in items]
+        add(
+            "responses.conversation.turn",
+            code_r == 200
+            and isinstance(resp, dict)
+            and isinstance(resp.get("conversation"), dict)
+            and resp["conversation"].get("id") == cid
+            and "TURN_OK" in text
+            and code_l == 200
+            and len(items) == 3
+            and items[0].get("role") == "user"
+            and texts[0] == "hello"
+            and items[1].get("role") == "user"
+            and "TURN_OK" in texts[1]
+            and items[2].get("role") == "assistant"
+            and items[2].get("id", "").startswith("msg_")
+            and "TURN_OK" in texts[2],
+            f"HTTP {code_r} echo={resp.get('conversation') if isinstance(resp, dict) else None} "
+            f"items={len(items)} texts={texts}",
+        )
+
+        # object form {"id": ...} behaves the same and is echoed as an object
+        code, cid2_conv = client.post_json("/v1/conversations", {})
+        cid2 = cid2_conv.get("id", "") if isinstance(cid2_conv, dict) else ""
+        code_o, resp_o = client.post_json(
+            "/v1/responses", body_for({"id": cid2}, "Reply with exactly: OBJ_OK")
+        )
+        code_ol, items_o = _conversation_items(client, cid2)
+        add(
+            "responses.conversation.object_form",
+            code_o == 200
+            and isinstance(resp_o, dict)
+            and isinstance(resp_o.get("conversation"), dict)
+            and resp_o["conversation"].get("id") == cid2
+            and code_ol == 200
+            and len(items_o) == 2
+            and items_o[0].get("role") == "user"
+            and items_o[1].get("role") == "assistant",
+            f"HTTP {code_o} items={len(items_o)}",
+        )
+
+        # store=false only controls previous_response_id retention, not the conversation
+        code, cid3_conv = client.post_json("/v1/conversations", {})
+        cid3 = cid3_conv.get("id", "") if isinstance(cid3_conv, dict) else ""
+        code_s, resp_s = client.post_json(
+            "/v1/responses", body_for(cid3, "Reply with exactly: STORE_OK", store=False)
+        )
+        code_sl, items_s = _conversation_items(client, cid3)
+        add(
+            "responses.conversation.store_false",
+            code_s == 200
+            and code_sl == 200
+            and len(items_s) == 2
+            and items_s[0].get("role") == "user"
+            and items_s[1].get("role") == "assistant",
+            f"HTTP {code_s} items={len(items_s)}",
+        )
+
+        # streaming create appends the turn too (separate remember call site)
+        code, cid4_conv = client.post_json("/v1/conversations", {})
+        cid4 = cid4_conv.get("id", "") if isinstance(cid4_conv, dict) else ""
+        body_s = body_for(cid4, "Reply with exactly: STREAM_OK")
+        body_s["stream"] = True
+        code_st, _, raw = client.request("POST", "/v1/responses", body_s, stream=True)
+        events = parse_sse(raw) if code_st == 200 else []
+        done = next((obj for t, obj in events if t == "response.completed"), None)
+        code_stl, items_st = _conversation_items(client, cid4)
+        add(
+            "responses.conversation.stream",
+            code_st == 200
+            and isinstance(done, dict)
+            and isinstance(done.get("response", {}).get("conversation"), dict)
+            and done["response"]["conversation"].get("id") == cid4
+            and code_stl == 200
+            and len(items_st) == 2
+            and items_st[1].get("role") == "assistant",
+            f"HTTP {code_st} items={len(items_st)}",
+        )
+
+        # the model actually sees the conversation history
+        code, cid5_conv = client.post_json(
+            "/v1/conversations",
+            {
+                "items": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": "The secret code is ZEBRA-42. Just acknowledge.",
+                    }
+                ]
+            },
+        )
+        cid5 = cid5_conv.get("id", "") if isinstance(cid5_conv, dict) else ""
+        code_h, resp_h = client.post_json(
+            "/v1/responses", body_for(cid5, "What is the secret code? Reply with exactly the code.")
+        )
+        text_h = output_text(resp_h) if isinstance(resp_h, dict) else ""
+        add(
+            "responses.conversation.context",
+            code_h == 200 and "ZEBRA-42" in text_h,
+            f"HTTP {code_h} text={text_h!r}",
+        )
+
+    # validation: mutually exclusive with previous_response_id, 400 on missing or bad shape
+    code_prev, first = client.post_json("/v1/responses", {"model": model, "input": "Reply with exactly: X", **extra})
+    prev_id = first.get("id", "") if isinstance(first, dict) else ""
+    code_pe, _ = client.post_json(
+        "/v1/responses",
+        {"model": model, "input": "hi", "previous_response_id": prev_id, "conversation": "conv_x", **extra},
+    )
+    add(
+        "responses.conversation.mutual_exclusion",
+        code_pe == 400,
+        f"HTTP {code_pe} (want 400) previous_response_id={prev_id}",
+    )
+
+    code_missing, _ = client.post_json(
+        "/v1/responses", {"model": model, "input": "hi", "conversation": "conv_does_not_exist", **extra}
+    )
+    add("responses.conversation.missing", code_missing == 400, f"HTTP {code_missing} (want 400)")
+
+    code_shape, _ = client.post_json("/v1/responses", {"model": model, "input": "hi", "conversation": 123, **extra})
+    add("responses.conversation.bad_shape", code_shape == 400, f"HTTP {code_shape} (want 400)")

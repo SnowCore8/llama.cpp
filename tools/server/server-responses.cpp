@@ -1,6 +1,7 @@
 #include "server-responses.h"
 #include "server-openai-persist.h"
 #include "server-web-search.h"
+#include "server-conversations.h"
 
 #include "server-common.h"
 #include "log.h"
@@ -304,6 +305,48 @@ json server_responses_prepare_request(
     };
 
     const std::string prev_id = json_value(body, "previous_response_id", std::string());
+
+    // Official conversation support: items from the conversation are prepended to the input
+    // for this request; the finished turn is appended back after the response completes.
+    std::string conv_id;
+    if (body.contains("conversation") && !body.at("conversation").is_null()) {
+        const json & conv = body.at("conversation");
+        if (conv.is_string()) {
+            conv_id = conv.get<std::string>();
+        } else if (conv.is_object() && conv.contains("id") && conv.at("id").is_string()) {
+            conv_id = conv.at("id").get<std::string>();
+        } else {
+            throw std::invalid_argument("'conversation' must be a string or an object with an 'id'");
+        }
+        if (conv_id.empty()) {
+            throw std::invalid_argument("'conversation' id must not be empty");
+        }
+        if (!prev_id.empty()) {
+            throw std::invalid_argument(
+                "'conversation' cannot be used in conjunction with 'previous_response_id'");
+        }
+        auto conv_entry = server_conversations_store::instance().get(conv_id);
+        if (!conv_entry.has_value()) {
+            throw std::invalid_argument("conversation not found: " + conv_id);
+        }
+        for (const auto & item : conv_entry->items) {
+            json as_input = server_responses_output_item_to_input(item);
+            if (as_input.is_null() && json_value(item, "type", std::string()) == "function_call_output") {
+                as_input = item;
+            }
+            if (!as_input.is_null()) {
+                push_hist_item(std::move(as_input));
+            }
+        }
+        expanded = true;
+        // Only the request's own items join the conversation; the prepended history is already there.
+        body["__oai_conv_input"] = body.contains("input")
+                                       ? server_responses_normalize_input(body.at("input"))
+                                       : json::array();
+        // Official Response objects echo the conversation as an object with an id.
+        body["conversation"] = json { {"id", conv_id} };
+    }
+
     if (!prev_id.empty()) {
         auto prev = server_responses_store::instance().get(prev_id);
         if (!prev.has_value()) {
@@ -510,10 +553,40 @@ json server_responses_prepare_request(
     return body;
 }
 
+// A finished turn joins the conversation named on the response object (official:
+// input items and output items are added after the response completes). store=false
+// only controls previous_response_id retention, so this runs before those early-outs.
+static void server_responses_conversation_attach(const json & response_obj, const json & conversation_input) {
+    if (!response_obj.is_object() || !response_obj.contains("conversation")) {
+        return;
+    }
+    const json & conv = response_obj.at("conversation");
+    std::string conv_id;
+    if (conv.is_string()) {
+        conv_id = conv.get<std::string>();
+    } else if (conv.is_object()) {
+        conv_id = json_value(conv, "id", std::string());
+    }
+    if (conv_id.empty()) {
+        return;
+    }
+    const std::string status = json_value(response_obj, "status", std::string());
+    if (status != "completed" && status != "incomplete") {
+        return; // only a finished turn joins the conversation
+    }
+    const json & output_items = response_obj.contains("output") ? response_obj.at("output") : json::array();
+    if (!server_conversations_append_turn(conv_id, conversation_input, output_items)) {
+        LOG_WRN("%s: conversation not found: %s\n", __func__, conv_id.c_str());
+    }
+}
+
 void server_responses_remember(
     const json & response_obj,
     const json & prepared_request_input,
-    const json & instructions) {
+    const json & instructions,
+    const json & conversation_input) {
+    server_responses_conversation_attach(response_obj, conversation_input);
+
     if (server_responses_store::instance().max_entries() <= 0) {
         return;
     }
@@ -570,7 +643,7 @@ json server_responses_enrich_response(json response_obj, const json & request_bo
         "parallel_tool_calls", "text", "reasoning", "instructions",
         "background", "include", "max_tool_calls", "prompt",
         "prompt_cache_key", "prompt_cache_retention", "prompt_cache_options",
-        "safety_identifier", "stream_options", "context_management",
+        "safety_identifier", "stream_options", "context_management", "conversation",
     };
     for (const char * key : passthrough_keys) {
         if (request_body.contains(key) && !response_obj.contains(key)) {
