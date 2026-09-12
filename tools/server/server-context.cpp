@@ -4458,6 +4458,12 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
 
     res->set_req(&req); // will also set spipe if needed
 
+    // background Responses streams are resumable by response id: attach a session keyed by
+    // the id so GET /v1/responses/{id}?stream=true&starting_after=N can replay and follow
+    if (json_value(data, "__oai_resp_background", false) && json_value(data, "stream", false)) {
+        res->attach_conv_id(json_value(data, "__oai_resp_id", std::string()));
+    }
+
     int32_t sse_ping_interval = params.sse_ping_interval;
 
     try {
@@ -5496,12 +5502,15 @@ void server_routes::init_routes() {
         body_parsed["__oai_resp_input"]        = prepared_input;
         body_parsed["__oai_resp_instructions"] = instructions;
         body_parsed["__oai_resp_request"]      = prepared;
+        body_parsed["__oai_resp_background"]   = want_background;
 
-        // Background: return in_progress immediately; complete asynchronously.
-        if (want_background && !want_stream) {
-            auto res = create_response();
+        // Background responses must be retrievable and cancellable while they run, so persist
+        // an in_progress stub before any work starts. this covers the streaming variant too:
+        // its stream is resumable by response id and cancel must reach it
+        json stub = json::object();
+        if (want_background) {
             const int64_t t = (int64_t) std::time(nullptr);
-            json stub = {
+            stub = {
                 {"id",         resp_id},
                 {"object",     "response"},
                 {"created_at", t},
@@ -5513,8 +5522,13 @@ void server_routes::init_routes() {
                 {"incomplete_details", nullptr},
             };
             stub = server_responses_enrich_response(std::move(stub), prepared);
-            // persist the in_progress stub so cancel / retrieve work before the result lands
+            // persist the stub so cancel / retrieve work before the result lands
             server_responses_remember(stub, prepared_input, instructions);
+        }
+
+        // Background, non-streaming: return in_progress immediately; complete asynchronously.
+        if (want_background && !want_stream) {
+            auto res = create_response();
 
             json body_parsed_copy = body_parsed;
             body_parsed_copy["stream"] = false;
@@ -5640,6 +5654,39 @@ void server_routes::init_routes() {
                 "response not found or expired: " + resp_id, ERROR_TYPE_NOT_FOUND));
             return res;
         }
+        // resumable streaming: GET /v1/responses/{id}?stream=true[&starting_after=N]
+        // replays the stored stream after the client cursor and follows live bytes
+        if (req.get_param("stream") == "true") {
+            int64_t starting_after = -1;
+            const std::string starting_after_str = req.get_param("starting_after");
+            if (!starting_after_str.empty()) {
+                try {
+                    starting_after = std::stoll(starting_after_str);
+                } catch (const std::exception &) {
+                    res->error(format_error_response("invalid 'starting_after' value", ERROR_TYPE_INVALID_REQUEST));
+                    return res;
+                }
+            }
+            std::function<bool(std::string &)> next;
+            const server_stream_resume_status status = server_stream_make_response_resume(
+                resp_id, starting_after, req.should_stop, next);
+            if (status == SERVER_STREAM_RESUME_NOT_FOUND) {
+                res->error(format_error_response(
+                    "no resumable stream for response (only background streams can be resumed): " + resp_id,
+                    ERROR_TYPE_NOT_FOUND));
+                return res;
+            }
+            if (status == SERVER_STREAM_RESUME_OFFSET_LOST) {
+                res->error(format_error_response(
+                    "stream replay offset was dropped, restart without starting_after",
+                    ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+            res->status = 200;
+            res->content_type = "text/event-stream";
+            res->next = std::move(next);
+            return res;
+        }
         json body = entry->response.is_object() && !entry->response.empty()
                         ? entry->response
                         : json {
@@ -5690,7 +5737,10 @@ void server_routes::init_routes() {
             return res;
         }
         try {
-            res->ok(server_responses_cancel(resp_id));
+            json out = server_responses_cancel(resp_id);
+            // also cancel the resumable stream attached to this response, if any
+            server_stream_cancel_response(resp_id);
+            res->ok(std::move(out));
         } catch (const std::exception & e) {
             res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
         }

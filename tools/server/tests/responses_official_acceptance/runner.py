@@ -16,7 +16,7 @@ from .checks_prompt_cache import run_prompt_cache_checks
 from .checks_scenarios import run_scenario_checks
 from .checks_sdk import run_sdk_checks
 from .checks_semantics import run_semantic_checks
-from .checks_streaming import run_response_object_checks, run_streaming_checks
+from .checks_streaming import run_background_stream_checks, run_response_object_checks, run_streaming_checks
 from .http_client import ResponsesHttpClient
 from .report import Report
 
@@ -113,6 +113,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     run_streaming_checks(client, report, args.model, extra)
     run_response_object_checks(client, report, args.model, extra)
+    run_background_stream_checks(client, report, args.model, extra)
     run_scenario_checks(client, report, args.model, extra)
     run_semantic_checks(client, report, args.model, extra)
     cache_stats = run_prompt_cache_checks(client, report, args.model, extra)

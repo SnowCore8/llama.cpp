@@ -61,25 +61,85 @@ class ResponsesHttpClient:
         except Exception:
             return code, {"_raw": raw.decode(errors="replace")[:500]}
 
+    def open_stream(
+        self,
+        path: str,
+        body: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ):
+        """Open a streaming request and return the live response (caller must close()).
+
+        Uses POST when a body is given, GET otherwise. Non-2xx raises HTTPError,
+        like urlopen; callers that expect error statuses should catch it.
+        """
+        data = None if body is None else json.dumps(body).encode()
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Accept": "text/event-stream",
+        }
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(
+            self.base_url + path,
+            data=data,
+            method="POST" if body is not None else "GET",
+            headers=headers,
+        )
+        return urllib.request.urlopen(req, timeout=timeout or self.timeout)
+
+
+def parse_sse_block(block: str) -> tuple[str | None, dict[str, Any]] | None:
+    """Parse one SSE event block; None when it carries no JSON data."""
+    ev = None
+    data = None
+    for line in block.splitlines():
+        if line.startswith("event:"):
+            ev = line[6:].strip()
+        elif line.startswith("data:"):
+            data = line[5:].strip()
+    if not data or data == "[DONE]":
+        return None
+    try:
+        obj = json.loads(data)
+    except Exception:
+        return None
+    return (ev or obj.get("type"), obj)
+
 
 def parse_sse(raw: bytes) -> list[tuple[str | None, dict[str, Any]]]:
     events: list[tuple[str | None, dict[str, Any]]] = []
     for block in raw.decode(errors="replace").split("\n\n"):
-        ev = None
-        data = None
-        for line in block.splitlines():
-            if line.startswith("event:"):
-                ev = line[6:].strip()
-            elif line.startswith("data:"):
-                data = line[5:].strip()
-        if not data or data == "[DONE]":
-            continue
-        try:
-            obj = json.loads(data)
-        except Exception:
-            continue
-        events.append((ev or obj.get("type"), obj))
+        parsed = parse_sse_block(block)
+        if parsed is not None:
+            events.append(parsed)
     return events
+
+
+def iter_sse(resp, max_events: int = 0):
+    """Yield (event, obj) incrementally from an open HTTP response.
+
+    Reads in fixed-size chunks until EOF; stops early after max_events (>0).
+    The caller keeps ownership of the response.
+    """
+    buf = ""
+    n = 0
+    while True:
+        while "\n\n" in buf:
+            block, buf = buf.split("\n\n", 1)
+            parsed = parse_sse_block(block)
+            if parsed is not None:
+                yield parsed
+                n += 1
+                if max_events and n >= max_events:
+                    return
+        chunk = resp.read(8192)
+        if not chunk:
+            # flush a trailing block that arrived without the final blank line
+            parsed = parse_sse_block(buf)
+            if parsed is not None:
+                yield parsed
+            return
+        buf += chunk.decode(errors="replace")
 
 
 def output_text(d: dict[str, Any]) -> str:

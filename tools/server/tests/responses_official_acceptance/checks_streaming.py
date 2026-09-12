@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .catalog import CONDITIONAL_STREAM_EVENTS, CORE_STREAM_EVENTS
-from .http_client import ResponsesHttpClient, parse_sse
+from .http_client import ResponsesHttpClient, iter_sse, parse_sse
 from .report import Report
 from .validators import validate_event, validate_response
 
@@ -392,3 +392,175 @@ def run_response_object_checks(
             "PASS" if k in data else "FAIL",
             repr(data.get(k))[:80],
         )
+
+
+def _first_response_id(events: list[tuple[str | None, dict[str, Any]]]) -> str | None:
+    for t, obj in events:
+        if t == "response.created" and isinstance(obj.get("response"), dict):
+            rid = obj["response"].get("id")
+            if isinstance(rid, str) and rid:
+                return rid
+    return None
+
+
+def run_background_stream_checks(
+    client: ResponsesHttpClient,
+    report: Report,
+    model: str,
+    extra: dict[str, Any],
+) -> None:
+    """Official background + stream: immediate SSE, resumable by cursor, cancellable."""
+    cat = "background_stream"
+    body = {
+        "model": model,
+        "input": "Reply with exactly: RESUME_OK",
+        "max_output_tokens": 64,
+        "temperature": 0,
+        "background": True,
+        "stream": True,
+        **extra,
+    }
+    try:
+        resp = client.open_stream("/v1/responses", body, timeout=60.0)
+    except Exception as e:
+        for name in (
+            "background_stream.immediate",
+            "background_stream.resume",
+            "background_stream.retrieve_after_disconnect",
+            "background_stream.cancel",
+            "background_stream.non_background_resume_404",
+        ):
+            report.add(cat, name, "FAIL", f"open failed: {e!r}")
+        return
+
+    # read the first events only, then drop the connection: the generation must survive
+    first: list[tuple[str | None, dict[str, Any]]] = []
+    try:
+        for ev in iter_sse(resp, max_events=4):
+            first.append(ev)
+    finally:
+        resp.close()
+    types = _types(first)
+    created = next((obj for t, obj in first if t == "response.created"), None)
+    created_resp = created.get("response") if isinstance(created, dict) else None
+    immediate = (
+        "response.created" in types
+        and isinstance(created_resp, dict)
+        and created_resp.get("status") == "in_progress"
+        and created_resp.get("background") is True
+    )
+    report.add(
+        cat,
+        "background_stream.immediate",
+        "PASS" if immediate else "FAIL",
+        f"types={types[:4]} status={(created_resp or {}).get('status')!r}",
+    )
+    rid = _first_response_id(first)
+    cursor = max((obj.get("sequence_number", -1) for _, obj in first), default=-1)
+    if not rid or cursor < 0:
+        report.add(cat, "background_stream.resume", "FAIL", f"no id/cursor in first events (rid={rid!r}, cursor={cursor})")
+        report.add(cat, "background_stream.retrieve_after_disconnect", "FAIL", "no id")
+    else:
+        # GET /v1/responses/{id}?stream=true&starting_after=N
+        # must replay only events after the cursor and finish with response.completed
+        try:
+            resume = client.open_stream(
+                f"/v1/responses/{rid}?stream=true&starting_after={cursor}",
+                timeout=90.0,
+            )
+        except Exception as e:
+            report.add(cat, "background_stream.resume", "FAIL", f"resume open failed: {e!r}")
+        else:
+            try:
+                rest = list(iter_sse(resume))
+            finally:
+                resume.close()
+            rest_seqs = [obj.get("sequence_number") for _, obj in rest]
+            rest_types = _types(rest)
+            ok_resume = (
+                len(rest) > 0
+                and all(isinstance(s, int) and s > cursor for s in rest_seqs)
+                and "response.completed" in rest_types
+            )
+            report.add(
+                cat,
+                "background_stream.resume",
+                "PASS" if ok_resume else "FAIL",
+                f"cursor={cursor} n={len(rest)} seq head={rest_seqs[:2]} completed={'response.completed' in rest_types}",
+            )
+        code, data = client.get_json(f"/v1/responses/{rid}")
+        ok_get = code == 200 and isinstance(data, dict) and data.get("status") == "completed"
+        report.add(
+            cat,
+            "background_stream.retrieve_after_disconnect",
+            "PASS" if ok_get else "FAIL",
+            f"HTTP {code} status={(data or {}).get('status')!r}",
+        )
+
+    # cancel: a live background stream must stop promptly and flip the stored status
+    cancel_body = {
+        "model": model,
+        "input": "Write a long detailed essay about mathematics history.",
+        "max_output_tokens": 512,
+        "temperature": 0,
+        "background": True,
+        "stream": True,
+        **extra,
+    }
+    try:
+        resp2 = client.open_stream("/v1/responses", cancel_body, timeout=60.0)
+        head2: list[tuple[str | None, dict[str, Any]]] = []
+        for ev in iter_sse(resp2, max_events=2):
+            head2.append(ev)
+        rid2 = _first_response_id(head2)
+        if not rid2:
+            resp2.close()
+            report.add(cat, "background_stream.cancel", "FAIL", "no response id in first events")
+        else:
+            code_c, _ = client.post_json(f"/v1/responses/{rid2}/cancel", {})
+            ended = False
+            try:
+                for _ in iter_sse(resp2):  # the cancelled stream must terminate
+                    pass
+                ended = True
+            except Exception:
+                ended = False
+            finally:
+                resp2.close()
+            code_g, data_g = client.get_json(f"/v1/responses/{rid2}")
+            status = (data_g or {}).get("status")
+            ok_cancel = code_c == 200 and ended and status == "cancelled"
+            report.add(
+                cat,
+                "background_stream.cancel",
+                "PASS" if ok_cancel else "FAIL",
+                f"cancel_http={code_c} stream_ended={ended} status={status!r}",
+            )
+    except Exception as e:
+        report.add(cat, "background_stream.cancel", "FAIL", f"{e!r}")
+
+    # a plain (non-background) stream has no resumable session
+    code, _, raw = client.request(
+        "POST",
+        "/v1/responses",
+        {
+            "model": model,
+            "input": "hi",
+            "max_output_tokens": 8,
+            "stream": True,
+            **extra,
+        },
+        stream=True,
+    )
+    plain = parse_sse(raw) if code == 200 else []
+    pid = _first_response_id(plain)
+    if pid:
+        code_r, _ = client.get_json(f"/v1/responses/{pid}?stream=true")
+        report.add(
+            cat,
+            "background_stream.non_background_resume_404",
+            "PASS" if code_r == 404 else "FAIL",
+            f"HTTP {code_r}",
+        )
+    else:
+        report.add(cat, "background_stream.non_background_resume_404", "SKIP", f"no id (HTTP {code})")

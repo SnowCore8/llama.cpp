@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -58,6 +59,26 @@ server_http_context::handler_t server_stream_make_delete_handler();
 // extract the X-Conversation-Id header value (case-insensitive), empty when absent
 std::string server_stream_conv_id_from_headers(const std::map<std::string, std::string> & headers);
 
+// cancel the resumable stream attached to a response id: flips cancellation so the producer
+// stops at its next poll and wakes any blocked readers. no-op when the id has no live session
+void server_stream_cancel_response(const std::string & response_id);
+
+// resume status for GET /v1/responses/{id}?stream=true[&starting_after=N]
+enum server_stream_resume_status {
+    SERVER_STREAM_RESUME_OK = 0,
+    SERVER_STREAM_RESUME_NOT_FOUND,
+    SERVER_STREAM_RESUME_OFFSET_LOST,
+};
+
+// build an SSE producer that replays a stored response stream and follows live bytes,
+// forwarding only events with sequence_number > starting_after (negative forwards all).
+// returns NOT_FOUND when no session exists, OFFSET_LOST when the replay prefix was dropped
+server_stream_resume_status server_stream_make_response_resume(
+        const std::string & response_id,
+        int64_t starting_after,
+        const std::function<bool()> & should_stop,
+        std::function<bool(std::string &)> & next);
+
 // implement tee-style pipe (spipe) for "stream replay" functionality
 struct server_res_spipe : server_http_res {
 private:
@@ -67,11 +88,16 @@ private:
     // if spipe is set, use this next_orig to implement tee-style pipe
     std::function<bool(std::string &)> next_orig;
     const server_http_req * req = nullptr;
+    // session key once attached (X-Conversation-Id header or an explicit id)
+    std::string conv_id;
     // set once next_orig reports no more data, so on_complete() doesn't re-drain a finished stream
     bool next_finished = false;
 
 public:
     void set_req(const server_http_req * req);
+    // attach a resumable session keyed by an explicit id: background Responses use the
+    // response id in place of a conversation header so clients can reattach by cursor
+    void attach_conv_id(const std::string & conv_id);
     bool conn_alive();
     bool should_stop();
     void on_complete() override;

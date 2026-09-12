@@ -594,8 +594,7 @@ std::string server_stream_conv_id_from_headers(const std::map<std::string, std::
     return std::string();
 }
 
-static stream_pipe_producer * server_stream_create_spipe(const std::map<std::string, std::string> & headers) {
-    std::string conversation_id = server_stream_conv_id_from_headers(headers);
+static stream_pipe_producer * server_stream_create_spipe(const std::string & conversation_id) {
     SRV_TRC("conv_id=%s (empty=%d)\n", conversation_id.c_str(), conversation_id.empty() ? 1 : 0);
     if (conversation_id.empty()) {
         return nullptr;
@@ -611,7 +610,15 @@ static stream_pipe_producer * server_stream_create_spipe(const std::map<std::str
 void server_res_spipe::set_req(const server_http_req * req) {
     this->req = req;
     // optionally attach spipe to the response when X-Conversation-Id is present
-    spipe.reset(server_stream_create_spipe(req->headers));
+    attach_conv_id(server_stream_conv_id_from_headers(req->headers));
+}
+
+void server_res_spipe::attach_conv_id(const std::string & conv_id) {
+    if (spipe || conv_id.empty()) {
+        return;
+    }
+    this->conv_id = conv_id;
+    spipe.reset(server_stream_create_spipe(conv_id));
 }
 
 bool server_res_spipe::conn_alive() {
@@ -636,7 +643,7 @@ void server_res_spipe::on_complete() {
     // started, typically a params validation throw. evict the session installed by set_req()
     // so the failed request leaves nothing behind for discovery or replay
     if (!next_orig) {
-        g_stream_sessions.evict(server_stream_conv_id_from_headers(req->headers));
+        g_stream_sessions.evict(conv_id);
         return;
     }
     std::string chunk;
@@ -665,4 +672,79 @@ void server_res_spipe::set_next(std::function<bool(std::string &)> next_fn) {
         }
         return has_next;
     };
+}
+
+void server_stream_cancel_response(const std::string & response_id) {
+    // evict_and_cancel warns loudly on unknown ids, so check first: most responses have no
+    // resumable stream attached
+    if (!g_stream_sessions.get(response_id)) {
+        return;
+    }
+    g_stream_sessions.evict_and_cancel(response_id);
+}
+
+// sequence_number carried by one SSE event block, -1 when the block has none
+static int64_t sse_event_sequence(const std::string & event) {
+    const size_t pos = event.find("data: ");
+    if (pos == std::string::npos) {
+        return -1;
+    }
+    size_t end = event.find('\n', pos);
+    if (end == std::string::npos) {
+        end = event.size();
+    }
+    try {
+        json obj = json::parse(event.substr(pos + 6, end - pos - 6));
+        if (obj.is_object() && obj.contains("sequence_number")) {
+            return json_value(obj, "sequence_number", (int64_t) -1);
+        }
+    } catch (const std::exception &) {
+        // not a data object, treat as unfilterable
+    }
+    return -1;
+}
+
+server_stream_resume_status server_stream_make_response_resume(
+        const std::string & response_id,
+        int64_t starting_after,
+        const std::function<bool()> & should_stop,
+        std::function<bool(std::string &)> & next) {
+    auto session = g_stream_sessions.get(response_id);
+    if (!session) {
+        return SERVER_STREAM_RESUME_NOT_FOUND;
+    }
+    if (session->dropped_prefix() > 0) {
+        return SERVER_STREAM_RESUME_OFFSET_LOST;
+    }
+    // consumer pipe: read-only, does not finalize the session on destruction
+    auto pipe    = stream_pipe_consumer::create(session);
+    auto offset  = std::make_shared<size_t>(0);
+    auto pending = std::make_shared<std::string>();
+    next = [pipe, offset, pending, starting_after, should_stop](std::string & out) -> bool {
+        bool got_any = false;
+        pipe->read(*offset,
+            [&](const char * d, size_t n) {
+                pending->append(d, n);
+                *offset += n;
+                got_any = true;
+                return false;
+            },
+            should_stop);
+        if (!got_any) {
+            return false;
+        }
+        // forward only complete events past the client cursor: the buffer always starts at
+        // offset 0, so events the client already saw are dropped by sequence_number here
+        size_t pos;
+        while ((pos = pending->find("\n\n")) != std::string::npos) {
+            std::string ev = pending->substr(0, pos + 2);
+            pending->erase(0, pos + 2);
+            const int64_t seq = sse_event_sequence(ev);
+            if (starting_after < 0 || seq < 0 || seq > starting_after) {
+                out += ev;
+            }
+        }
+        return true;
+    };
+    return SERVER_STREAM_RESUME_OK;
 }
