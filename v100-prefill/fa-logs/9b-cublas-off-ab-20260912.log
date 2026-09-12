@@ -1,0 +1,101 @@
+== fa-ab-cublas-off (9B only) 2026-09-12
+git_head=3148fd037
+worktree_diff=
+lib_deltanet-pipe_sha256=405cfc0d131efcd03129ed68842099e25a34d4cd01998dac38ff3c873afcec05
+resolved_deltanet-pipe=/root/llama_gguf/fa-libs/deltanet-pipe/libggml-cuda.so.0
+lib_cublas-off_sha256=eb6041f88e54f9e76c46b9d0fa55a3728eedb3cd0140cc2ce012f4db6ce6c4c2
+resolved_cublas-off=/root/llama_gguf/fa-libs/cublas-off/libggml-cuda.so.0
+
+===== SMALL r1 deltanet-pipe pp32 ne11=32 =====
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |            pp32 |       359.63 ± 24.10 |
+
+build: 19a667d32 (5555)
+EXIT_small_r1_deltanet-pipe=0
+
+===== WALL r1 deltanet-pipe 9B ub4096 d0/8192 =====
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp8192 |       3454.67 ± 0.13 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |  pp8192 @ d8192 |       3115.18 ± 3.07 |
+
+build: 19a667d32 (5555)
+EXIT_r1_deltanet-pipe=0
+
+===== SMALL r1 cublas-off pp32 ne11=32 =====
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |            pp32 |      859.69 ± 107.56 |
+
+build: 19a667d32 (5555)
+EXIT_small_r1_cublas-off=0
+
+===== WALL r1 cublas-off 9B ub4096 d0/8192 =====
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp8192 |       3433.34 ± 2.24 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |  pp8192 @ d8192 |       3102.24 ± 2.05 |
+
+build: 19a667d32 (5555)
+EXIT_r1_cublas-off=0
+
+===== SMALL r2 cublas-off pp32 ne11=32 =====
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |            pp32 |      859.17 ± 107.09 |
+
+build: 19a667d32 (5555)
+EXIT_small_r2_cublas-off=0
+
+===== WALL r2 cublas-off 9B ub4096 d0/8192 =====
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp8192 |       3422.08 ± 6.30 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |  pp8192 @ d8192 |       3090.09 ± 2.97 |
+
+build: 19a667d32 (5555)
+EXIT_r2_cublas-off=0
+
+===== SMALL r2 deltanet-pipe pp32 ne11=32 =====
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |            pp32 |       359.63 ± 23.89 |
+
+build: 19a667d32 (5555)
+EXIT_small_r2_deltanet-pipe=0
+
+===== WALL r2 deltanet-pipe 9B ub4096 d0/8192 =====
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp8192 |       3408.90 ± 0.10 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |  pp8192 @ d8192 |       3074.49 ± 2.79 |
+
+build: 19a667d32 (5555)
+EXIT_r2_deltanet-pipe=0
+ABCUBLASOFF_9B_DONE
+AB_EXIT=0

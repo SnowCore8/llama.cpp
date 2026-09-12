@@ -1,0 +1,6 @@
+# 本目录是 V100 预填充调优资料包（见 fa-prefill-experiments.md）。
+# 证据日志按设计入库：覆盖仓库根 .gitignore 的 *.log 忽略。
+!fa-logs/*.log
+
+# 内核库快照（构建产物，单文件 167 MB）不入库，仅本地保留。
+fa-libs/

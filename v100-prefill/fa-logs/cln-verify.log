@@ -1,0 +1,40 @@
+cln-verify (clean field, no service) 2026-09-12；侧: stock|e1|e3d
+STEP0_START 2026-09-12 11:11:00
+=== round 1 side stock ===
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp4096 |      3334.78 ± 23.74 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d16384 |       2410.43 ± 6.49 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d32768 |       1884.52 ± 3.38 |
+build: 8def8f970 (5554)
+=== round 1 side e1 ===
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp4096 |      3363.12 ± 25.95 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d16384 |      2662.71 ± 10.64 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d32768 |       2197.77 ± 6.40 |
+build: 8def8f970 (5554)
+=== round 1 side e3d ===
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp4096 |      3354.43 ± 21.29 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d16384 |      2800.28 ± 12.17 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d32768 |      2385.35 ± 12.14 |
+build: 8def8f970 (5554)
+=== round 2 side stock ===
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp4096 |      3277.65 ± 27.65 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d16384 |       2384.85 ± 5.15 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d32768 |       1863.63 ± 8.58 |
+build: 8def8f970 (5554)
+=== round 2 side e1 ===
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp4096 |      3301.90 ± 27.84 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d16384 |      2624.50 ± 13.98 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d32768 |       2174.50 ± 5.10 |
+build: 8def8f970 (5554)
+=== round 2 side e3d ===
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp4096 |      3325.72 ± 22.04 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d16384 |      2765.64 ± 12.14 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d32768 |      2349.72 ± 14.49 |
+build: 8def8f970 (5554)
+STEP_AB_DONE 2026-09-12 11:14:35
+=== 256k side e3d ===
+256K_EXIT_e3d=0
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d262144 |        769.87 ± 0.00 |
+=== 256k side stock ===
+已终止
+256K_EXIT_stock=143
+STEP_256K_DONE 2026-09-12 11:19:55

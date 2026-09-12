@@ -1,0 +1,29 @@
+==PROF== Connected to process 971268 (/root/llama.cpp/build/bin/llama-bench)
+==PROF== Profiling "flash_attn_ext_f16": 0%
+==WARNING== Backing up device memory in system memory. Kernel replay might be slow. Consider using "--replay-mode application" to avoid memory save-and-restore.
+....50%....100% - 12 passes
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d16384 |       2546.64 ± 0.00 |
+
+build: 8def8f970 (5554)
+==PROF== Disconnected from process 971268
+[971268] llama-bench@127.0.0.1
+  void flash_attn_ext_f16<256, 256, 16, 4, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long) (1024, 1, 1)x(32, 4, 1), Context 1, Stream 15, Device 1, CC 7.0
+    Section: Command line profiler metrics
+    ------------------------------------------------------------------------- ----------- -------------
+    Metric Name                                                               Metric Unit  Metric Value
+    ------------------------------------------------------------------------- ----------- -------------
+    dram__bytes_read.sum                                                            Mbyte        565.27
+    gpu__time_duration.sum                                                             ms         43.37
+    l1tex__throughput.avg.pct_of_peak_sustained_active                                  %         39.54
+    sm__pipe_tensor_op_hmma_cycles_active.avg.pct_of_peak_sustained_active              %         24.25
+    sm__warps_active.avg.pct_of_peak_sustained_active                                   %          6.25
+    smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio                 inst          0.22
+    smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio         inst          2.21
+    smsp__average_warps_issue_stalled_short_scoreboard_per_issue_active.ratio        inst          0.33
+    smsp__average_warps_issue_stalled_wait_per_issue_active.ratio                    inst          1.41
+    smsp__inst_executed.sum                                                          inst 2,806,380,544
+    smsp__issue_active.avg.pct_of_peak_sustained_active                                 %         17.95
+    ------------------------------------------------------------------------- ----------- -------------
+

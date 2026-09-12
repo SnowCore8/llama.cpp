@@ -1,0 +1,14 @@
+device 1: Tesla PG503-216 | SMs 72 | clock 1530 MHz
+chains= 4 blocks= 576 threads=128 |   45.05 Gmma/s = 0.409 mma/SM/cycle
+chains= 4 blocks=1152 threads=128 |   40.29 Gmma/s = 0.366 mma/SM/cycle
+chains= 4 blocks= 288 threads=256 |   45.02 Gmma/s = 0.409 mma/SM/cycle
+chains= 4 blocks= 576 threads=256 |   36.24 Gmma/s = 0.329 mma/SM/cycle
+chains= 8 blocks= 576 threads=128 |   36.96 Gmma/s = 0.335 mma/SM/cycle
+chains= 8 blocks=1152 threads=128 |   41.11 Gmma/s = 0.373 mma/SM/cycle
+chains= 8 blocks= 288 threads=256 |   30.80 Gmma/s = 0.280 mma/SM/cycle
+chains= 8 blocks= 576 threads=256 |   41.05 Gmma/s = 0.373 mma/SM/cycle
+chains=16 blocks= 576 threads=128 |   41.51 Gmma/s = 0.377 mma/SM/cycle
+chains=16 blocks=1152 threads=128 |   43.98 Gmma/s = 0.399 mma/SM/cycle
+chains=16 blocks= 288 threads=256 |   46.68 Gmma/s = 0.424 mma/SM/cycle
+chains=16 blocks= 576 threads=256 |   46.69 Gmma/s = 0.424 mma/SM/cycle
+cublas fp16/fp32acc GEMM 8192^3 x5: 64.3 ms -> 85.5 TFLOP/s

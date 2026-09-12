@@ -1,0 +1,121 @@
+== 9b-mmq-gate-ab 开始 2026-09-12 17:48:45 ==
+git_head=3148fd037  worktree_lines=1
+GPU占用（应为空）: 
+0, NVIDIA GeForce GTX 1650 Ti, 300 MHz, 41
+1, Tesla PG503-216, 135 MHz, 37
+lib_cublas-off_sha256=eb6041f88e54f9e76c46b9d0fa55a3728eedb3cd0140cc2ce012f4db6ce6c4c2
+resolved_cublas-off=/root/llama_gguf/fa-libs/cublas-off/libggml-cuda.so.0
+lib_mmq-gate_sha256=4efef6a8282202c628320ede4d68760ca55c1d99652a39631b86cf168f26a4c0
+resolved_mmq-gate=/root/llama_gguf/fa-libs/mmq-gate/libggml-cuda.so.0
+lib_mmq-exp_sha256=f5dab96c4b0c9a38a781252afa3cb1693ec8531fb203aeddd642c46330803c1d
+resolved_mmq-exp=/root/llama_gguf/fa-libs/mmq-exp/libggml-cuda.so.0
+
+===== r1 cublas-off pp48..4096 =====
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |            pp48 |      976.66 ± 138.06 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |            pp64 |       605.85 ± 36.16 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp128 |      1070.21 ± 51.29 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp175 |      1353.72 ± 57.18 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp176 |      1369.04 ± 57.10 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp192 |      1392.95 ± 57.32 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp512 |      2579.20 ± 68.02 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp4096 |      3450.17 ± 12.02 |
+
+build: 3148fd037 (5556)
+EXIT_r1_cublas-off=0
+
+===== r1 mmq-gate pp48..4096 =====
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |            pp48 |      978.38 ± 136.95 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |            pp64 |      1114.58 ± 89.71 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp128 |      1264.53 ± 47.95 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp175 |      1318.02 ± 51.06 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp176 |      1367.59 ± 66.43 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp192 |      1395.96 ± 56.47 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp512 |      2578.34 ± 66.12 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp4096 |      3446.35 ± 14.14 |
+
+build: 3148fd037 (5556)
+EXIT_r1_mmq-gate=0
+
+===== r1 mmq-exp pp48..4096 =====
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |            pp48 |      978.52 ± 136.62 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |            pp64 |      1113.49 ± 91.79 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp128 |      1263.51 ± 51.79 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp175 |      1315.58 ± 55.20 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp176 |      1324.10 ± 50.20 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp192 |      1430.15 ± 57.66 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp512 |      1589.13 ± 31.32 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp4096 |       1705.54 ± 4.49 |
+
+build: 3148fd037 (5556)
+EXIT_r1_mmq-exp=0
+
+===== r2 mmq-exp pp48..4096 =====
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |            pp48 |      977.50 ± 137.81 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |            pp64 |      1113.61 ± 90.71 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp128 |      1263.43 ± 51.71 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp175 |      1316.63 ± 53.23 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp176 |      1323.78 ± 50.41 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp192 |      1429.93 ± 57.75 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp512 |      1589.72 ± 30.49 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp4096 |       1704.30 ± 3.93 |
+
+build: 3148fd037 (5556)
+EXIT_r2_mmq-exp=0
+
+===== r2 mmq-gate pp48..4096 =====
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |            pp48 |      977.27 ± 137.06 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |            pp64 |      1113.51 ± 90.60 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp128 |      1263.90 ± 48.78 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp175 |      1315.80 ± 49.40 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp176 |      1365.91 ± 66.48 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp192 |      1392.93 ± 55.78 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp512 |      2572.07 ± 67.95 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp4096 |      3424.37 ± 17.65 |
+
+build: 3148fd037 (5556)
+EXIT_r2_mmq-gate=0
+
+===== r2 cublas-off pp48..4096 =====
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |            pp48 |      977.02 ± 138.51 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |            pp64 |       606.06 ± 35.61 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp128 |      1070.04 ± 49.78 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp175 |      1348.27 ± 51.73 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp176 |      1370.69 ± 55.96 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp192 |      1394.06 ± 55.94 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |           pp512 |      2572.36 ± 67.97 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp4096 |      3415.33 ± 10.12 |
+
+build: 3148fd037 (5556)
+EXIT_r2_cublas-off=0
+GPU收尾: 0, NVIDIA GeForce GTX 1650 Ti, 300 MHz, 39|1, Tesla PG503-216, 1530 MHz, 54|
+MMQGATE_AB_DONE 2026-09-12 17:50:10

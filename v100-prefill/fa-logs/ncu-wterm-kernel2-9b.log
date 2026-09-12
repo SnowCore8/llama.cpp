@@ -1,0 +1,24 @@
+==WARNING== Note: Running with uncontrolled GPU caches. Profiling results may be inconsistent.
+==PROF== Connected to process 1097145 (/root/llama.cpp/build/bin/llama-bench)
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |  pp8192 @ d8192 |       3094.50 ± 0.00 |
+
+build: 19a667d32 (5555)
+==PROF== Disconnected from process 1097145
+"ID","Process ID","Process Name","Host Name","Kernel Name","Context","Stream","Block Size","Grid Size","Device","CC","Section Name","Metric Name","Metric Unit","Metric Value"
+"0","1097145","llama-bench","127.0.0.1","void Kernel2<cutlass_70_tensorop_s884gemm_f16_128x128_tn_align8>(Params)","1","15","(128, 1, 1)","(256, 8, 1)","1","7.0","Command line profiler metrics","dram__bytes.sum","byte","589,732,736"
+"0","1097145","llama-bench","127.0.0.1","void Kernel2<cutlass_70_tensorop_s884gemm_f16_128x128_tn_align8>(Params)","1","15","(128, 1, 1)","(256, 8, 1)","1","7.0","Command line profiler metrics","gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed","%","15.33"
+"0","1097145","llama-bench","127.0.0.1","void Kernel2<cutlass_70_tensorop_s884gemm_f16_128x128_tn_align8>(Params)","1","15","(128, 1, 1)","(256, 8, 1)","1","7.0","Command line profiler metrics","gpu__time_duration.sum","ns","3,412,320"
+"0","1097145","llama-bench","127.0.0.1","void Kernel2<cutlass_70_tensorop_s884gemm_f16_128x128_tn_align8>(Params)","1","15","(128, 1, 1)","(256, 8, 1)","1","7.0","Command line profiler metrics","launch__block_size","","128"
+"0","1097145","llama-bench","127.0.0.1","void Kernel2<cutlass_70_tensorop_s884gemm_f16_128x128_tn_align8>(Params)","1","15","(128, 1, 1)","(256, 8, 1)","1","7.0","Command line profiler metrics","launch__grid_size","","2,048"
+"0","1097145","llama-bench","127.0.0.1","void Kernel2<cutlass_70_tensorop_s884gemm_f16_128x128_tn_align8>(Params)","1","15","(128, 1, 1)","(256, 8, 1)","1","7.0","Command line profiler metrics","launch__registers_per_thread","register/thread","236"
+"0","1097145","llama-bench","127.0.0.1","void Kernel2<cutlass_70_tensorop_s884gemm_f16_128x128_tn_align8>(Params)","1","15","(128, 1, 1)","(256, 8, 1)","1","7.0","Command line profiler metrics","launch__waves_per_multiprocessor","","14.22"
+"0","1097145","llama-bench","127.0.0.1","void Kernel2<cutlass_70_tensorop_s884gemm_f16_128x128_tn_align8>(Params)","1","15","(128, 1, 1)","(256, 8, 1)","1","7.0","Command line profiler metrics","sm__inst_executed_pipe_tensor.sum","inst","536,870,912"
+"0","1097145","llama-bench","127.0.0.1","void Kernel2<cutlass_70_tensorop_s884gemm_f16_128x128_tn_align8>(Params)","1","15","(128, 1, 1)","(256, 8, 1)","1","7.0","Command line profiler metrics","sm__throughput.avg.pct_of_peak_sustained_elapsed","%","84.60"
+"0","1097145","llama-bench","127.0.0.1","void Kernel2<cutlass_70_tensorop_s884gemm_f16_128x128_tn_align8>(Params)","1","15","(128, 1, 1)","(256, 8, 1)","1","7.0","Command line profiler metrics","sm__warps_active.avg.pct_of_peak_sustained_active","%","12.37"
+"0","1097145","llama-bench","127.0.0.1","void Kernel2<cutlass_70_tensorop_s884gemm_f16_128x128_tn_align8>(Params)","1","15","(128, 1, 1)","(256, 8, 1)","1","7.0","Command line profiler metrics","smsp__inst_executed.sum","inst","680,091,648"
+"0","1097145","llama-bench","127.0.0.1","void Kernel2<cutlass_70_tensorop_s884gemm_f16_128x128_tn_align8>(Params)","1","15","(128, 1, 1)","(256, 8, 1)","1","7.0","Command line profiler metrics","smsp__issue_active.avg.pct_of_peak_sustained_active","%","54.83"

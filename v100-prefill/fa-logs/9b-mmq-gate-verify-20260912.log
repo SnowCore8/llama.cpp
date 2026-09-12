@@ -1,0 +1,45 @@
+== 9b-mmq-gate-verify 开始 2026-09-12 17:36:12 ==
+git_head=3148fd037 worktree_lines=1
+gate_lib_sha256=4efef6a8282202c628320ede4d68760ca55c1d99652a39631b86cf168f26a4c0
+base_lib_sha256=eb6041f88e54f9e76c46b9d0fa55a3728eedb3cd0140cc2ce012f4db6ce6c4c2
+GPU占用（应为空）: 
+0, NVIDIA GeForce GTX 1650 Ti, 300 MHz, 37
+1, Tesla PG503-216, 135 MHz, 30
+
+===== tbo[gate] -o MUL_MAT_ID =====
+resolved_lib=/root/llama_gguf/fa-libs/mmq-gate/libggml-cuda.so.0
+EXIT_rc=0 用时=38s
+4/4 backends passed
+
+===== tbo[base] -o MUL_MAT_ID =====
+resolved_lib=/root/llama_gguf/fa-libs/cublas-off/libggml-cuda.so.0
+EXIT_rc=0 用时=41s
+4/4 backends passed
+
+===== tbo[gate] -o MUL_MAT =====
+resolved_lib=/root/llama_gguf/fa-libs/mmq-gate/libggml-cuda.so.0
+EXIT_rc=0 用时=37s
+4/4 backends passed
+
+===== ppl[gate128] -b 128 -ub 128 =====
+resolved_lib=/root/llama_gguf/fa-libs/mmq-gate/libggml-cuda.so.0
+EXIT_rc=0 用时=7s
+0.06.608.942 I Final estimate: PPL = 3.7113 +/- 0.28802
+
+===== ppl[base128] -b 128 -ub 128 =====
+resolved_lib=/root/llama_gguf/fa-libs/cublas-off/libggml-cuda.so.0
+EXIT_rc=0 用时=7s
+0.06.816.815 I Final estimate: PPL = 3.6740 +/- 0.28298
+
+===== ppl[gate512] -b 512 -ub 512 =====
+resolved_lib=/root/llama_gguf/fa-libs/mmq-gate/libggml-cuda.so.0
+EXIT_rc=0 用时=6s
+0.05.588.984 I Final estimate: PPL = 3.6737 +/- 0.28295
+
+===== ppl[base512] -b 512 -ub 512 =====
+resolved_lib=/root/llama_gguf/fa-libs/cublas-off/libggml-cuda.so.0
+EXIT_rc=0 用时=6s
+0.05.613.120 I Final estimate: PPL = 3.6737 +/- 0.28295
+
+GPU收尾: 0, NVIDIA GeForce GTX 1650 Ti, 1350 MHz, 44|1, Tesla PG503-216, 1530 MHz, 37|
+MMQGATE_VERIFY_DONE 2026-09-12 17:38:35

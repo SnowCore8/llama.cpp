@@ -1,0 +1,1 @@
+cublas fp16/fp32acc GEMM 8192^3 x5: 64.4 ms -> 85.4 TFLOP/s

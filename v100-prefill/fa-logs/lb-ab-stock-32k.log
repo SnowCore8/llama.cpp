@@ -1,0 +1,11 @@
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp4096 |      3294.69 ± 23.93 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d16384 |       2382.60 ± 8.46 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d32768 |       1854.81 ± 2.72 |
+
+build: 8def8f970 (5554)
+EXIT=0

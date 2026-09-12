@@ -1,0 +1,36 @@
+Generating SQLite file /root/llama_gguf/fa-logs/nsys-wterm-9b-d0.sqlite from /root/llama_gguf/fa-logs/nsys-wterm-9b-d0.nsys-rep
+Processing [/root/llama_gguf/fa-logs/nsys-wterm-9b-d0.sqlite] with [/usr/local/cuda-12.9/nsight-systems-2025.1.3/host-linux-x64/reports/cuda_gpu_kern_sum.py]... 
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+44.7,2028255086,608,3335945.9,3239241.5,1646732,4886853,1408973.2,void cutlass::Kernel2<cutlass_70_tensorop_s884gemm_f16_128x128_tn_align8>(T1::Params)
+15.3,695269569,96,7242391.3,7243738.0,7074733,7405928,76542.7,"void gated_delta_net_cuda<(int)128, (bool)0, (bool)0>(const float *, const float *, const float *, const float *, const float *, const float *, float *, float *, long, long, long, long, long, long, long, long, long, long, long, long, uint3, uint3, float, long, int)"
+14.7,665636578,128,5200285.8,5200690.0,5140132,5249122,23685.1,volta_s884gemm_fp16_256x128_ldg8_tn
+4.4,200846927,32,6276466.5,6228198.0,3338328,9351889,2936870.8,"void flash_attn_ext_f16<(int)256, (int)256, (int)16, (int)4, (bool)0, (bool)0, (bool)0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)"
+4.2,188623348,864,218314.1,142270.5,2655,423835,168045.2,"void dequantize_block_q4_K<__half>(const void *, T1 *)"
+4.0,180017439,992,181469.2,145502.0,137791,439643,97372.3,"void convert_unary<float, __half>(const void *, T2 *, long, long, long, uint3, long, long, long)"
+2.3,103140141,224,460447.1,641160.0,211293,656120,214062.4,"void unary_gated_op_kernel<&op_silu, float>(const T2 *, const T2 *, T2 *, long, long, long, long)"
+1.9,84346583,96,878610.2,877957.5,863062,894838,6664.2,"void concat_non_cont<unsigned int, (int)0>(const char *, const char *, char *, long, long, long, long, unsigned long, unsigned long, unsigned long, unsigned long, long, long, long, long, unsigned long, unsigned long, unsigned long, unsigned long, long, long, long, long, unsigned long, unsigned long, unsigned long, unsigned long)"
+1.3,58032250,352,164864.3,222141.0,3072,239325,98642.9,"void k_bin_bcast<&op_add, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)"
+1.3,57967150,96,603824.5,603928.5,597241,608409,2387.3,"void ssm_conv_long_token_f32<(bool)1, (unsigned long)128, (unsigned long)4, (long)32>(const float *, const float *, const float *, int, int, int, int, float *, int, int, int, long)"
+1.1,48525247,160,303282.8,381884.0,71392,393307,121873.8,"void rms_norm_f32<(int)256, (bool)1, (bool)0>(const float *, float *, int, long, long, long, float, const float *, long, long, long, uint3, uint3, uint3, uint3, const float *, long, long, long, uint3, uint3, uint3, uint3)"
+1.0,44790026,64,699844.2,699815.5,690712,707128,3742.0,volta_s884gemm_fp16_64x64_ldg8_tn
+0.9,38902647,260,149625.6,149502.0,143519,154751,1748.7,"void rms_norm_f32<(int)1024, (bool)1, (bool)0>(const float *, float *, int, long, long, long, float, const float *, long, long, long, uint3, uint3, uint3, uint3, const float *, long, long, long, uint3, uint3, uint3, uint3)"
+0.7,33685617,192,175445.9,175166.0,171998,179070,1556.4,"void rms_norm_f32<(int)256, (bool)0, (bool)0>(const float *, float *, int, long, long, long, float, const float *, long, long, long, uint3, uint3, uint3, uint3, const float *, long, long, long, uint3, uint3, uint3, uint3)"
+0.6,27773118,128,216977.5,237133.0,25823,290012,84709.2,"void dequantize_block_q6_K<__half>(const void *, T1 *)"
+0.4,16882968,288,58621.4,84719.0,2496,88031,37932.5,"scale_f32(const float *, float *, float, float, long)"
+0.3,14905808,128,116451.6,7791.5,4608,454235,191345.5,"void cpy_scalar<&cpy_1_scalar<float, float>>(const char *, char *, long, long, long, long, long, long, long, long, long, long, long, long, long, long, long)"
+0.3,13076710,192,68107.9,67807.0,66464,71967,1163.9,void cutlass::Kernel2<cutlass_70_wmma_tensorop_s161616gemm_f16_32x32_64x2_tn_align8>(T1::Params)
+0.2,10432870,64,163013.6,163406.5,153566,170558,4503.5,"void k_set_rows_quant<long, block_q8_0, (int)32, &quantize_f32_q8_0_block>(const float *, const T1 *, T2 *, long, long, long, long, long, long, long, long, long, long, long, long, long, long, uint3, uint3, uint3, uint3, uint3)"
+0.2,6910607,32,215956.5,215357.5,211037,221726,3376.7,"void unary_gated_op_kernel<&op_sigmoid, float>(const T2 *, const T2 *, T2 *, long, long, long, long)"
+0.1,5554329,64,86786.4,86446.5,35104,138783,51334.3,"void fwht_cuda<(int)64>(const float *, float *, long, float)"
+0.1,5424891,64,84763.9,84223.0,34207,135806,50354.2,"void fwht_cuda<(int)256>(const float *, float *, long, float)"
+0.1,4365556,64,68211.8,67663.5,29056,108286,38704.3,"void rope_multi<(bool)1, (bool)0, float>(const T3 *, T3 *, int, int, int, int, int, int, int, int, int, int, int, const int *, float, float, float, rope_corr_dims, float, const float *, mrope_sections, bool, bool)"
+0.1,2365124,2,1182562.0,1182562.0,1168435,1196689,19978.6,"void mul_mat_vec_q<(ggml_type)14, (int)1, (bool)0, (bool)0, (bool)0>(const void *, const void *, const int *, ggml_cuda_mm_fusion_args_device, float *, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, unsigned int)"
+0.0,1449552,64,22649.3,22671.0,15008,30976,6415.8,"void dequantize_block_q8_0_f16<(bool)0>(const void *, __half *, long)"
+0.0,995604,32,31112.6,30976.0,29152,33632,877.3,"void flash_attn_mask_to_KV_max<(int)16>(const __half2 *, int *, int, long, long)"
+0.0,565949,96,5895.3,6448.0,3840,8192,1276.0,"void k_get_rows_float_vec<float>(const T1 *, const int *, T1 *, long, long, uint3, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long)"
+0.0,399450,98,4076.0,3536.0,2687,8064,1747.7,"void k_get_rows_float<float, float>(const T1 *, const int *, T2 *, long, long, uint3, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long)"
+0.0,376988,96,3927.0,3088.0,2784,8064,1939.1,"void k_bin_bcast<&op_mul, float, float, float, const float *>(const T2 *, const T3 *, T4 *, unsigned int, unsigned int, unsigned int, uint3, uint3, uint3, uint3, uint3, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, T5...)"
+0.0,354492,96,3692.6,2784.0,2495,8032,2057.1,"void unary_op_kernel<&op_sigmoid, float>(const T2 *, T2 *, int)"
+0.0,247487,96,2578.0,2528.0,2400,3040,167.3,"void unary_op_kernel<&op_softplus, float>(const T2 *, T2 *, int)"
+0.0,4128,2,2064.0,2064.0,1888,2240,248.9,"quantize_q8_1(const float *, void *, long, long, long, long, long, unsigned int, uint3)"
+

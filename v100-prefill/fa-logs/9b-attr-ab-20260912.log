@@ -1,0 +1,46 @@
+== 9b-attr-ab 开始 2026-09-12 15:11:04 ==
+git_head=3148fd037  worktree_lines=0
+GPU占用（应为空）:
+lib_e3d_sha256=e26604048a3a7c0d19682aab7fe71ef3ae7b5147ca102f10dbf40dc62cabdf33
+resolved_e3d=/root/llama_gguf/fa-libs/e3d/libggml-cuda.so.0
+lib_deltanet-pipe_sha256=405cfc0d131efcd03129ed68842099e25a34d4cd01998dac38ff3c873afcec05
+resolved_deltanet-pipe=/root/llama_gguf/fa-libs/deltanet-pipe/libggml-cuda.so.0
+lib_cublas-off_sha256=eb6041f88e54f9e76c46b9d0fa55a3728eedb3cd0140cc2ce012f4db6ce6c4c2
+resolved_cublas-off=/root/llama_gguf/fa-libs/cublas-off/libggml-cuda.so.0
+===== r1 e3d pp4096 d0/16384/32768 =====
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp4096 |      3396.04 ± 26.16 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d16384 |      2826.23 ± 10.93 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d32768 |      2401.57 ± 10.61 |
+build: 19a667d32 (5555)
+EXIT_r1_e3d=0
+===== r1 deltanet-pipe pp4096 d0/16384/32768 =====
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp4096 |      3407.35 ± 27.83 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d16384 |      2824.29 ± 14.36 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d32768 |      2394.40 ± 12.06 |
+build: 19a667d32 (5555)
+EXIT_r1_deltanet-pipe=0
+===== r1 cublas-off pp4096 d0/16384/32768 =====
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp4096 |      3383.20 ± 33.40 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d16384 |      2808.49 ± 11.58 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d32768 |      2385.95 ± 11.50 |
+build: 19a667d32 (5555)
+EXIT_r1_cublas-off=0
+===== r2 cublas-off pp4096 d0/16384/32768 =====
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp4096 |      3367.51 ± 24.22 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d16384 |       2792.78 ± 9.62 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d32768 |       2364.74 ± 4.92 |
+build: 19a667d32 (5555)
+EXIT_r2_cublas-off=0
+===== r2 deltanet-pipe pp4096 d0/16384/32768 =====
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp4096 |      3356.20 ± 26.10 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d16384 |      2776.68 ± 13.93 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d32768 |       2370.33 ± 6.94 |
+build: 19a667d32 (5555)
+EXIT_r2_deltanet-pipe=0
+===== r2 e3d pp4096 d0/16384/32768 =====
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |          pp4096 |      3316.12 ± 25.67 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d16384 |      2759.04 ± 17.97 |
+| qwen35 9B Q4_K - Medium        |   5.37 GiB |     9.20 B | CUDA,BLAS  |       4 |    4096 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp4096 @ d32768 |       2344.44 ± 6.66 |
+build: 19a667d32 (5555)
+EXIT_r2_e3d=0
+ATTRAB_DONE 2026-09-12 15:14:30

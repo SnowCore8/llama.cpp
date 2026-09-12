@@ -1,0 +1,235 @@
+== 27b-fa-ab-deep v2 2026-09-12 (清场, 8k/16k 协议)
+git_head=19a667d32
+worktree_fa_diff= 1 file changed, 4 deletions(-)
+lib_stock_sha256=754fbf6f5aa798ffed7df464bf03504206a62764155d4dc166a2a7cb2c4a2ca6
+lib_e3d_sha256=e26604048a3a7c0d19682aab7fe71ef3ae7b5147ca102f10dbf40dc62cabdf33
+
+===== WALL r1 stock ub4096 d8192,16384 =====
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 27B Q4_K - Medium       |  15.65 GiB |    27.32 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |  pp8192 @ d8192 |        874.36 ± 0.21 |
+| qwen35 27B Q4_K - Medium       |  15.65 GiB |    27.32 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp8192 @ d16384 |        759.51 ± 2.64 |
+
+build: 19a667d32 (5555)
+EXIT_wall_r1_stock=0
+
+===== WALL r1 e3d ub4096 d8192,16384 =====
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 27B Q4_K - Medium       |  15.65 GiB |    27.32 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |  pp8192 @ d8192 |        988.86 ± 0.30 |
+| qwen35 27B Q4_K - Medium       |  15.65 GiB |    27.32 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp8192 @ d16384 |        919.60 ± 0.80 |
+
+build: 19a667d32 (5555)
+EXIT_wall_r1_e3d=0
+
+===== WALL r2 stock ub4096 d8192,16384 =====
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 27B Q4_K - Medium       |  15.65 GiB |    27.32 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |  pp8192 @ d8192 |        872.56 ± 1.61 |
+| qwen35 27B Q4_K - Medium       |  15.65 GiB |    27.32 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp8192 @ d16384 |        766.58 ± 1.90 |
+
+build: 19a667d32 (5555)
+EXIT_wall_r2_stock=0
+
+===== WALL r2 e3d ub4096 d8192,16384 =====
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 27B Q4_K - Medium       |  15.65 GiB |    27.32 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |  pp8192 @ d8192 |        991.67 ± 0.55 |
+| qwen35 27B Q4_K - Medium       |  15.65 GiB |    27.32 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        | pp8192 @ d16384 |        920.15 ± 1.23 |
+
+build: 19a667d32 (5555)
+EXIT_wall_r2_e3d=0
+
+===== WALL e3d ub2048,8192 d8192,16384 =====
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 27B Q4_K - Medium       |  15.65 GiB |    27.32 B | CUDA,BLAS  |       4 |    8192 |     2048 |   q8_0 |   q8_0 |   1 | CUDA1        |  pp8192 @ d8192 |        940.92 ± 1.18 |
+| qwen35 27B Q4_K - Medium       |  15.65 GiB |    27.32 B | CUDA,BLAS  |       4 |    8192 |     2048 |   q8_0 |   q8_0 |   1 | CUDA1        | pp8192 @ d16384 |        872.09 ± 2.49 |
+| qwen35 27B Q4_K - Medium       |  15.65 GiB |    27.32 B | CUDA,BLAS  |       4 |    8192 |     8192 |   q8_0 |   q8_0 |   1 | CUDA1        |  pp8192 @ d8192 |        959.82 ± 1.39 |
+| qwen35 27B Q4_K - Medium       |  15.65 GiB |    27.32 B | CUDA,BLAS  |       4 |    8192 |     8192 |   q8_0 |   q8_0 |   1 | CUDA1        | pp8192 @ d16384 |        900.19 ± 3.09 |
+
+build: 19a667d32 (5555)
+EXIT_wall_e3d_ub_list=0
+
+===== STRACE e3d ub4096 d8192 =====
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 27B Q4_K - Medium       |  15.65 GiB |    27.32 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |  pp8192 @ d8192 |        993.51 ± 0.00 |
+
+build: 19a667d32 (5555)
+EXIT_strace_e3d=0
+----- strace summary (/root/llama_gguf/fa-logs/27b-strace-summary-20260912.txt) -----
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- -----------------------
+ 63.30    5.238958       16169       324           poll
+ 19.60    1.621862           1    839751           sched_yield
+  9.42    0.779475        3575       218           mmap
+  4.23    0.350410         309      1133           ioctl
+  3.37    0.278624        4803        58           munmap
+  0.02    0.001942           0      2789           read
+  0.02    0.001268           1      1108           brk
+  0.01    0.001030           4       231        83 openat
+  0.01    0.000593           9        62           getdents64
+  0.01    0.000589           1       304        30 newfstatat
+  0.00    0.000336           7        45           futex
+  0.00    0.000292           7        37           mprotect
+  0.00    0.000287           2       134           close
+  0.00    0.000237         237         1           execve
+  0.00    0.000166           1        94           fstat
+  0.00    0.000162           1       116           fcntl
+  0.00    0.000086           3        26         4 stat
+  0.00    0.000078           3        25         7 readlink
+  0.00    0.000071           3        19           write
+  0.00    0.000059          29         2           clone3
+  0.00    0.000048           4        10           symlink
+  0.00    0.000046           4        11         1 unlink
+  0.00    0.000039           1        23           getpid
+  0.00    0.000036          12         3           pipe2
+  0.00    0.000035          11         3           rseq
+  0.00    0.000021           1        15           getcwd
+  0.00    0.000018           9         2           socket
+  0.00    0.000016           5         3           eventfd2
+  0.00    0.000015           2         7           rt_sigprocmask
+  0.00    0.000014           4         3           set_robust_list
+  0.00    0.000012           4         3         3 mkdir
+  0.00    0.000012           6         2           sysinfo
+  0.00    0.000011           2         4         1 access
+  0.00    0.000011           1         7           dup
+  0.00    0.000010          10         1           madvise
+  0.00    0.000010          10         1         1 connect
+  0.00    0.000006           3         2           pread64
+  0.00    0.000005           5         1           bind
+  0.00    0.000004           4         1           fadvise64
+  0.00    0.000003           3         1           listen
+  0.00    0.000003           1         2           gettid
+  0.00    0.000003           3         1           get_mempolicy
+  0.00    0.000003           1         2           prlimit64
+  0.00    0.000002           2         1           setsockopt
+  0.00    0.000002           2         1           uname
+  0.00    0.000002           2         1           arch_prctl
+  0.00    0.000002           2         1           set_tid_address
+  0.00    0.000001           1         1           geteuid
+  0.00    0.000000           0         7           lseek
+  0.00    0.000000           0         1           rt_sigaction
+  0.00    0.000000           0         1           sched_get_priority_max
+  0.00    0.000000           0         1           sched_get_priority_min
+  0.00    0.000000           0         2           sched_getaffinity
+  0.00    0.000000           0         8           mbind
+  0.00    0.000000           0         1           getrandom
+------ ----------- ----------- --------- --------- -----------------------
+100.00    8.276915           9    846611       130 total
+
+===== NCU stock pipes =====
+==PROF== Connected to process 1060565 (/root/llama.cpp/build/bin/llama-bench)
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 27B Q4_K - Medium       |  15.65 GiB |    27.32 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |  pp8192 @ d8192 |        881.17 ± 0.00 |
+
+build: 19a667d32 (5555)
+==PROF== Disconnected from process 1060565
+"ID","Process ID","Process Name","Host Name","Kernel Name","Context","Stream","Block Size","Grid Size","Device","CC","Section Name","Metric Name","Metric Unit","Metric Value"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","dram__bytes_read.sum","byte","636,254,592"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","gpu__time_duration.sum","ns","12,197,760"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum","","237,626,915"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum","","31,309,840"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","launch__registers_per_thread","register/thread","255"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","launch__shared_mem_per_block_dynamic","byte/block","67,584"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","launch__waves_per_multiprocessor","","21.33"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","sm__inst_executed_pipe_tensor.sum","inst","320,864,256"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__inst_executed.sum","inst","677,446,656"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__inst_executed_pipe_adu.sum","inst","12,288"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__inst_executed_pipe_alu.sum","inst","48,777,216"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__inst_executed_pipe_fma.sum","inst","60,198,912"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__inst_executed_pipe_fp16.sum","inst","62,128,128"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__inst_executed_pipe_lsu.sum","inst","166,112,256"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__inst_executed_pipe_xu.sum","inst","15,796,224"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__sass_inst_executed_op_global_ld.sum","inst","8,755,200"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__sass_inst_executed_op_global_st.sum","inst","393,216"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__sass_inst_executed_op_local_ld.sum","inst","34,553,856"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__sass_inst_executed_op_local_st.sum","inst","20,769,792"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__sass_inst_executed_op_shared_ld.sum","inst","84,744,192"
+"0","1060565","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__sass_inst_executed_op_shared_st.sum","inst","8,957,952"
+EXIT_ncu_stock_pipes=0
+
+===== NCU e3d pipes =====
+==PROF== Connected to process 1060697 (/root/llama.cpp/build/bin/llama-bench)
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 27B Q4_K - Medium       |  15.65 GiB |    27.32 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |  pp8192 @ d8192 |        993.01 ± 0.00 |
+
+build: 19a667d32 (5555)
+==PROF== Disconnected from process 1060697
+"ID","Process ID","Process Name","Host Name","Kernel Name","Context","Stream","Block Size","Grid Size","Device","CC","Section Name","Metric Name","Metric Unit","Metric Value"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","dram__bytes_read.sum","byte","397,012,096"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","gpu__time_duration.sum","ns","5,658,144"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum","","280,585,305"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum","","33,240,891"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","launch__registers_per_thread","register/thread","255"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","launch__shared_mem_per_block_dynamic","byte/block","45,056"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","launch__waves_per_multiprocessor","","10.67"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","sm__inst_executed_pipe_tensor.sum","inst","320,864,256"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__inst_executed.sum","inst","649,623,552"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__inst_executed_pipe_adu.sum","inst","12,288"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__inst_executed_pipe_alu.sum","inst","53,904,384"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__inst_executed_pipe_fma.sum","inst","58,500,096"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__inst_executed_pipe_fp16.sum","inst","62,128,128"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__inst_executed_pipe_lsu.sum","inst","132,501,504"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__inst_executed_pipe_xu.sum","inst","15,802,368"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__sass_inst_executed_op_global_ld.sum","inst","8,755,200"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__sass_inst_executed_op_global_st.sum","inst","393,216"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__sass_inst_executed_op_local_ld.sum","inst","4,608,000"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__sass_inst_executed_op_local_st.sum","inst","5,050,368"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__sass_inst_executed_op_shared_ld.sum","inst","98,113,536"
+"0","1060697","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__sass_inst_executed_op_shared_st.sum","inst","8,957,952"
+EXIT_ncu_e3d_pipes=0
+
+===== NCU e3d stalls =====
+==PROF== Connected to process 1060847 (/root/llama.cpp/build/bin/llama-bench)
+ggml_cuda_init: found 2 CUDA devices (Total VRAM: 36208 MiB):
+  Device 0: NVIDIA GeForce GTX 1650 Ti, compute capability 7.5, VMM: yes, VRAM: 3714 MiB
+  Device 1: Tesla PG503-216, compute capability 7.0, VMM: yes, VRAM: 32494 MiB
+| model                          |       size |     params | backend    | threads | n_batch | n_ubatch | type_k | type_v |  fa | dev          |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------: | -------: | -----: | -----: | --: | ------------ | --------------: | -------------------: |
+| qwen35 27B Q4_K - Medium       |  15.65 GiB |    27.32 B | CUDA,BLAS  |       4 |    8192 |     4096 |   q8_0 |   q8_0 |   1 | CUDA1        |  pp8192 @ d8192 |        992.48 ± 0.00 |
+
+build: 19a667d32 (5555)
+==PROF== Disconnected from process 1060847
+"ID","Process ID","Process Name","Host Name","Kernel Name","Context","Stream","Block Size","Grid Size","Device","CC","Section Name","Metric Name","Metric Unit","Metric Value"
+"0","1060847","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","sm__warps_active.avg.pct_of_peak_sustained_active","%","12.28"
+"0","1060847","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio","inst","0.49"
+"0","1060847","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__average_warps_issue_stalled_dispatch_stall_per_issue_active.ratio","inst","0.11"
+"0","1060847","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__average_warps_issue_stalled_lg_throttle_per_issue_active.ratio","inst","0.05"
+"0","1060847","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio","inst","0.95"
+"0","1060847","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio","inst","0.48"
+"0","1060847","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio","inst","0.50"
+"0","1060847","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__average_warps_issue_stalled_no_instruction_per_issue_active.ratio","inst","0.13"
+"0","1060847","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio","inst","0.23"
+"0","1060847","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__average_warps_issue_stalled_short_scoreboard_per_issue_active.ratio","inst","0.72"
+"0","1060847","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__average_warps_issue_stalled_wait_per_issue_active.ratio","inst","1.23"
+"0","1060847","llama-bench","127.0.0.1","void flash_attn_ext_f16<256, 256, 32, 2, 0, 0, 0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)","1","15","(32, 4, 1)","(1536, 1, 1)","1","7.0","Command line profiler metrics","smsp__issue_active.avg.pct_of_peak_sustained_active","%","33.20"
+EXIT_ncu_e3d_stalls=0
+ABDEEP_DONE

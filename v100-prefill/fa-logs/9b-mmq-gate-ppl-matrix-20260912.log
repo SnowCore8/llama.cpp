@@ -1,0 +1,18 @@
+== 9b-mmq-gate-ppl-matrix 开始 2026-09-12 17:41:47 ==
+--- bs=48 side=mmq-gate
+0.07.000.850 I Final estimate: PPL = 3.7081 +/- 0.28766
+--- bs=48 side=cublas-off
+0.06.914.460 I Final estimate: PPL = 3.7081 +/- 0.28766
+--- bs=64 side=mmq-gate
+0.06.670.791 I Final estimate: PPL = 3.7065 +/- 0.28744
+--- bs=64 side=cublas-off
+0.08.382.215 I Final estimate: PPL = 3.6737 +/- 0.28296
+--- bs=175 side=mmq-gate
+0.06.530.825 I Final estimate: PPL = 3.7164 +/- 0.28810
+--- bs=175 side=cublas-off
+0.06.553.483 I Final estimate: PPL = 3.6738 +/- 0.28296
+--- bs=176 side=mmq-gate
+0.06.520.967 I Final estimate: PPL = 3.6878 +/- 0.28446
+--- bs=176 side=cublas-off
+0.06.602.271 I Final estimate: PPL = 3.6743 +/- 0.28301
+PPL_MATRIX_DONE 2026-09-12 17:42:46

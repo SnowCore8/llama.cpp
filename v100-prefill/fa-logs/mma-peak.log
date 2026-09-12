@@ -1,0 +1,9 @@
+device 1: Tesla PG503-216
+  cc 7.0, SMs 72, clock 1530 MHz, mem 31.7 GB
+  smem/SM 98304 B, smem/block optin 98304 B, L2 6291456 B, regs/SM 65536
+  mem clock 1107 MHz, bus 4096 bit -> BW 1133.6 GB/s
+  launch: 576 blocks x 128 threads, 20.31 ms
+  instr rate: 45.38 Gmma/s = 0.412 mma/SM/cycle
+  if 512 FLOP/mma -> 23.2 TFLOP/s
+  if 1024 FLOP/mma -> 46.5 TFLOP/s
+  if 2048 FLOP/mma -> 92.9 TFLOP/s
