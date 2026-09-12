@@ -1065,6 +1065,16 @@ def _check_cross_model_isolation(
     ids: list[str] = []
     if code == 200 and isinstance(listing, dict):
         ids = [m.get("id") for m in listing.get("data") or [] if isinstance(m, dict)]
+    if model not in ids:
+        # the client model string is not a served id; a second name here reaches the same
+        # local model instance, so isolation between model names cannot be asserted
+        report.add(
+            "cache",
+            "prompt_cache_cross_model_isolation",
+            "SKIP",
+            f"client model {model!r} is not a served id, ids={ids[:3]}",
+        )
+        return
     other = next((i for i in ids if i and i != model), None)
     if not other:
         report.add(
