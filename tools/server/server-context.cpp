@@ -2073,6 +2073,18 @@ private:
             SLT_DBG(slot, "stopped by limit, n_gen = %d, n_predict = %d\n", (int) slot.stats.n_gen, slot.task->params.n_predict);
         }
 
+        // WebSocket steering: a steer for this response asks to stop at the next
+        // safe boundary so a successor can carry the queued input. responses with
+        // tools are not interrupted here: steering waits for the terminal instead
+        if (slot.has_next_token && !slot.task->params.oaicompat_steer_hold &&
+                !slot.task->params.oaicompat_resp_id.empty() &&
+                server_responses_steer_flag_consume(slot.task->params.oaicompat_resp_id)) {
+            slot.stop           = STOP_TYPE_STEERED;
+            slot.has_next_token = false;
+
+            SLT_DBG(slot, "stopped by steering interrupt, resp_id = %s\n", slot.task->params.oaicompat_resp_id.c_str());
+        }
+
         if (slot.has_new_line) {
             // require that each new line has a whitespace prefix (i.e. indentation) of at least slot.params.n_indent
             if (slot.task->params.n_indent > 0) {
@@ -4547,6 +4559,17 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                 }
                 if (data.contains("__oai_resp_request")) {
                     task.params.oaicompat_resp_request = data.at("__oai_resp_request");
+                    // a response with tools may stop for client-owned tool output, so a
+                    // steer must wait for the terminal instead of interrupting generation
+                    const json & resp_req = task.params.oaicompat_resp_request;
+                    if (resp_req.is_object() && resp_req.contains("tools") && resp_req.at("tools").is_array()) {
+                        for (const auto & tool : resp_req.at("tools")) {
+                            if (tool.is_object()) {
+                                task.params.oaicompat_steer_hold = true;
+                                break;
+                            }
+                        }
+                    }
                 }
             }
             if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT) {
@@ -5598,8 +5621,25 @@ void server_routes::init_routes() {
         std::vector<raw_buffer> files;
         json raw_body = json::parse(req.body);
         const int32_t n_ctx_slot = meta->slot_n_ctx;
-        json prepared = server_responses_prepare_request(
-            std::move(raw_body), ctx_server.vocab, n_ctx_slot);
+        json prepared;
+        try {
+            prepared = server_responses_prepare_request(std::move(raw_body), ctx_server.vocab, n_ctx_slot);
+        } catch (const std::invalid_argument & e) {
+            const std::string msg = e.what();
+            if (msg.rfind("previous_response_id not found or expired", 0) != 0) {
+                throw; // other validation failures keep the generic 400 mapping
+            }
+            // official error shape for a missing previous response (same wording as WebSocket)
+            auto res = create_response();
+            res->status = 400;
+            res->data = safe_json_to_str({{"error", {
+                {"code",    "previous_response_not_found"},
+                {"message", server_responses_previous_not_found_message(msg)},
+                {"param",   "previous_response_id"},
+                {"type",    "invalid_request_error"},
+            }}});
+            return res;
+        }
 
         const std::string resp_id = server_responses_new_id();
         const json prepared_input = prepared.contains("input") ? prepared.at("input") : json::array();

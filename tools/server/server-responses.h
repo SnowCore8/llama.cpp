@@ -34,15 +34,39 @@ json server_responses_normalize_input(const json & input);
 // conversation named in @response_obj (see server_conversations_append_turn()).
 // request_model is the model string from the prepared request (the response echo holds the
 // loaded model name); prompt cache diagnostics compare it against the baseline request.
+// ws_token is the WebSocket connection token from the prepared request; store=false responses
+// are copied into the connection-local cache under it (empty token = HTTP request, no cache).
 void server_responses_remember(
     const json & response_obj,
     const json & prepared_request_input,
     const json & instructions,
     const json & conversation_input = json(nullptr),
-    const std::string & request_model = std::string());
+    const std::string & request_model = std::string(),
+    const std::string & ws_token = std::string());
 
 // Generate a new response id (resp_...).
 std::string server_responses_new_id();
+
+// WebSocket steering interrupt: set when a steer targets a running response, consumed
+// by the decode loop so the response stops at the next token with STOP_TYPE_STEERED.
+void server_responses_steer_flag_set(const std::string & resp_id);
+bool server_responses_steer_flag_consume(const std::string & resp_id);
+
+// WebSocket connection tokens for the connection-local store=false cache: issued and
+// dropped by server_responses_ws_run; only a live token may write or read the cache.
+void server_responses_ws_token_register(const std::string & token);
+void server_responses_ws_token_unregister(const std::string & token);
+
+// Drop id from the connection-local store=false cache. Only the live token of the
+// connection that wrote it may evict; a failed same-lane continuation evicts its
+// parent, a failed cross-lane fork keeps the shared parent.
+void server_responses_ws_local_cache_evict(const std::string & id, const std::string & token);
+
+// Official wording for a missing previous response:
+// "Previous response with id 'resp_...' not found.". Extracted from the local
+// "previous_response_id not found or expired: <id>" text; the original is kept
+// when no id can be extracted.
+std::string server_responses_previous_not_found_message(const std::string & message);
 
 // Next sequence number for a response id (process-wide streaming counter).
 int32_t server_responses_next_seq(const std::string & resp_id);

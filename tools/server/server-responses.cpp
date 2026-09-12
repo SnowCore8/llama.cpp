@@ -11,6 +11,8 @@
 #include <ctime>
 #include <fstream>
 #include <functional>
+#include <list>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -128,6 +130,192 @@ int32_t server_responses_next_seq(const std::string & resp_id) {
 void server_responses_reset_seq(const std::string & resp_id) {
     std::lock_guard<std::mutex> lock(responses_seq_mutex());
     responses_seq_map().erase(resp_id);
+}
+
+//
+// WebSocket steering: interrupt flags and the connection-local continuation cache
+//
+
+// response ids that a WebSocket steer asked to interrupt; FIFO-evicted past the cap
+static std::mutex & steer_flag_mutex() {
+    static std::mutex mu;
+    return mu;
+}
+static std::map<std::string, bool> & steer_flag_map() {
+    static std::map<std::string, bool> m;
+    return m;
+}
+static std::list<std::string> & steer_flag_order() {
+    static std::list<std::string> order;
+    return order;
+}
+static constexpr size_t STEER_FLAG_MAX = 256;
+
+// Marks a running response for the steering interrupt; the decode loop consumes it.
+void server_responses_steer_flag_set(const std::string & resp_id) {
+    if (resp_id.empty()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(steer_flag_mutex());
+    auto & map   = steer_flag_map();
+    auto & order = steer_flag_order();
+    if (map.find(resp_id) == map.end()) {
+        order.push_back(resp_id);
+        while (order.size() > STEER_FLAG_MAX) {
+            map.erase(order.front());
+            order.pop_front();
+        }
+    }
+    map[resp_id] = true;
+}
+
+// True when the flag was set, and clears it (one interrupt per accepted steer).
+bool server_responses_steer_flag_consume(const std::string & resp_id) {
+    std::lock_guard<std::mutex> lock(steer_flag_mutex());
+    auto & map = steer_flag_map();
+    auto it = map.find(resp_id);
+    if (it == map.end()) {
+        return false;
+    }
+    map.erase(it);
+    steer_flag_order().remove(resp_id);
+    return true;
+}
+
+// store=false responses are not kept in the response store, but the WebSocket connection
+// that created them may still continue from them (ZDR relies on a connection-local
+// in-memory cache). Bounded LRU, keyed by response id; each entry remembers the token of
+// the connection that created it, so no other connection (and no HTTP client) can reuse it.
+struct resp_local_cache_entry {
+    std::string token;
+    json        input;
+    json        output;
+};
+
+static std::mutex & local_cache_mutex() {
+    static std::mutex mu;
+    return mu;
+}
+static std::unordered_map<std::string, resp_local_cache_entry> & local_cache_map() {
+    static std::unordered_map<std::string, resp_local_cache_entry> m;
+    return m;
+}
+static std::list<std::string> & local_cache_order() {
+    static std::list<std::string> order;
+    return order;
+}
+static constexpr size_t LOCAL_CACHE_MAX = 256;
+
+// tokens of live WebSocket sessions; only these may write or read the cache above
+static std::mutex & ws_token_mutex() {
+    static std::mutex mu;
+    return mu;
+}
+static std::map<std::string, bool> & ws_token_map() {
+    static std::map<std::string, bool> m;
+    return m;
+}
+
+void server_responses_ws_token_register(const std::string & token) {
+    if (token.empty()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(ws_token_mutex());
+    ws_token_map()[token] = true;
+}
+
+void server_responses_ws_token_unregister(const std::string & token) {
+    if (token.empty()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(ws_token_mutex());
+        ws_token_map().erase(token);
+    }
+    // a closed connection cannot continue its store=false responses: drop them
+    std::lock_guard<std::mutex> lock(local_cache_mutex());
+    auto & map   = local_cache_map();
+    auto & order = local_cache_order();
+    for (auto it = map.begin(); it != map.end(); ) {
+        if (it->second.token == token) {
+            order.remove(it->first);
+            it = map.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+static bool ws_token_live(const std::string & token) {
+    if (token.empty()) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(ws_token_mutex());
+    return ws_token_map().count(token) > 0;
+}
+
+static void local_cache_put(const std::string & id, const std::string & token, const json & input, const json & output) {
+    if (!ws_token_live(token)) {
+        return; // HTTP-created store=false responses never enter the connection-local cache
+    }
+    std::lock_guard<std::mutex> lock(local_cache_mutex());
+    auto & map   = local_cache_map();
+    auto & order = local_cache_order();
+    if (map.find(id) == map.end()) {
+        order.push_back(id);
+        while (order.size() > LOCAL_CACHE_MAX) {
+            map.erase(order.front());
+            order.pop_front();
+        }
+    }
+    map[id] = resp_local_cache_entry { token, input, output };
+}
+
+static bool local_cache_get(const std::string & id, const std::string & token, json & input, json & output) {
+    if (!ws_token_live(token)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(local_cache_mutex());
+    auto & map = local_cache_map();
+    auto it = map.find(id);
+    if (it == map.end() || it->second.token != token) {
+        return false;
+    }
+    input  = it->second.input;
+    output = it->second.output;
+    // touch: least recently used entries are evicted first
+    local_cache_order().remove(id);
+    local_cache_order().push_back(id);
+    return true;
+}
+
+void server_responses_ws_local_cache_evict(const std::string & id, const std::string & token) {
+    if (!ws_token_live(token)) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(local_cache_mutex());
+    auto & map = local_cache_map();
+    auto it = map.find(id);
+    if (it == map.end() || it->second.token != token) {
+        return;
+    }
+    map.erase(it);
+    local_cache_order().remove(id);
+}
+
+std::string server_responses_previous_not_found_message(const std::string & message) {
+    if (message.rfind("previous_response_id not found or expired", 0) != 0) {
+        return message;
+    }
+    const size_t pos = message.rfind(": ");
+    if (pos == std::string::npos) {
+        return message;
+    }
+    const std::string id = message.substr(pos + 2);
+    if (id.empty()) {
+        return message;
+    }
+    return "Previous response with id '" + id + "' not found.";
 }
 
 static json server_responses_ensure_input_item_ids(json items) {
@@ -348,28 +536,36 @@ json server_responses_prepare_request(
 
     if (!prev_id.empty()) {
         auto prev = server_responses_store::instance().get(prev_id);
-        if (!prev.has_value()) {
-            throw std::invalid_argument(
-                "previous_response_id not found or expired: " + prev_id);
+        // a store=false response is retained for GET/cancel only, never as store context
+        const bool prev_usable = prev.has_value() && json_value(prev->response, "store", true);
+        json prev_input  = json(nullptr);
+        json prev_output = json(nullptr);
+        bool prev_is_compaction = false;
+        if (prev_usable) {
+            prev_input  = prev->input;
+            prev_output = prev->output;
+            // Compact responses already fold history into output (users + local. blob).
+            // Expanding their stored input again would duplicate turns.
+            prev_is_compaction =
+                prev->response.is_object() &&
+                json_value(prev->response, "object", std::string()) == "response.compaction";
+        } else {
+            // WebSocket store=false / ZDR: a response the store does not keep, but the
+            // very connection that created it may continue (internal __oai_ws_local token).
+            const std::string ws_token = json_value(body, "__oai_ws_local", std::string());
+            if (!local_cache_get(prev_id, ws_token, prev_input, prev_output)) {
+                throw std::invalid_argument(
+                    "previous_response_id not found or expired: " + prev_id);
+            }
         }
-        // a store=false response is retained for GET/cancel only, never as context
-        if (!json_value(prev->response, "store", true)) {
-            throw std::invalid_argument(
-                "previous_response_id not found or expired: " + prev_id);
-        }
-        // Compact responses already fold history into output (users + local. blob).
-        // Expanding their stored input again would duplicate turns.
-        const bool prev_is_compaction =
-            prev->response.is_object() &&
-            json_value(prev->response, "object", std::string()) == "response.compaction";
         if (!prev_is_compaction) {
-            json prev_input = server_responses_normalize_input(prev->input);
-            for (const auto & item : prev_input) {
+            json prev_input_norm = server_responses_normalize_input(prev_input);
+            for (const auto & item : prev_input_norm) {
                 push_hist_item(item);
             }
         }
-        if (prev->output.is_array()) {
-            for (const auto & out_item : prev->output) {
+        if (prev_output.is_array()) {
+            for (const auto & out_item : prev_output) {
                 if (!out_item.is_object()) {
                     continue;
                 }
@@ -596,7 +792,8 @@ void server_responses_remember(
     const json & prepared_request_input,
     const json & instructions,
     const json & conversation_input,
-    const std::string & request_model) {
+    const std::string & request_model,
+    const std::string & ws_token) {
     server_responses_conversation_attach(response_obj, conversation_input);
 
     if (server_responses_store::instance().max_entries() <= 0) {
@@ -610,6 +807,14 @@ void server_responses_remember(
     const bool should_store  = json_value(response_obj, "store", true);
     const bool is_background = json_value(response_obj, "background", false);
     if (!should_store && !is_background) {
+        // keep a connection-local copy so the same WebSocket connection can still
+        // resolve this id (previous_response_id + __oai_ws_local), see prepare_request
+        local_cache_put(
+            response_obj.at("id").get<std::string>(),
+            ws_token,
+            prepared_request_input.is_null() ? json::array()
+                                             : server_responses_normalize_input(prepared_request_input),
+            response_obj.contains("output") ? response_obj.at("output") : json::array());
         return;
     }
 
@@ -1181,7 +1386,8 @@ json server_responses_compact(json body, const llama_vocab * vocab, int32_t n_ct
         json::array(),
         body.contains("instructions") ? body.at("instructions") : json(nullptr),
         json(nullptr),
-        json_value(body, "model", std::string()));
+        json_value(body, "model", std::string()),
+        json_value(body, "__oai_ws_local", std::string()));
     return result;
 }
 

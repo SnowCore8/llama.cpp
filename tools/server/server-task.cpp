@@ -712,6 +712,9 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
     }
 
     const bool hit_token_limit = (stop == STOP_TYPE_LIMIT) || truncated;
+    const bool steered         = (stop == STOP_TYPE_STEERED);
+    const bool resp_incomplete = hit_token_limit || steered;
+    const char * incomplete_reason = hit_token_limit ? "max_output_tokens" : "steered";
     const json req_early = oaicompat_resp_request.is_null() ? json::object() : oaicompat_resp_request;
     const int emit_tool_cap = server_responses_effective_tool_call_cap(req_early);
 
@@ -723,7 +726,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
             {"id",      oai_resp_reasoning_id.empty() ? ("rs_" + random_string()) : oai_resp_reasoning_id},
             {"summary", server_responses_reasoning_summary(msg.reasoning_content, req_early)},
             {"type",    "reasoning"},
-            {"status",  hit_token_limit ? "incomplete" : "completed"},
+            {"status",  resp_incomplete ? "incomplete" : "completed"},
         };
         if (server_responses_include_contains(req_early, "reasoning.encrypted_content")) {
             output_item["encrypted_content"] = server_responses_encode_local_blob(json{
@@ -748,7 +751,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
             }})},
             {"id",     oai_resp_message_id.empty() ? ("msg_" + random_string()) : oai_resp_message_id},
             {"role",   msg.role},
-            {"status", hit_token_limit ? "incomplete" : "completed"},
+            {"status", resp_incomplete ? "incomplete" : "completed"},
             {"type",   "message"},
         });
     }
@@ -770,7 +773,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
         emitted_tools++;
     }
 
-    const std::string resp_status = hit_token_limit ? "incomplete" : "completed";
+    const std::string resp_status = resp_incomplete ? "incomplete" : "completed";
 
     std::time_t t = std::time(0);
     json res = {
@@ -792,20 +795,21 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
             {"output_tokens_details", json { {"reasoning_tokens", 0} }},
         }},
     };
-    if (hit_token_limit) {
-        res["incomplete_details"] = json { {"reason", "max_output_tokens"} };
+    if (resp_incomplete) {
+        res["incomplete_details"] = json { {"reason", incomplete_reason} };
     }
 
     const json req = req_early;
     res = server_responses_enrich_response(std::move(res), req);
     // enrich may default-fill incomplete_details=null when absent; restore after limit stop
-    if (hit_token_limit) {
+    if (resp_incomplete) {
         res["status"] = "incomplete";
-        res["incomplete_details"] = json { {"reason", "max_output_tokens"} };
+        res["incomplete_details"] = json { {"reason", incomplete_reason} };
     }
     server_responses_remember(res, oaicompat_resp_input, oaicompat_resp_instructions,
                               json_value(req, "__oai_conv_input", json(nullptr)),
-                              json_value(req, "model", std::string()));
+                              json_value(req, "model", std::string()),
+                              json_value(req, "__oai_ws_local", std::string()));
     server_responses_reset_seq(oai_resp_id);
 
     return res;
@@ -817,6 +821,9 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
     const json req_stream = oaicompat_resp_request.is_null() ? json::object() : oaicompat_resp_request;
     const int emit_tool_cap = server_responses_effective_tool_call_cap(req_stream);
     const bool hit_token_limit = (stop == STOP_TYPE_LIMIT) || truncated;
+    const bool steered         = (stop == STOP_TYPE_STEERED);
+    const bool resp_incomplete = hit_token_limit || steered;
+    const char * incomplete_reason = hit_token_limit ? "max_output_tokens" : "steered";
     const bool want_lp = server_responses_wants_output_logprobs(req_stream);
     // web_search_call items are emitted once at stream start; enrich prepends them to the
     // final output, so both index spaces count them
@@ -847,7 +854,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
             {"id",      oai_resp_reasoning_id},
             {"summary", std::move(summary)},
             {"type",    "reasoning"},
-            {"status",  hit_token_limit ? "incomplete" : "completed"},
+            {"status",  resp_incomplete ? "incomplete" : "completed"},
         };
         if (server_responses_include_contains(req_stream, "reasoning.encrypted_content")) {
             output_item["encrypted_content"] = server_responses_encode_local_blob(json{
@@ -872,7 +879,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
                     {"text", summary_text},
                 }},
             };
-            if (hit_token_limit) {
+            if (resp_incomplete) {
                 // omitted on normal completion, set when generation was interrupted
                 summary_part_done["status"] = "incomplete";
             }
@@ -899,7 +906,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
         };
         json output_item = json {
             {"type",    "message"},
-            {"status",  hit_token_limit ? "incomplete" : "completed"},
+            {"status",  resp_incomplete ? "incomplete" : "completed"},
             {"id",      oai_resp_message_id},
             {"content", json::array({content_part})},
             {"role",    "assistant"},
@@ -979,7 +986,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
         emitted_tools++;
     }
 
-    const std::string resp_status = hit_token_limit ? "incomplete" : "completed";
+    const std::string resp_status = resp_incomplete ? "incomplete" : "completed";
 
     std::time_t t = std::time(0);
     json response_obj = {
@@ -1001,20 +1008,21 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
             {"output_tokens_details", json { {"reasoning_tokens", 0} }},
         }}
     };
-    if (hit_token_limit) {
-        response_obj["incomplete_details"] = json { {"reason", "max_output_tokens"} };
+    if (resp_incomplete) {
+        response_obj["incomplete_details"] = json { {"reason", incomplete_reason} };
     }
     const json req = req_stream;
     response_obj = server_responses_enrich_response(std::move(response_obj), req);
-    if (hit_token_limit) {
+    if (resp_incomplete) {
         response_obj["status"] = "incomplete";
-        response_obj["incomplete_details"] = json { {"reason", "max_output_tokens"} };
+        response_obj["incomplete_details"] = json { {"reason", incomplete_reason} };
     }
     server_responses_remember(response_obj, oaicompat_resp_input, oaicompat_resp_instructions,
                               json_value(req, "__oai_conv_input", json(nullptr)),
-                              json_value(req, "model", std::string()));
+                              json_value(req, "model", std::string()),
+                              json_value(req, "__oai_ws_local", std::string()));
 
-    push_evt(hit_token_limit ? "response.incomplete" : "response.completed", json {
+    push_evt(resp_incomplete ? "response.incomplete" : "response.completed", json {
         {"response", response_obj},
     });
 

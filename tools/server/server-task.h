@@ -46,6 +46,7 @@ enum stop_type {
     STOP_TYPE_EOS,
     STOP_TYPE_WORD,
     STOP_TYPE_LIMIT,
+    STOP_TYPE_STEERED, // WebSocket steering interrupt: stopped at a safe output boundary
 };
 
 struct task_params {
@@ -91,6 +92,7 @@ struct task_params {
     json        oaicompat_resp_input        = nullptr;
     json        oaicompat_resp_instructions = nullptr;
     json        oaicompat_resp_request      = nullptr; // original/prepared Responses request body
+    bool        oaicompat_steer_hold        = false; // WebSocket steering: request has tools, steering waits for the terminal
 
     // OpenAI Chat Completions: echo/store request fields (persisted when store=true)
     bool oaicompat_chat_store    = false;
