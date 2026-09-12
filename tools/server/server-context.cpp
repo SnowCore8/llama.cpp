@@ -5791,7 +5791,7 @@ void server_routes::init_routes() {
             try {
                 res->ok(fn(req));
             } catch (const server_conversations_error & e) {
-                res->error(format_error_response(e.what(), e.not_found ? ERROR_TYPE_NOT_FOUND : ERROR_TYPE_INVALID_REQUEST));
+                res->error(format_error_response(e.what(), e.type));
             } catch (const std::exception & e) {
                 res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
             }

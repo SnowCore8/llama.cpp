@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
 #include <stdexcept>
 #include <vector>
 
@@ -12,6 +13,22 @@ static int64_t now_unix() {
     return (int64_t) std::chrono::duration_cast<std::chrono::seconds>(
                std::chrono::system_clock::now().time_since_epoch())
         .count();
+}
+
+// last write time of path in filesystem ticks; 0 when the file is missing
+static int64_t file_mtime(const std::string & path) {
+    std::error_code ec;
+    const auto t = std::filesystem::last_write_time(path, ec);
+    return ec ? 0 : (int64_t) t.time_since_epoch().count();
+}
+
+// backing file mtime for id: current encoding first, then the legacy name
+static int64_t conversation_file_mtime(const std::string & root_path, const std::string & id) {
+    int64_t mt = file_mtime(openai_persist::json_path(root_path, id));
+    if (mt == 0) {
+        mt = file_mtime(root_path + openai_persist::safe_id_legacy(id) + ".json");
+    }
+    return mt;
 }
 
 server_conversations_store & server_conversations_store::instance() {
@@ -24,6 +41,7 @@ json server_conversations_store::entry_to_json(const server_conversation_entry &
         {"id",         e.id},
         {"created_at", e.created_at},
         {"expires_at", e.expires_at},
+        {"last_used",  e.last_used},
         {"metadata",   e.metadata},
         {"items",      e.items},
     };
@@ -36,18 +54,34 @@ bool server_conversations_store::entry_from_json(const json & j, server_conversa
     e.id         = j.at("id").get<std::string>();
     e.created_at = j.value("created_at", (int64_t) 0);
     e.expires_at = j.value("expires_at", (int64_t) 0);
+    e.last_used  = j.value("last_used",  (int64_t) 0);
     e.metadata   = j.contains("metadata") ? j.at("metadata") : json::object();
-    e.items      = j.contains("items") && j.at("items").is_array() ? j.at("items") : json::array();
+    e.items      = json::array();
+    if (j.contains("items") && j.at("items").is_array()) {
+        size_t dropped = 0;
+        for (const auto & item : j.at("items")) {
+            if (item.is_object()) {
+                e.items.push_back(item);
+            } else {
+                ++dropped;
+            }
+        }
+        if (dropped > 0) {
+            LOG_WRN("%s: dropped %zu non-object items of conversation %s\n", __func__, dropped, e.id.c_str());
+        }
+    }
     return true;
 }
 
-void server_conversations_store::persist_unlocked(const server_conversation_entry & e) {
+bool server_conversations_store::persist_unlocked(const server_conversation_entry & e) {
     if (root_path_.empty()) {
-        return;
+        return true;
     }
     if (!openai_persist::write_json_file(openai_persist::json_path(root_path_, e.id), entry_to_json(e))) {
         LOG_WRN("%s: failed to persist conversation %s\n", __func__, e.id.c_str());
+        return false;
     }
+    return true;
 }
 
 void server_conversations_store::erase_disk_unlocked(const std::string & id) {
@@ -85,12 +119,12 @@ bool server_conversations_store::reload_id_from_disk_unlocked(const std::string 
     const int64_t now = now_unix();
     if (e.expires_at > 0 && e.expires_at <= now) {
         erase_disk_unlocked(e.id);
-        entries.erase(e.id);
-        lru_stamp.erase(e.id);
+        drop_unlocked(e.id);
         return false;
     }
     entries[e.id] = std::move(e);
     lru_stamp[id] = ++lru_clock_;
+    mtime_stamp[id] = conversation_file_mtime(root_path_, id);
     evict_lru_unlocked();
     return true;
 }
@@ -100,6 +134,7 @@ void server_conversations_store::load_from_disk_unlocked() {
         return;
     }
     const int64_t now = now_unix();
+    std::vector<std::pair<int64_t, std::string>> order; // by last_used, so LRU survives restarts
     for (const auto & name : openai_persist::list_json_basenames(root_path_)) {
         json j;
         if (!openai_persist::read_json_file(root_path_ + name, j)) {
@@ -113,8 +148,12 @@ void server_conversations_store::load_from_disk_unlocked() {
             erase_disk_unlocked(e.id);
             continue;
         }
-        entries[e.id] = e;
-        lru_stamp[e.id] = ++lru_clock_;
+        order.emplace_back(e.last_used, e.id);
+        entries[e.id] = std::move(e);
+    }
+    std::sort(order.begin(), order.end());
+    for (const auto & kv : order) {
+        lru_stamp[kv.second] = ++lru_clock_;
     }
     LOG_INF("%s: loaded %zu conversations from %s\n", __func__, entries.size(), root_path_.c_str());
 }
@@ -125,6 +164,7 @@ void server_conversations_store::configure(int32_t max_entries, int32_t ttl_seco
     ttl_seconds_ = std::max(0, ttl_seconds);
     entries.clear();
     lru_stamp.clear();
+    mtime_stamp.clear();
     root_path_.clear();
     if (!root_path.empty() && max_entries_ > 0) {
         root_path_ = root_path;
@@ -140,25 +180,12 @@ void server_conversations_store::configure(int32_t max_entries, int32_t ttl_seco
     }
 }
 
-size_t server_conversations_store::size() {
-    std::lock_guard<std::mutex> lock(mutex);
-    return entries.size();
-}
-
-void server_conversations_store::clear() {
-    std::lock_guard<std::mutex> lock(mutex);
-    for (const auto & kv : entries) {
-        erase_disk_unlocked(kv.first);
-    }
-    entries.clear();
-    lru_stamp.clear();
-}
-
 void server_conversations_store::evict_expired_unlocked(int64_t now) {
     for (auto it = entries.begin(); it != entries.end();) {
         if (it->second.expires_at > 0 && it->second.expires_at <= now) {
             erase_disk_unlocked(it->first);
             lru_stamp.erase(it->first);
+            mtime_stamp.erase(it->first);
             it = entries.erase(it);
         } else {
             ++it;
@@ -168,11 +195,7 @@ void server_conversations_store::evict_expired_unlocked(int64_t now) {
 
 void server_conversations_store::evict_lru_unlocked() {
     if (max_entries_ <= 0) {
-        for (const auto & kv : entries) {
-            erase_disk_unlocked(kv.first);
-        }
-        entries.clear();
-        lru_stamp.clear();
+        // put() and update() refuse to run while the store is disabled
         return;
     }
     while ((int32_t) entries.size() > max_entries_) {
@@ -187,57 +210,117 @@ void server_conversations_store::evict_lru_unlocked() {
         }
         erase_disk_unlocked(oldest->first);
         entries.erase(oldest->first);
+        mtime_stamp.erase(oldest->first);
         lru_stamp.erase(oldest);
     }
 }
 
-void server_conversations_store::put(server_conversation_entry entry) {
+void server_conversations_store::drop_unlocked(const std::string & id) {
+    entries.erase(id);
+    lru_stamp.erase(id);
+    mtime_stamp.erase(id);
+}
+
+bool server_conversations_store::enabled() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return max_entries_ > 0;
+}
+
+bool server_conversations_store::put(server_conversation_entry entry) {
     std::lock_guard<std::mutex> lock(mutex);
     if (max_entries_ <= 0) {
-        return;
+        return false;
     }
     const int64_t now = now_unix();
     if (entry.created_at <= 0) {
         entry.created_at = now;
     }
+    entry.last_used = now;
     if (ttl_seconds_ > 0) {
         entry.expires_at = now + ttl_seconds_;
     } else {
         entry.expires_at = 0;
     }
     evict_expired_unlocked(now);
-    persist_unlocked(entry);
-    entries[entry.id] = std::move(entry);
-    lru_stamp[entry.id] = ++lru_clock_;
+    if (!persist_unlocked(entry)) {
+        return false; // keep memory in sync with disk: nothing was written
+    }
+    const std::string id = entry.id;
+    entries[id] = std::move(entry);
+    lru_stamp[id] = ++lru_clock_;
+    if (!root_path_.empty()) {
+        mtime_stamp[id] = conversation_file_mtime(root_path_, id);
+    }
     evict_lru_unlocked();
+    return true;
+}
+
+// Load entries[id] (refreshing from shared disk when the backing file changed,
+// dropping it when the file is gone) and bump its LRU stamp. Caller holds the lock.
+server_conversation_entry * server_conversations_store::load_unlocked(const std::string & id) {
+    const int64_t now = now_unix();
+    evict_expired_unlocked(now);
+    if (root_path_.empty() || max_entries_ <= 0 || id.empty()) {
+        try_load_id_unlocked(id);
+    } else {
+        const int64_t mt     = conversation_file_mtime(root_path_, id);
+        const auto    mit    = mtime_stamp.find(id);
+        const bool    cached = entries.find(id) != entries.end() &&
+                               mit != mtime_stamp.end() && mit->second == mt;
+        if (!cached && !reload_id_from_disk_unlocked(id)) {
+            drop_unlocked(id);
+            return nullptr;
+        }
+    }
+    auto it = entries.find(id);
+    if (it == entries.end()) {
+        return nullptr;
+    }
+    if (it->second.expires_at > 0 && it->second.expires_at <= now) {
+        erase_disk_unlocked(it->first);
+        drop_unlocked(it->first);
+        return nullptr;
+    }
+    lru_stamp[id] = ++lru_clock_;
+    return &it->second;
 }
 
 std::optional<server_conversation_entry> server_conversations_store::get(const std::string & id) {
     std::lock_guard<std::mutex> lock(mutex);
+    const server_conversation_entry * e = load_unlocked(id);
+    if (e == nullptr) {
+        return std::nullopt;
+    }
+    return *e;
+}
+
+bool server_conversations_store::update(const std::string & id,
+        const std::function<void(server_conversation_entry &)> & fn) {
+    std::lock_guard<std::mutex> lock(mutex);
+    const server_conversation_entry * cur = load_unlocked(id);
+    if (cur == nullptr) {
+        return false;
+    }
+    // mutate a copy: a failing fn or persist leaves memory and disk untouched
+    server_conversation_entry next = *cur;
+    fn(next);
     const int64_t now = now_unix();
-    evict_expired_unlocked(now);
-    if (!root_path_.empty() && max_entries_ > 0 && !id.empty()) {
-        // Shared disk: refresh or drop if another process erased the file.
-        if (!reload_id_from_disk_unlocked(id)) {
-            entries.erase(id);
-            lru_stamp.erase(id);
-            return std::nullopt;
-        }
+    next.last_used = now;
+    if (ttl_seconds_ > 0) {
+        next.expires_at = now + ttl_seconds_;
     } else {
-        try_load_id_unlocked(id);
+        next.expires_at = 0;
     }
-    auto it = entries.find(id);
-    if (it == entries.end()) {
-        return std::nullopt;
+    if (!persist_unlocked(next)) {
+        throw server_conversations_error("failed to persist conversation: " + id, ERROR_TYPE_SERVER);
     }
-    if (it->second.expires_at > 0 && it->second.expires_at <= now) {
-        erase_disk_unlocked(it->first);
-        lru_stamp.erase(it->first);
-        entries.erase(it);
-        return std::nullopt;
-    }
+    entries[id] = std::move(next);
     lru_stamp[id] = ++lru_clock_;
-    return it->second;
+    if (!root_path_.empty()) {
+        mtime_stamp[id] = conversation_file_mtime(root_path_, id);
+    }
+    evict_lru_unlocked();
+    return true;
 }
 
 bool server_conversations_store::erase(const std::string & id) {
@@ -248,14 +331,28 @@ bool server_conversations_store::erase(const std::string & id) {
         return false;
     }
     erase_disk_unlocked(it->first);
-    lru_stamp.erase(it->first);
-    entries.erase(it);
+    drop_unlocked(it->first);
     return true;
 }
 
 //
 // API helpers
 //
+
+// conversations need the durable store: without it create() could only hand out
+// ids that nothing can retrieve
+static void require_store() {
+    if (!server_conversations_store::instance().enabled()) {
+        throw server_conversations_error("conversations are disabled (--responses-store-max 0)",
+                                         ERROR_TYPE_NOT_SUPPORTED);
+    }
+}
+
+static void check_persisted(bool ok, const std::string & id) {
+    if (!ok) {
+        throw server_conversations_error("failed to persist conversation: " + id, ERROR_TYPE_SERVER);
+    }
+}
 
 static void validate_metadata(const json & metadata) {
     if (metadata.is_null()) {
@@ -458,6 +555,7 @@ static void item_array_validate(const json & items) {
 }
 
 json server_conversations_create(const json & body) {
+    require_store();
     if (!body.is_object()) {
         throw std::invalid_argument("request body must be a JSON object");
     }
@@ -476,7 +574,7 @@ json server_conversations_create(const json & body) {
             e.items.push_back(std::move(item));
         }
     }
-    server_conversations_store::instance().put(e);
+    check_persisted(server_conversations_store::instance().put(e), e.id);
     return server_conversation_to_json(e);
 }
 
@@ -489,20 +587,26 @@ json server_conversations_get(const std::string & id) {
 }
 
 json server_conversations_update(const std::string & id, const json & body) {
-    auto entry = server_conversations_store::instance().get(id);
-    if (!entry.has_value()) {
-        throw server_conversations_error("conversation not found: " + id, true);
-    }
+    require_store();
     if (!body.is_object() || !body.contains("metadata")) {
         throw std::invalid_argument("'metadata' is required");
     }
     validate_metadata(body.at("metadata"));
-    entry->metadata = body.at("metadata");
-    server_conversations_store::instance().put(*entry);
-    return server_conversation_to_json(*entry);
+    const json metadata = body.at("metadata");
+    json out;
+    const bool found = server_conversations_store::instance().update(id,
+        [&](server_conversation_entry & e) {
+            e.metadata = metadata;
+            out = server_conversation_to_json(e);
+        });
+    if (!found) {
+        throw server_conversations_error("conversation not found: " + id, true);
+    }
+    return out;
 }
 
 json server_conversations_delete(const std::string & id) {
+    require_store();
     if (!server_conversations_store::instance().erase(id)) {
         throw server_conversations_error("conversation not found: " + id, true);
     }
@@ -514,10 +618,7 @@ json server_conversations_delete(const std::string & id) {
 }
 
 json server_conversations_add_items(const std::string & id, const json & body) {
-    auto entry = server_conversations_store::instance().get(id);
-    if (!entry.has_value()) {
-        throw server_conversations_error("conversation not found: " + id, true);
-    }
+    require_store();
     if (!body.is_object() || !body.contains("items") || body.at("items").is_null()) {
         throw std::invalid_argument("'items' array is required");
     }
@@ -526,11 +627,19 @@ json server_conversations_add_items(const std::string & id, const json & body) {
     std::vector<json> added;
     for (auto item : items) {
         server_conversation_item_normalize(item);
-        added.push_back(item);
-        entry->items.push_back(std::move(item));
+        added.push_back(std::move(item));
     }
-    server_conversations_store::instance().put(*entry);
-    return item_list_to_json(added, false);
+    const json added_list = item_list_to_json(added, false);
+    const bool found = server_conversations_store::instance().update(id,
+        [&](server_conversation_entry & e) {
+            for (auto & item : added) {
+                e.items.push_back(std::move(item));
+            }
+        });
+    if (!found) {
+        throw server_conversations_error("conversation not found: " + id, true);
+    }
+    return added_list;
 }
 
 json server_conversations_list_items(const std::string & id, const std::string & after,
@@ -591,54 +700,62 @@ json server_conversations_get_item(const std::string & id, const std::string & i
 }
 
 json server_conversations_delete_item(const std::string & id, const std::string & item_id) {
-    auto entry = server_conversations_store::instance().get(id);
-    if (!entry.has_value()) {
+    require_store();
+    json out;
+    const bool found = server_conversations_store::instance().update(id,
+        [&](server_conversation_entry & e) {
+            bool removed = false;
+            json kept = json::array();
+            for (const auto & item : e.items) {
+                if (!removed && json_value(item, "id", std::string()) == item_id) {
+                    removed = true;
+                    continue;
+                }
+                kept.push_back(item);
+            }
+            if (!removed) {
+                throw server_conversations_error("item not found in conversation: " + item_id, true);
+            }
+            e.items = std::move(kept);
+            out = server_conversation_to_json(e);
+        });
+    if (!found) {
         throw server_conversations_error("conversation not found: " + id, true);
     }
-    bool removed = false;
-    json kept = json::array();
-    for (const auto & item : entry->items) {
-        if (!removed && json_value(item, "id", std::string()) == item_id) {
-            removed = true;
-            continue;
-        }
-        kept.push_back(item);
-    }
-    if (!removed) {
-        throw server_conversations_error("item not found in conversation: " + item_id, true);
-    }
-    entry->items = std::move(kept);
-    server_conversations_store::instance().put(*entry);
-    return server_conversation_to_json(*entry);
+    return out;
 }
 
 bool server_conversations_append_turn(const std::string & id, const json & input_items, const json & output_items) {
-    auto entry = server_conversations_store::instance().get(id);
-    if (!entry.has_value()) {
-        return false;
+    bool found = false;
+    try {
+        found = server_conversations_store::instance().update(id,
+            [&](server_conversation_entry & e) {
+                auto push_item = [&](const json & item) {
+                    if (!item.is_object()) {
+                        return;
+                    }
+                    try {
+                        json copy = item;
+                        server_conversation_item_normalize(copy);
+                        e.items.push_back(std::move(copy));
+                    } catch (const std::exception & e) {
+                        LOG_WRN("%s: dropped conversation item: %s\n", __func__, e.what());
+                    }
+                };
+                if (input_items.is_array()) {
+                    for (const auto & item : input_items) {
+                        push_item(item);
+                    }
+                }
+                if (output_items.is_array()) {
+                    for (const auto & item : output_items) {
+                        push_item(item);
+                    }
+                }
+            });
+    } catch (...) {
+        // a failed write is already reported by the store; nothing to add here
+        return true;
     }
-    auto push_item = [&](const json & item) {
-        if (!item.is_object()) {
-            return;
-        }
-        try {
-            json copy = item;
-            server_conversation_item_normalize(copy);
-            entry->items.push_back(std::move(copy));
-        } catch (const std::exception & e) {
-            LOG_WRN("%s: dropped conversation item: %s\n", __func__, e.what());
-        }
-    };
-    if (input_items.is_array()) {
-        for (const auto & item : input_items) {
-            push_item(item);
-        }
-    }
-    if (output_items.is_array()) {
-        for (const auto & item : output_items) {
-            push_item(item);
-        }
-    }
-    server_conversations_store::instance().put(*entry);
-    return true;
+    return found;
 }

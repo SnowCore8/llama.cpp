@@ -6,6 +6,7 @@
 #include "server-common.h"
 
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -17,6 +18,7 @@ struct server_conversation_entry {
     std::string id;
     int64_t     created_at = 0;
     int64_t     expires_at = 0;
+    int64_t     last_used  = 0; // unix time of the last write, for LRU across restarts
     json        metadata   = json::object();
     json        items      = json::array(); // oldest first
 };
@@ -28,12 +30,13 @@ class server_conversations_store {
     // root_path empty => memory-only; otherwise JSON files under root_path
     void configure(int32_t max_entries, int32_t ttl_seconds, const std::string & root_path = "");
 
-    void put(server_conversation_entry entry);
+    bool enabled();
+    bool put(server_conversation_entry entry); // false when disabled or the write failed
     std::optional<server_conversation_entry> get(const std::string & id);
+    // Read-modify-write under one lock; fn must mutate nothing before it can throw.
+    // Returns false when the conversation is missing, throws when persisting fails.
+    bool update(const std::string & id, const std::function<void(server_conversation_entry &)> & fn);
     bool erase(const std::string & id);
-    void clear();
-
-    size_t size();
 
   private:
     server_conversations_store() = default;
@@ -42,11 +45,14 @@ class server_conversations_store {
     void evict_lru_unlocked();
     json entry_to_json(const server_conversation_entry & e) const;
     bool entry_from_json(const json & j, server_conversation_entry & e) const;
-    void persist_unlocked(const server_conversation_entry & e);
+    bool persist_unlocked(const server_conversation_entry & e);
     void erase_disk_unlocked(const std::string & id);
     void load_from_disk_unlocked();
     bool try_load_id_unlocked(const std::string & id);
     bool reload_id_from_disk_unlocked(const std::string & id);
+    // Load entries[id] (refreshing from shared disk when the file changed) and bump LRU.
+    server_conversation_entry * load_unlocked(const std::string & id);
+    void drop_unlocked(const std::string & id);
 
     mutable std::mutex mutex;
     int32_t max_entries_ = 1024;
@@ -55,13 +61,17 @@ class server_conversations_store {
     std::string root_path_;
     std::unordered_map<std::string, server_conversation_entry> entries;
     std::unordered_map<std::string, uint64_t> lru_stamp;
+    std::unordered_map<std::string, int64_t> mtime_stamp; // backing file mtime per id
 };
 
-// conversation endpoints report bad input (400) and missing objects (404) separately
+// conversation endpoints report bad input (400), missing objects (404), write
+// failures (500) and a disabled store (501) separately
 struct server_conversations_error : public std::runtime_error {
-    bool not_found;
+    enum error_type type;
     server_conversations_error(const std::string & msg, bool not_found_) :
-        std::runtime_error(msg), not_found(not_found_) {}
+        std::runtime_error(msg), type(not_found_ ? ERROR_TYPE_NOT_FOUND : ERROR_TYPE_INVALID_REQUEST) {}
+    server_conversations_error(const std::string & msg, enum error_type type_) :
+        std::runtime_error(msg), type(type_) {}
 };
 
 // Conversation object { id, created_at, metadata, object }
