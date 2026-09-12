@@ -147,6 +147,15 @@ static json server_responses_ensure_input_item_ids(json items) {
         if (!item.contains("type")) {
             item["type"] = "message";
         }
+        if (item.contains("phase") && !item.at("phase").is_null()) {
+            if (!item.at("phase").is_string()) {
+                throw std::invalid_argument("'phase' must be 'commentary' or 'final_answer'");
+            }
+            const std::string phase = item.at("phase").get<std::string>();
+            if (phase != "commentary" && phase != "final_answer") {
+                throw std::invalid_argument("'phase' must be 'commentary' or 'final_answer'");
+            }
+        }
     }
     return items;
 }

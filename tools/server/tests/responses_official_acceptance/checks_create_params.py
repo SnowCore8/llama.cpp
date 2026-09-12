@@ -88,6 +88,65 @@ def run_create_param_checks(
         f"HTTP {code}",
     )
 
+    # --- input: assistant message phase labels are accepted and round-trip ---
+    code, data = create(
+        {
+            "input": [
+                {"role": "user", "content": "Reply with exactly: PH1"},
+                {"role": "assistant", "content": "PH1", "phase": "commentary"},
+                {"role": "user", "content": "Reply with exactly: PH2"},
+            ],
+            "store": True,
+            "max_output_tokens": 32,
+        }
+    )
+    phase_kept = False
+    if code == 200 and data.get("id"):
+        icode, items = client.get_json(f"/v1/responses/{data['id']}/input_items")
+        if icode == 200 and isinstance(items, dict):
+            phase_kept = any(
+                isinstance(x, dict) and x.get("phase") == "commentary"
+                for x in (items.get("data") or [])
+            )
+    report.add(
+        "create_param",
+        "input.assistant_phase_roundtrip",
+        "PASS" if code == 200 and phase_kept else "FAIL",
+        f"HTTP {code} phase_kept={phase_kept}",
+    )
+    if code == 200 and data.get("id"):
+        code2, data2 = create(
+            {
+                "previous_response_id": data["id"],
+                "input": "Reply with exactly: PH3",
+                "max_output_tokens": 32,
+            }
+        )
+        report.add(
+            "create_param",
+            "input.assistant_phase_previous",
+            "PASS" if code2 == 200 and "PH3" in output_text(data2) else "FAIL",
+            f"HTTP {code2}",
+        )
+    else:
+        report.add("create_param", "input.assistant_phase_previous", "SKIP", "no stored id")
+
+    code_bad, _ = create(
+        {
+            "input": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "x", "phase": "bogus"},
+                {"role": "user", "content": "again"},
+            ]
+        }
+    )
+    report.add(
+        "create_param",
+        "input.phase.invalid",
+        "PASS" if code_bad == 400 else "FAIL",
+        f"HTTP {code_bad}",
+    )
+
     code, data = create(
         {
             "instructions": "Your entire reply must be exactly: INSTR_CREATE_OK",
