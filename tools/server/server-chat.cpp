@@ -461,7 +461,9 @@ json server_chat_convert_responses_to_chatcmpl(const json & response_body) {
                     inc.get<std::string>() == "message.output_text.logprobs") {
                 chatcmpl_body["logprobs"] = true;
                 if (!chatcmpl_body.contains("top_logprobs")) {
-                    chatcmpl_body["top_logprobs"] = 0;
+                    // keep the top-1 candidate: n_probs must be > 0 or the sampler records
+                    // no probabilities at all, and include alone has no top_logprobs
+                    chatcmpl_body["top_logprobs"] = 1;
                 }
                 break;
             }

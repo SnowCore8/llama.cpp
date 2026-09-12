@@ -73,6 +73,10 @@ int server_responses_effective_tool_call_cap(const json & request_body);
 // True when request.include contains the given string (e.g. reasoning.encrypted_content).
 bool server_responses_include_contains(const json & request_body, const std::string & item);
 
+// True when the client asked for output text logprobs: include=message.output_text.logprobs
+// or top_logprobs > 0. Gates the logprobs arrays on text deltas and output items.
+bool server_responses_wants_output_logprobs(const json & request_body);
+
 // Local opaque blob (local. + base64 JSON), same codec as compact encrypted_content.
 std::string server_responses_encode_local_blob(const json & obj);
 // Inverse of encode; false if not a local. blob or payload is corrupt.

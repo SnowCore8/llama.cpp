@@ -673,22 +673,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
 
     if (msg.content != "") {
         json logprobs = json::array();
-        const json & req_for_lp = req_early;
-        bool want_lp = false;
-        if (req_for_lp.contains("include") && req_for_lp.at("include").is_array()) {
-            for (const auto & inc : req_for_lp.at("include")) {
-                if (inc.is_string() && inc.get<std::string>() == "message.output_text.logprobs") {
-                    want_lp = true;
-                    break;
-                }
-            }
-        }
-        if (!want_lp && req_for_lp.contains("top_logprobs") &&
-                !req_for_lp.at("top_logprobs").is_null() &&
-                json_value(req_for_lp, "top_logprobs", 0) > 0) {
-            want_lp = true;
-        }
-        if (want_lp && !probs_output.empty()) {
+        if (server_responses_wants_output_logprobs(req_early) && !probs_output.empty()) {
             logprobs = completion_token_output::probs_vector_to_json(probs_output, post_sampling_probs);
         }
         output.push_back(json {
@@ -767,6 +752,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
     const json req_stream = oaicompat_resp_request.is_null() ? json::object() : oaicompat_resp_request;
     const int emit_tool_cap = server_responses_effective_tool_call_cap(req_stream);
     const bool hit_token_limit = (stop == STOP_TYPE_LIMIT) || truncated;
+    const bool want_lp = server_responses_wants_output_logprobs(req_stream);
 
     auto push_evt = [&](const std::string & event_name, json data) {
         data["type"] = event_name;
@@ -832,18 +818,22 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
     }
 
     if (oaicompat_msg.content != "") {
+        json lp_all = json::array();
+        if (want_lp && !probs_output.empty()) {
+            lp_all = completion_token_output::probs_vector_to_json(probs_output, post_sampling_probs);
+        }
         push_evt("response.output_text.done", json {
             {"item_id", oai_resp_message_id},
             {"text",    oaicompat_msg.content},
             {"output_index", (int) output.size()},
             {"content_index", 0},
-            {"logprobs", json::array()},
+            {"logprobs", lp_all},
         });
 
         const json content_part = {
             {"type",        "output_text"},
             {"annotations", json::array()},
-            {"logprobs",    json::array()},
+            {"logprobs",    lp_all},
             {"text",        oaicompat_msg.content}
         };
 
@@ -1424,6 +1414,7 @@ json server_task_result_cmpl_partial::to_json_oaicompat_resp() {
     std::vector<json> events;
     const json req_partial = oaicompat_resp_request.is_null() ? json::object() : oaicompat_resp_request;
     const int max_tool_calls = server_responses_effective_tool_call_cap(req_partial); // emit cap for deltas
+    const bool want_lp = server_responses_wants_output_logprobs(req_partial);
 
     auto push_evt = [&](const std::string & event_name, json data) {
         data["type"] = event_name;
@@ -1548,12 +1539,16 @@ json server_task_result_cmpl_partial::to_json_oaicompat_resp() {
                 });
                 text_block_started = true;
             }
+            json lp_delta = json::array();
+            if (want_lp && !prob_output.probs.empty()) {
+                lp_delta = completion_token_output::probs_vector_to_json({prob_output}, post_sampling_probs);
+            }
             push_evt("response.output_text.delta", json {
                 {"item_id", oai_resp_message_id},
                 {"delta",   diff.content_delta},
                 {"output_index", ws_off + (thinking_block_started ? 1 : 0)},
                 {"content_index", 0},
-                {"logprobs", json::array()},
+                {"logprobs", std::move(lp_delta)},
             });
         }
 

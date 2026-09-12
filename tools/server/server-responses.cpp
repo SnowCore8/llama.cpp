@@ -955,6 +955,14 @@ bool server_responses_include_contains(const json & request_body, const std::str
     return false;
 }
 
+bool server_responses_wants_output_logprobs(const json & request_body) {
+    if (server_responses_include_contains(request_body, "message.output_text.logprobs")) {
+        return true;
+    }
+    return request_body.contains("top_logprobs") && !request_body.at("top_logprobs").is_null() &&
+           json_value(request_body, "top_logprobs", 0) > 0;
+}
+
 std::string server_responses_encode_local_blob(const json & obj) {
     return make_local_compaction_token(obj);
 }

@@ -564,3 +564,95 @@ def run_background_stream_checks(
         )
     else:
         report.add(cat, "background_stream.non_background_resume_404", "SKIP", f"no id (HTTP {code})")
+
+
+def run_output_logprobs_stream_checks(
+    client: ResponsesHttpClient,
+    report: Report,
+    model: str,
+    extra: dict[str, Any],
+) -> None:
+    """Official streaming logprobs: deltas and text done carry real token logprobs on request."""
+    cat = "output_logprobs"
+
+    def stream_events(body: dict[str, Any]) -> tuple[int, list[tuple[str | None, dict[str, Any]]]]:
+        code, _, raw = client.request("POST", "/v1/responses", body, stream=True)
+        return code, parse_sse(raw) if code == 200 else []
+
+    include_body = {
+        "model": model,
+        "input": "Reply with exactly: LP_OK",
+        "max_output_tokens": 16,
+        "temperature": 0,
+        "stream": True,
+        "include": ["message.output_text.logprobs"],
+        **extra,
+    }
+    code, events = stream_events(include_body)
+    deltas = [obj for t, obj in events if t == "response.output_text.delta"]
+    lp_entries = [e for obj in deltas for e in (obj.get("logprobs") or [])]
+    lp_ok = (
+        len(deltas) > 0
+        and len(lp_entries) > 0
+        and all(
+            isinstance(e.get("token"), str) and isinstance(e.get("logprob"), (int, float))
+            for e in lp_entries
+        )
+    )
+    report.add(
+        cat,
+        "stream_delta_logprobs",
+        "PASS" if lp_ok else "FAIL",
+        f"HTTP {code} deltas={len(deltas)} entries={len(lp_entries)} sample={lp_entries[:1]}",
+    )
+    done = next((obj for t, obj in events if t == "response.output_text.done"), None)
+    done_lp = (done or {}).get("logprobs") or []
+    done_ok = len(done_lp) > 0 and all(
+        isinstance(e.get("token"), str) and e.get("logprob") is not None for e in done_lp
+    )
+    report.add(
+        cat,
+        "stream_done_logprobs",
+        "PASS" if done_ok else "FAIL",
+        f"entries={len(done_lp)} sample={done_lp[:1]}",
+    )
+
+    top_body = {
+        "model": model,
+        "input": "Reply with exactly: LP_OK",
+        "max_output_tokens": 16,
+        "temperature": 0,
+        "stream": True,
+        "top_logprobs": 2,
+        **extra,
+    }
+    code_t, events_t = stream_events(top_body)
+    deltas_t = [obj for t, obj in events_t if t == "response.output_text.delta"]
+    lp_t = [e for obj in deltas_t for e in (obj.get("logprobs") or [])]
+    top_ok = len(lp_t) > 0 and all(
+        isinstance(e.get("top_logprobs"), list) and len(e["top_logprobs"]) > 0 for e in lp_t
+    )
+    report.add(
+        cat,
+        "stream_delta_top_logprobs",
+        "PASS" if top_ok else "FAIL",
+        f"HTTP {code_t} deltas={len(deltas_t)} entries={len(lp_t)} top0={(lp_t[0].get('top_logprobs') if lp_t else None)}",
+    )
+
+    plain_body = {
+        "model": model,
+        "input": "Reply with exactly: LP_OK",
+        "max_output_tokens": 16,
+        "temperature": 0,
+        "stream": True,
+        **extra,
+    }
+    code_p, events_p = stream_events(plain_body)
+    deltas_p = [obj for t, obj in events_p if t == "response.output_text.delta"]
+    plain_ok = len(deltas_p) > 0 and all(not (obj.get("logprobs") or []) for obj in deltas_p)
+    report.add(
+        cat,
+        "stream_logprobs_omitted_by_default",
+        "PASS" if plain_ok else "FAIL",
+        f"HTTP {code_p} deltas={len(deltas_p)}",
+    )
