@@ -331,6 +331,10 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
 #endif //GGML_CUDA_FORCE_MMQ
 
     if (GGML_CUDA_CC_IS_NVIDIA(cc)) {
+        if (volta_mma_available(cc)) {
+            // on V100 MMQ is faster than cuBLAS for batch sizes below ~176 (measured crossover)
+            return ne11 < 176;
+        }
         return !fp16_mma_hardware_available(cc) || ne11 < MMQ_DP4A_MAX_BATCH_SIZE;
     }
 
