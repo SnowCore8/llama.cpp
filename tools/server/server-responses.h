@@ -32,11 +32,14 @@ json server_responses_normalize_input(const json & input);
 // Build store entry from a completed Responses object + request metadata, then put into store.
 // conversation_input carries the request's own input items; a finished turn also joins the
 // conversation named in @response_obj (see server_conversations_append_turn()).
+// request_model is the model string from the prepared request (the response echo holds the
+// loaded model name); prompt cache diagnostics compare it against the baseline request.
 void server_responses_remember(
     const json & response_obj,
     const json & prepared_request_input,
     const json & instructions,
-    const json & conversation_input = json(nullptr));
+    const json & conversation_input = json(nullptr),
+    const std::string & request_model = std::string());
 
 // Generate a new response id (resp_...).
 std::string server_responses_new_id();

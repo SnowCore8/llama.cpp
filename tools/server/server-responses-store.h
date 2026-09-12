@@ -17,6 +17,7 @@ struct server_responses_store_entry {
     int64_t     created_at  = 0;
     int64_t     expires_at  = 0;
     std::string model;
+    std::string request_model; // model string the client sent (model = echoed loaded name)
     json        instructions = nullptr; // string or null
     json        input        = json::array();
     json        output       = json::array();

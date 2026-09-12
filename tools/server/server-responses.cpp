@@ -595,7 +595,8 @@ void server_responses_remember(
     const json & response_obj,
     const json & prepared_request_input,
     const json & instructions,
-    const json & conversation_input) {
+    const json & conversation_input,
+    const std::string & request_model) {
     server_responses_conversation_attach(response_obj, conversation_input);
 
     if (server_responses_store::instance().max_entries() <= 0) {
@@ -626,16 +627,17 @@ void server_responses_remember(
     }
 
     server_responses_store_entry entry;
-    entry.id           = response_obj.at("id").get<std::string>();
-    entry.created_at   = json_value(response_obj, "created_at", (int64_t) 0);
-    entry.model        = json_value(response_obj, "model", std::string());
-    entry.instructions = instructions.is_null() ? json(nullptr) : instructions;
-    entry.input        = prepared_request_input.is_null()
-                             ? json::array()
-                             : server_responses_normalize_input(prepared_request_input);
-    entry.output       = response_obj.contains("output") ? response_obj.at("output") : json::array();
-    entry.usage        = response_obj.contains("usage") ? response_obj.at("usage") : json::object();
-    entry.response     = response_obj;
+    entry.id            = response_obj.at("id").get<std::string>();
+    entry.created_at    = json_value(response_obj, "created_at", (int64_t) 0);
+    entry.model         = json_value(response_obj, "model", std::string());
+    entry.request_model = request_model;
+    entry.instructions  = instructions.is_null() ? json(nullptr) : instructions;
+    entry.input         = prepared_request_input.is_null()
+                              ? json::array()
+                              : server_responses_normalize_input(prepared_request_input);
+    entry.output        = response_obj.contains("output") ? response_obj.at("output") : json::array();
+    entry.usage         = response_obj.contains("usage") ? response_obj.at("usage") : json::object();
+    entry.response      = response_obj;
 
     server_responses_store::instance().put(std::move(entry));
 }
@@ -725,9 +727,10 @@ static void server_responses_inject_prompt_cache_diagnostics(json & response_obj
     }
 
     // Expected = the prefix the two requests can share at most; a repeated prompt
-    // locally reuses all but its last 4 tokens, so allow that slack.
+    // locally reuses all but its last 4 tokens, so allow that slack. Short prompts
+    // have no tail to re-evaluate: require the full shared prefix.
     const int64_t expected = std::min(cur_input, base_input);
-    if (cur_cached >= expected - 4) {
+    if (cur_cached >= expected - (expected > 4 ? 4 : 0)) {
         response_obj["prompt_cache_diagnostics"] = json {
             {"type", "cache_hit"},
         };
@@ -752,16 +755,24 @@ static void server_responses_inject_prompt_cache_diagnostics(json & response_obj
     };
 
     std::string reason = "input_changed";
-    if (member_or_null(request_body, "model") != member_or_null(base, "model")) {
+    // The response echo carries the loaded model name, so the model check compares the
+    // request against the baseline request-side model stored on the entry.
+    if (!entry->request_model.empty() &&
+            member_or_null(request_body, "model") != json(entry->request_model)) {
         reason = "model_changed";
     } else if (member_or_null(request_body, "prompt_cache_key") != member_or_null(base, "prompt_cache_key")) {
         reason = "prompt_cache_key_changed";
     } else {
-        json req_tier = member_or_null(request_body, "service_tier");
-        if (req_tier.is_string() && req_tier.get<std::string>() == "fast") {
-            req_tier = "priority"; // the response echo stores the normalized tier
-        }
-        if (req_tier != member_or_null(base, "service_tier")) {
+        auto tier_norm = [](const json & v) -> json {
+            if (v.is_null()) {
+                return "auto"; // official default when the request omits service_tier
+            }
+            if (v.is_string() && v.get<std::string>() == "fast") {
+                return "priority"; // the response echo stores the normalized tier
+            }
+            return v;
+        };
+        if (tier_norm(member_or_null(request_body, "service_tier")) != tier_norm(member_or_null(base, "service_tier"))) {
             reason = "service_tier_changed";
         } else if (server_responses_tools_for_compare(request_body) != member_or_null(base, "tools")) {
             reason = "tools_changed";
@@ -1167,7 +1178,9 @@ json server_responses_compact(json body, const llama_vocab * vocab, int32_t n_ct
     server_responses_remember(
         result,
         json::array(),
-        body.contains("instructions") ? body.at("instructions") : json(nullptr));
+        body.contains("instructions") ? body.at("instructions") : json(nullptr),
+        json(nullptr),
+        json_value(body, "model", std::string()));
     return result;
 }
 

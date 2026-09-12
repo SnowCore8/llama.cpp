@@ -19,15 +19,16 @@ server_responses_store & server_responses_store::instance() {
 
 json server_responses_store::entry_to_json(const server_responses_store_entry & e) const {
     return json{
-        {"id",           e.id},
-        {"created_at",   e.created_at},
-        {"expires_at",   e.expires_at},
-        {"model",        e.model},
-        {"instructions", e.instructions},
-        {"input",        e.input},
-        {"output",       e.output},
-        {"usage",        e.usage},
-        {"response",     e.response},
+        {"id",            e.id},
+        {"created_at",    e.created_at},
+        {"expires_at",    e.expires_at},
+        {"model",         e.model},
+        {"request_model", e.request_model},
+        {"instructions",  e.instructions},
+        {"input",         e.input},
+        {"output",        e.output},
+        {"usage",         e.usage},
+        {"response",      e.response},
     };
 }
 
@@ -35,15 +36,16 @@ bool server_responses_store::entry_from_json(const json & j, server_responses_st
     if (!j.contains("id") || !j.at("id").is_string()) {
         return false;
     }
-    e.id           = j.at("id").get<std::string>();
-    e.created_at   = j.value("created_at", (int64_t) 0);
-    e.expires_at   = j.value("expires_at", (int64_t) 0);
-    e.model        = j.value("model", std::string());
-    e.instructions = j.contains("instructions") ? j.at("instructions") : json(nullptr);
-    e.input        = j.contains("input") ? j.at("input") : json::array();
-    e.output       = j.contains("output") ? j.at("output") : json::array();
-    e.usage        = j.contains("usage") ? j.at("usage") : json::object();
-    e.response     = j.contains("response") ? j.at("response") : json::object();
+    e.id            = j.at("id").get<std::string>();
+    e.created_at    = j.value("created_at", (int64_t) 0);
+    e.expires_at    = j.value("expires_at", (int64_t) 0);
+    e.model         = j.value("model", std::string());
+    e.request_model = j.value("request_model", std::string());
+    e.instructions  = j.contains("instructions") ? j.at("instructions") : json(nullptr);
+    e.input         = j.contains("input") ? j.at("input") : json::array();
+    e.output        = j.contains("output") ? j.at("output") : json::array();
+    e.usage         = j.contains("usage") ? j.at("usage") : json::object();
+    e.response      = j.contains("response") ? j.at("response") : json::object();
     return true;
 }
 

@@ -804,7 +804,8 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
         res["incomplete_details"] = json { {"reason", "max_output_tokens"} };
     }
     server_responses_remember(res, oaicompat_resp_input, oaicompat_resp_instructions,
-                              json_value(req, "__oai_conv_input", json(nullptr)));
+                              json_value(req, "__oai_conv_input", json(nullptr)),
+                              json_value(req, "model", std::string()));
     server_responses_reset_seq(oai_resp_id);
 
     return res;
@@ -1010,7 +1011,8 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
         response_obj["incomplete_details"] = json { {"reason", "max_output_tokens"} };
     }
     server_responses_remember(response_obj, oaicompat_resp_input, oaicompat_resp_instructions,
-                              json_value(req, "__oai_conv_input", json(nullptr)));
+                              json_value(req, "__oai_conv_input", json(nullptr)),
+                              json_value(req, "model", std::string()));
 
     push_evt(hit_token_limit ? "response.incomplete" : "response.completed", json {
         {"response", response_obj},
