@@ -4558,6 +4558,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                     json_value(data, "__oai_chat_user", std::string());
                 task.params.oaicompat_chat_safety_identifier =
                     json_value(data, "__oai_chat_safety_identifier", std::string());
+                task.params.oaicompat_chat_service_tier =
+                    json_value(data, "__oai_chat_service_tier", std::string());
             }
             if (res_type == TASK_RESPONSE_TYPE_OAI_CMPL) {
                 // Completions may include request `user` for client correlation.
@@ -5366,6 +5368,9 @@ void server_routes::init_routes() {
         }
         if (body.contains("safety_identifier") && body.at("safety_identifier").is_string()) {
             body_parsed["__oai_chat_safety_identifier"] = body.at("safety_identifier");
+        }
+        if (body.contains("service_tier") && body.at("service_tier").is_string()) {
+            body_parsed["__oai_chat_service_tier"] = body.at("service_tier");
         }
         return handle_completions_impl(
             req,

@@ -520,6 +520,7 @@ def run_create_param_checks(
         "prompt_cache_retention": "in_memory",
         "safety_identifier": "sid",
         "seed": 42,
+        "service_tier": "fast",
         "store": True,
         "stream_options": {"include_usage": True},
         "user": "acceptance-bot",
@@ -534,6 +535,39 @@ def run_create_param_checks(
             report.add("create_param", field, "SKIP", "no probe value mapped")
             continue
         # Deepen observable local behavior for fields that already work.
+        if field == "service_tier":
+            # Official fast-mode: request fast or priority shows service_tier=priority.
+            code, data = create({"service_tier": "fast"})
+            fast_ok = code == 200 and data.get("service_tier") == "priority"
+            code_echo, data_echo = create({"service_tier": "default"})
+            echo_ok = code_echo == 200 and data_echo.get("service_tier") == "default"
+            code_bad, _ = create({"service_tier": "bogus"})
+            bad_ok = code_bad == 400
+            # The terminal stream chunk carries the same value.
+            scode, _, sraw = client.request(
+                "POST",
+                "/v1/chat/completions",
+                {
+                    "model": model,
+                    "stream": True,
+                    "max_tokens": 16,
+                    "temperature": 0,
+                    "service_tier": "fast",
+                    "messages": [{"role": "user", "content": "Reply with exactly: TIER"}],
+                    **extra,
+                },
+                stream=True,
+            )
+            sbody = sraw.decode(errors="replace").replace(" ", "")
+            stream_ok = scode == 200 and '"service_tier":"priority"' in sbody
+            ok = fast_ok and echo_ok and bad_ok and stream_ok
+            report.add(
+                "create_param",
+                field,
+                "PASS" if ok else "FAIL",
+                f"fast={fast_ok} echo={echo_ok} bad400={bad_ok} stream={stream_ok}",
+            )
+            continue
         if field == "store":
             code, data = create(
                 {

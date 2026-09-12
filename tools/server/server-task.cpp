@@ -525,6 +525,14 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat() {
         {"id", oaicompat_cmpl_id}
     };
 
+    if (!generation_params.oaicompat_chat_service_tier.empty()) {
+        res["service_tier"] = generation_params.oaicompat_chat_service_tier;
+        // official responses show priority for request fast or priority
+        if (res.at("service_tier").get<std::string>() == "fast") {
+            res["service_tier"] = "priority";
+        }
+    }
+
     if (generation_params.oaicompat_chat_store) {
         res["store"] = true;
         if (!generation_params.oaicompat_chat_metadata.is_null()) {
@@ -607,6 +615,14 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat_stream() {
         {"system_fingerprint", std::string(llama_build_info())},
         {"object",             "chat.completion.chunk"},
     });
+    if (!generation_params.oaicompat_chat_service_tier.empty()) {
+        json & last = deltas.back();
+        last["service_tier"] = generation_params.oaicompat_chat_service_tier;
+        // official responses show priority for request fast or priority
+        if (last.at("service_tier").get<std::string>() == "fast") {
+            last["service_tier"] = "priority";
+        }
+    }
 
     if (include_usage) {
         // OpenAI API spec for chat.completion.chunks specifies an empty `choices` array for the last chunk when including usage

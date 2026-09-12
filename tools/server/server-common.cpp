@@ -200,6 +200,23 @@ static void server_openai_validate_responses_text_object(const json & body) {
     }
 }
 
+// Validate the shared Chat/Responses `service_tier` enum.
+static void server_openai_validate_service_tier(const json & body) {
+    if (!body.contains("service_tier") || body.at("service_tier").is_null()) {
+        return;
+    }
+    if (!body.at("service_tier").is_string()) {
+        throw std::invalid_argument(
+            "'service_tier' must be one of: auto, default, flex, scale, priority, fast, ultrafast");
+    }
+    const std::string tier = body.at("service_tier").get<std::string>();
+    if (tier != "auto" && tier != "default" && tier != "flex" && tier != "scale" &&
+            tier != "priority" && tier != "fast" && tier != "ultrafast") {
+        throw std::invalid_argument(
+            "'service_tier' must be one of: auto, default, flex, scale, priority, fast, ultrafast");
+    }
+}
+
 void server_openai_validate_cloud_shaped_fields(const json & body, bool allow_prompt) {
     if (allow_prompt && body.contains("prompt") && !body.at("prompt").is_null()) {
         if (!body.at("prompt").is_object()) {
@@ -302,18 +319,7 @@ void server_openai_validate_cloud_shaped_fields(const json & body, bool allow_pr
                 throw std::invalid_argument("'safety_identifier' must be at most 64 characters");
             }
         }
-        if (body.contains("service_tier") && !body.at("service_tier").is_null()) {
-            if (!body.at("service_tier").is_string()) {
-                throw std::invalid_argument(
-                    "'service_tier' must be one of: auto, default, flex, scale, priority, fast, ultrafast");
-            }
-            const std::string tier = body.at("service_tier").get<std::string>();
-            if (tier != "auto" && tier != "default" && tier != "flex" && tier != "scale" &&
-                    tier != "priority" && tier != "fast" && tier != "ultrafast") {
-                throw std::invalid_argument(
-                    "'service_tier' must be one of: auto, default, flex, scale, priority, fast, ultrafast");
-            }
-        }
+        server_openai_validate_service_tier(body);
         if (body.contains("include") && !body.at("include").is_null()) {
             if (!body.at("include").is_array()) {
                 throw std::invalid_argument("'include' must be an array");
@@ -757,6 +763,7 @@ void server_openai_validate_chat_create_fields(const json & body) {
             !body.at("safety_identifier").is_string()) {
         throw std::invalid_argument("'safety_identifier' must be a string");
     }
+    server_openai_validate_service_tier(body);
     if (body.contains("logit_bias") && !body.at("logit_bias").is_null() &&
             !body.at("logit_bias").is_object() && !body.at("logit_bias").is_array()) {
         throw std::invalid_argument("'logit_bias' must be an object or array");
