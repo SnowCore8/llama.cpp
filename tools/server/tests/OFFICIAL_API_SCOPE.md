@@ -10,7 +10,7 @@ SDK pin (tests venv): `openai==3.11.0` (latest at run time).
 
 | Suite | Package | Normative surface |
 |-------|---------|-------------------|
-| Responses | `responses_official_acceptance` | OpenAI Responses + Conversations + Completions + Models + durable Responses store + live `openai` SDK |
+| Responses | `responses_official_acceptance` | OpenAI Responses + Conversations + Completions + Models + durable Responses store + Responses WebSocket (lanes/steer/inject) + live `openai` SDK |
 | Chat Completions | `chat_completions_official_acceptance` | Chat Completions (+ input_tokens) + Models + durable Chat store + live `openai` SDK |
 | Local durability | `local_durability_acceptance` | Store restart resume/reload, `GET /v1/tools`, `/props.slot_save_path`, compact expand |
 
@@ -28,7 +28,7 @@ everything durable/local that clients call through the public SDK should be scor
 | Files / Uploads / Batches / Moderations / cloud QoS (`service_tier`, `inference_geo`, `container`, `user_profile_id`) | Cloud-only surfaces: no local implementation here (`service_tier` accepts the official enum and is echoed, `fast`→`priority` like the official response, but changes no scheduling; the rest are ignored or rejected) |
 | `DELETE /v1/models/{model}` | Cloud fine-tune-only surface: local servers have no fine-tuned models to delete (retrieve/list are implemented) |
 | Other hosted tools (`file_search`, remote `mcp`, `code_interpreter`, `code_execution_*`, …) | No cloud backends — **explicit HTTP 400** (not silent skip). **Exception:** local `web_search` deepen (below). |
-| `client.beta.*` product APIs | Platform Beta, not stable local HTTP body contract |
+| `client.beta.*` product APIs | Platform Beta, not stable local HTTP body contract（例外：beta Responses WebSocket 的 `response.inject` 事件已实现，见「Local contracts」） |
 | Byte-identical cloud responses | Local models + templates differ |
 
 **Implemented (local):**
@@ -100,6 +100,9 @@ Inference create/stream/parse, create-param catalogs, tools/`tool_choice`, reaso
 | Responses cloud field validation (`metadata`, `safety_identifier`, `service_tier`, `include`, `phase`, `allowed_tools` mode) | **Low** | Out-of-range or unknown values that used to pass silently now return 400 | Enumerable official value spaces; shape errors are client bugs |
 | Streaming chunks default to `obfuscation` and `usage: null`; Responses SSE `obfuscation` default on | **Low** | Responses obfuscation, previously off by default, now appears in every SSE event's data object | Aligns with the official default behavior |
 | Responses `prompt_cache_options.comparison_response_id` diagnostics + echoed-options defaults | **Low** | Unknown ids stay HTTP 200 and report `comparison_response_not_found`; an echoed `prompt_cache_options` gains `mode`/`ttl` defaults (the SDK requires both) | Local deepen of the official diagnostics field |
+| Responses WebSocket transport (lanes, `stream_id` echo, nested error envelope) | **Low** | New `server-responses-ws` module; same create path as HTTP, WS-only error nesting + lane echo; poll-based read with a 60-minute session clock | Official WS mode shape |
+| WS steering interrupt (`STOP_TYPE_STEERED`) + WS-only steer events | **Low–Medium** | A steered response stops at the next decode step and ends `incomplete`/`steered`, then an automatic successor runs the queued steer on the same lane | Mid-turn steering |
+| WS `response.inject` + connection-local `store=false` continuation cache | **Low** | Bounded in-process LRU for `store=false` responses, readable only with the issuing connection's token; invalid inject schema closes the connection | Official WS continuation + multi-agent inject |
 
 ## Deepen campaign status (local hosted APIs)
 
@@ -123,6 +126,10 @@ When the rows above stay green, the “消解最小化实现” campaign for in-
 
 ## Local contracts (not cloud)
 
+- **Responses WebSocket** — 错误一律用官方嵌套信封 `{type:"error", status, error:{type, code, message, param}, stream_id?, sequence_number?}`：SSE 扁平 error 帧转发时转换，`sequence_number` 只在错误来自响应流时保留（官方语义）；连接级错误不带。本地补充码：`invalid_json`（帧不是合法 JSON 对象）、`unsupported_event_type`（`type` 不是 `response.create`/`response.steer`/`response.inject`；param=`type`）。lane：`stream_id` 1-256 字符 `[A-Za-z0-9_.-]`，命名 lane 的全部事件（含终止与请求级错误）回显 `stream_id`，默认 lane 不带；限额 = 16 个在飞响应（超出排队）/ 32 个命名 lane（第 33 个报 `websocket_stream_limit_reached` 并回显被拒名字）/ 60 分钟连接寿命（`websocket_connection_limit_reached`，按 1s tick 检查）。WS 自产事件（`response.steer.*`、`response.inject.*`）的 `sequence_number` 用连接级计数器（官方 schema 只规定字段存在，未定义编号基准；响应流事件保留 per-response 计数）。
+- **Responses WS `store=false` 继续（官方 connection-local cache 的本地实现）** — 进程内 LRU（容量 256，记 `{连接令牌, prepared input, output}`；`server_responses_remember` 对 `store=false` 非后台响应写入）。每条 WS 连接在建立时生成随机连接令牌（`__oai_ws_local`，只存在于内部请求，不出现在任何响应里），WS 层在签发 create 与自动 successor 时覆盖写入该键；缓存条目按写入者令牌归档，读取要求令牌非空且匹配 → 响应只能在**签发它的同一条连接**内作 `previous_response_id` 继续。失败驱逐（官方指南）：同 lane 续写以请求级 4xx/5xx 失败时驱逐被引用的父；跨 lane fork 失败保留父。保留策略为连接级 LRU-256（官方口径为每 lane 保留最近缓存、源 lane 前进或失败时可淘汰父；本地不主动淘汰，为更宽松超集）。未命中语义：WS 请求（同连接或其他连接）→ 嵌套 `error` status 400 code=`previous_response_not_found`（message 用官方措辞）；HTTP 请求（含带伪造 `__oai_ws_local` 的请求）→ 扁平错误信封以同一 code/param/message 返回（type `invalid_request_error`；官方把该码列在 WebSocket mode errors，HTTP 面未单独定义，本地选跨传输一致）。官方依据：WebSocket mode 指南（connection-local cache、uncached → `previous_response_not_found`、同 lane 失败驱逐）。
+- **Responses WS steering（本地执行语义）** — 本地无模型内 steer 注入：接受后目标在下一次 decode 步停表（`STOP_TYPE_STEERED`）→ `response.incomplete` + `incomplete_details.reason="steered"` → 自动 successor（继承原请求设置、同 lane、输入=排队 steer 依序）；目标先正常完成则保留 `completed` 后接 successor；`too_many_pending_steers` 本地阈值 32 条/目标；目标以 failed/cancelled 终止时对未提交 steer 回 `successor_creation_failed`。pending 的 `required_input` 逐 function_call 生成 `{type:"function_call_output", call_id, name}`（本地输出项可达仅 function_call/function_call_output）。
+- **Responses WS `response.inject`（beta）** — 本地无 multi-agent 等待态：校验提交后回 `response.inject.created`，注入项由目标响应终止时的 successor 承接；失败码仅官方两值（`response_already_completed`/`response_not_found`）；schema 不合规 → 通用 `error`(400) 并关闭连接（官方行为）；不强制 `OpenAI-Beta: responses_multi_agent=v1`（接受任意请求头）。
 - **Conversations error codes** — 400 invalid input (including `include` values outside the official enum), 404 missing conversation/item, 500 write failure, 501 store disabled (`--responses-store-max 0`); the usual `{code, message, type}` error envelope.
 - **Responses `top_logprobs` without `include`** — local extension: setting `top_logprobs` alone enables logprob recording; officially the arrays are enabled through `include: ["message.output_text.logprobs"]` and `top_logprobs` only caps the count.
-- **Responses output logprobs drop zero-length tokens** — the sampled EOG token carries no text and is not listed in the `output_text` / `output_text.done` logprob entries, so the entries line up with the output text (Chat Completions keeps the upstream behavior).
+- **Responses output logprobs drop empty-text tokens and candidates** — the sampled EOG token carries no text and is not listed in the `output_text` / `output_text.done` logprob entries, so the entries line up with the output text; within each listed entry the inner `top_logprobs` / `top_probs` candidates whose token text is empty (special/control tokens) are dropped, and an entry left with no candidates is dropped as well (Chat Completions keeps the upstream behavior).
