@@ -1,5 +1,6 @@
 #include "server-context.h"
 #include "server-http.h"
+#include "server-responses-ws.h"
 #include "server-models.h"
 #include "server-cors-proxy.h"
 #include "server-stream.h"
@@ -21,7 +22,6 @@
 #include <clocale>
 #include <exception>
 #include <signal.h>
-#include <sstream>
 #include <thread> // for std::thread::hardware_concurrency
 
 #if defined(_WIN32)
@@ -40,74 +40,6 @@ static inline void signal_handler(int signal) {
     }
 
     shutdown_handler(signal);
-}
-
-// Forward OpenAI Responses SSE chunks as WebSocket JSON event frames.
-static void responses_sse_to_ws(
-        server_http_res_ptr & response,
-        const std::function<bool(const std::string &)> & send_text) {
-    if (!response) {
-        return;
-    }
-    if (!response->is_stream()) {
-        // Unexpected non-stream body: wrap as error or completed payload
-        if (!response->data.empty()) {
-            try {
-                json body = json::parse(response->data);
-                if (body.contains("error")) {
-                    send_text(json {
-                        {"type",    "error"},
-                        {"message", body.dump()},
-                    }.dump());
-                } else {
-                    send_text(json {
-                        {"type",     "response.completed"},
-                        {"response", body},
-                    }.dump());
-                }
-            } catch (...) {
-                send_text(json {
-                    {"type",    "error"},
-                    {"message", "invalid response body"},
-                }.dump());
-            }
-        }
-        response->on_complete();
-        return;
-    }
-
-    std::string leftover;
-    std::string chunk;
-    while (response->next(chunk)) {
-        leftover += chunk;
-        size_t pos = 0;
-        while ((pos = leftover.find("\n\n")) != std::string::npos) {
-            const std::string block = leftover.substr(0, pos);
-            leftover.erase(0, pos + 2);
-            std::string data;
-            std::istringstream iss(block);
-            std::string line;
-            while (std::getline(iss, line)) {
-                if (!line.empty() && line.back() == '\r') {
-                    line.pop_back();
-                }
-                if (line.rfind("data:", 0) == 0) {
-                    data = line.substr(5);
-                    if (!data.empty() && data[0] == ' ') {
-                        data.erase(0, 1);
-                    }
-                }
-            }
-            if (data.empty() || data == "[DONE]") {
-                continue;
-            }
-            if (!send_text(data)) {
-                response->on_complete();
-                return;
-            }
-        }
-    }
-    response->on_complete();
 }
 
 // satisfies -Wmissing-declarations (used by llama command)
@@ -392,54 +324,9 @@ int llama_server(common_params & params, int argc, char ** argv) {
     // Official Responses WebSocket connect: same path as create, upgrade to WS.
     auto responses_ws = [&routes](
             const std::map<std::string, std::string> & headers,
-            const std::function<bool(std::string &)> & read_text,
+            const std::function<int(std::string &, int)> & poll_text,
             const std::function<bool(const std::string &)> & send_text) {
-        std::string msg;
-        while (read_text(msg)) {
-            json ev;
-            try {
-                ev = json::parse(msg);
-            } catch (const std::exception & e) {
-                send_text(json {
-                    {"type",    "error"},
-                    {"message", std::string("invalid json: ") + e.what()},
-                }.dump());
-                continue;
-            }
-            const std::string typ = json_value(ev, "type", std::string());
-            if (typ != "response.create") {
-                send_text(json {
-                    {"type",    "error"},
-                    {"message", "unsupported event type: " + typ},
-                }.dump());
-                continue;
-            }
-            ev.erase("type");
-            // Transport fields are not used over WebSocket (OpenAI docs).
-            ev.erase("stream");
-            ev.erase("background");
-            ev["stream"] = true;
-
-            std::function<bool()> never_stop = []() { return false; };
-            server_http_req req {
-                {},
-                headers,
-                "/v1/responses",
-                "",
-                ev.dump(),
-                {},
-                never_stop,
-            };
-            try {
-                auto res = routes.post_responses_oai(req);
-                responses_sse_to_ws(res, send_text);
-            } catch (const std::exception & e) {
-                send_text(json {
-                    {"type",    "error"},
-                    {"message", e.what()},
-                }.dump());
-            }
-        }
+        server_responses_ws_run(routes.post_responses_oai, headers, poll_text, send_text);
     };
     ctx_http.websocket("/v1/responses", responses_ws);
     ctx_http.websocket("/responses", responses_ws);

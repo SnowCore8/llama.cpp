@@ -39,6 +39,8 @@ add_library(${TARGET} STATIC
     server-openai-persist.h
     server-responses.cpp
     server-responses.h
+    server-responses-ws.cpp
+    server-responses-ws.h
     server-conversations.cpp
     server-conversations.h
     server-web-search.cpp

@@ -6,6 +6,7 @@
 
 #include <cpp-httplib/httplib.h>
 
+#include <chrono>
 #include <functional>
 #include <future>
 #include <memory>
@@ -692,14 +693,18 @@ void server_http_context::del(const std::string & path, const server_http_contex
 void server_http_context::websocket(const std::string & path, const server_http_context::ws_handler_t & handler) const {
     pimpl->srv->WebSocket(path_prefix + path, [handler](const httplib::Request & req, httplib::ws::WebSocket & ws) {
         auto headers = get_headers(req);
-        auto read_text = [&ws](std::string & msg) -> bool {
+        auto poll_text = [&ws](std::string & msg, int timeout_ms) -> int {
+            ws.set_read_timeout(std::chrono::milliseconds(timeout_ms));
             while (true) {
                 const auto rr = ws.read(msg);
                 if (rr == httplib::ws::ReadResult::Fail) {
-                    return false;
+                    return -1;
+                }
+                if (rr == httplib::ws::ReadResult::Timeout) {
+                    return 0;
                 }
                 if (rr == httplib::ws::ReadResult::Text) {
-                    return true;
+                    return 1;
                 }
                 // ignore binary frames
             }
@@ -707,7 +712,7 @@ void server_http_context::websocket(const std::string & path, const server_http_
         auto send_text = [&ws](const std::string & data) -> bool {
             return ws.send(data);
         };
-        handler(headers, read_text, send_text);
+        handler(headers, poll_text, send_text);
     });
 }
 

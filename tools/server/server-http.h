@@ -91,10 +91,11 @@ struct server_http_context {
     void post(const std::string & path, const handler_t & handler) const;
     void del(const std::string & path, const handler_t & handler) const;
 
-    // OpenAI Responses WebSocket connect (/v1/responses). read_text returns false on close/fail.
+    // OpenAI Responses WebSocket connect (/v1/responses).
+    // poll_text returns 1 on a text frame, 0 on timeout, -1 when the peer closed or failed.
     using ws_handler_t = std::function<void(
         const std::map<std::string, std::string> & headers,
-        const std::function<bool(std::string &)> & read_text,
+        const std::function<int(std::string &, int)> & poll_text,
         const std::function<bool(const std::string &)> & send_text)>;
     void websocket(const std::string & path, const ws_handler_t & handler) const;
 
