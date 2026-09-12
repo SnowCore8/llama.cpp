@@ -114,7 +114,9 @@ Notable check families:
 
 - `web_search_stream.events` / `web_search_stream.annotation`: streaming
   `response.web_search_call.*` lifecycle order and `url_citation` annotations
-  (both `SKIP` when the search provider returns no sources).
+  (both `SKIP` when the search provider returns no sources). Point the server at
+  `tools/server/tests/fixtures/web_search_fixture.json` via
+  `LLAMA_WEB_SEARCH_FIXTURE` for deterministic sources.
 - `stream_delta_logprobs.local` and friends: local logprob semantics (`include`
   or `top_logprobs>0` both emit logprobs).
 - `items.list.default_limit`: official default page size is 20.

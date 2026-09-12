@@ -741,7 +741,7 @@ def run_web_search_stream_checks(
         reason = (
             "no web_search_call observed"
             if not search_seen
-            else "search returned no sources (provider=none?)"
+            else "search returned no sources (provider=none, or no LLAMA_WEB_SEARCH_FIXTURE on the server?)"
         )
         report.add(cat, "web_search_stream.events", "SKIP", f"{reason}; not judgeable")
         report.add(cat, "web_search_stream.annotation", "SKIP", f"{reason}; not judgeable")

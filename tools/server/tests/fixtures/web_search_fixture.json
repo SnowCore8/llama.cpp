@@ -1,0 +1,29 @@
+{
+  "results": [
+    {
+      "title": "Example Domain",
+      "url": "https://example.com/",
+      "snippet": "Example Domain is reserved for use in documentation examples without needing permission."
+    },
+    {
+      "title": "IANA-managed Reserved Domains",
+      "url": "https://www.iana.org/help/example-domains",
+      "snippet": "example.com is a reserved domain managed by IANA for documentation purposes."
+    },
+    {
+      "title": "RFC 2606 - Reserved Top Level DNS Names",
+      "url": "https://www.rfc-editor.org/rfc/rfc2606.html",
+      "snippet": "RFC 2606 reserves example.com, example.net and example.org for documentation."
+    },
+    {
+      "title": "DuckDuckGo",
+      "url": "https://duckduckgo.com/",
+      "snippet": "DuckDuckGo is a search engine focused on privacy."
+    },
+    {
+      "title": "Wikipedia - Example.com",
+      "url": "https://en.wikipedia.org/wiki/Example.com",
+      "snippet": "example.com is a domain name used in illustrative examples."
+    }
+  ]
+}
