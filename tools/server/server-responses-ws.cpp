@@ -74,6 +74,7 @@ struct ws_target {
     std::string status = "running";  // running | completed | incomplete | failed
     bool        steerable = true;    // no conversation and no automatic compaction
     std::deque<std::shared_ptr<ws_steer>> steers; // queued / carried submissions
+    json        inject_items = json::array(); // accepted injections, applied by the successor
 };
 
 // One lane queue item: the create body plus any steering submissions it carries.
@@ -113,7 +114,7 @@ struct ws_session {
     std::mutex idx_mtx;
     std::map<std::string, std::shared_ptr<ws_target>> targets;
     std::deque<std::string> target_order; // insertion order for FIFO eviction
-    std::atomic<int64_t> steer_seq{0}; // connection-level sequence number of steer events
+    std::atomic<int64_t> event_seq{0}; // connection-level sequence number shared by steer and inject events
 
     // connection token for the connection-local store=false cache: stamped on every
     // create this session forwards, so only this connection can continue those ids
@@ -249,7 +250,7 @@ static void ws_send_steer_accepted(ws_session & sess, const std::string & steer_
         const std::string & prev_id, const std::string & stream_id) {
     json ev = {
         {"type",            "response.steer.accepted"},
-        {"sequence_number", sess.steer_seq++},
+        {"sequence_number", sess.event_seq++},
         {"steer", json {
             {"id",                  steer_id},
             {"previous_response_id", prev_id},
@@ -266,7 +267,7 @@ static void ws_send_steer_pending(ws_session & sess, const std::string & steer_i
         const std::string & prev_id, const json & required_input, const std::string & stream_id) {
     json ev = {
         {"type",            "response.steer.pending"},
-        {"sequence_number", sess.steer_seq++},
+        {"sequence_number", sess.event_seq++},
         {"steer", json {
             {"id",                  steer_id},
             {"previous_response_id", prev_id},
@@ -294,10 +295,45 @@ static void ws_send_steer_failed(ws_session & sess, const json & input,
     }
     json ev = {
         {"type",            "response.steer.failed"},
-        {"sequence_number", sess.steer_seq++},
+        {"sequence_number", sess.event_seq++},
         {"steer",           std::move(steer)},
         {"error", json {
             {"type",    "invalid_request_error"},
+            {"code",    code},
+            {"message", message},
+        }},
+    };
+    if (!stream_id.empty()) {
+        ev["stream_id"] = stream_id;
+    }
+    ws_send_json(sess, ev);
+}
+
+// Sends one response.inject.created event (the input was accepted for injection).
+static void ws_send_inject_created(ws_session & sess, const std::string & response_id,
+        const std::string & stream_id) {
+    json ev = {
+        {"type",            "response.inject.created"},
+        {"response_id",     response_id},
+        {"sequence_number", sess.event_seq++},
+    };
+    if (!stream_id.empty()) {
+        ev["stream_id"] = stream_id;
+    }
+    ws_send_json(sess, ev);
+}
+
+// Sends one response.inject.failed event with the raw input echoed back; the
+// official error object carries only the code and the message.
+static void ws_send_inject_failed(ws_session & sess, const std::string & response_id,
+        const json & input, const std::string & code, const std::string & message,
+        const std::string & stream_id) {
+    json ev = {
+        {"type",            "response.inject.failed"},
+        {"response_id",     response_id},
+        {"input",           input},
+        {"sequence_number", sess.event_seq++},
+        {"error", json {
             {"code",    code},
             {"message", message},
         }},
@@ -599,11 +635,12 @@ static void ws_fail_carried(ws_session & sess, const ws_payload & payload) {
 }
 
 // Starts the automatic successor on the target lane: the original request
-// settings, continuation from the target, input = queued steers in order.
+// settings, continuation from the target, input = accepted injections first,
+// then the queued steers in submission order.
 static void ws_start_successor(
         ws_session & sess, const std::shared_ptr<ws_target> & target,
-        const std::vector<std::shared_ptr<ws_steer>> & steers) {
-    if (steers.empty()) {
+        const json & inject_items, const std::vector<std::shared_ptr<ws_steer>> & steers) {
+    if (inject_items.empty() && steers.empty()) {
         return;
     }
     json body = target->body;
@@ -611,6 +648,9 @@ static void ws_start_successor(
     body.erase("previous_response_id");
     body.erase("stream_id");
     json input = json::array();
+    for (const auto & item : inject_items) {
+        input.push_back(item);
+    }
     for (const auto & s : steers) {
         json norm = server_responses_normalize_input(s->input);
         for (auto & item : norm) {
@@ -641,6 +681,7 @@ static void ws_on_terminal(ws_session & sess, const std::shared_ptr<ws_target> &
     std::vector<std::shared_ptr<ws_steer>> pending_out;
     std::vector<std::shared_ptr<ws_steer>> failed_out;
     std::vector<std::shared_ptr<ws_steer>> carry_out;
+    json inject_out = json::array();
     {
         std::lock_guard<std::mutex> lock(sess.idx_mtx);
         if (event_type == "response.failed") {
@@ -653,8 +694,20 @@ static void ws_on_terminal(ws_session & sess, const std::shared_ptr<ws_target> &
         // the interrupt flag is not needed after the terminal event
         server_responses_steer_flag_consume(target->resp_id);
 
+        // accepted injections ride the automatic successor; a failed target drops
+        // them silently (inject.created only promised that they were accepted)
+        if (target->status == "failed") {
+            target->inject_items = json::array();
+        } else {
+            inject_out = std::move(target->inject_items);
+            target->inject_items = json::array();
+        }
+
         const bool completed_with_tools =
             target->status == "completed" && ws_has_function_call(response_obj);
+        // an injected tool output is itself the continuation: it replaces the
+        // pending handoff, and the queued steering input rides along
+        const bool tools_pending = completed_with_tools && inject_out.empty();
         for (const auto & s : target->steers) {
             if (s->state != WS_STEER_QUEUED) {
                 continue;
@@ -662,7 +715,7 @@ static void ws_on_terminal(ws_session & sess, const std::shared_ptr<ws_target> &
             if (target->status == "failed") {
                 s->state = WS_STEER_RETURNED;
                 failed_out.push_back(s);
-            } else if (completed_with_tools) {
+            } else if (tools_pending) {
                 if (!s->pending_sent) {
                     s->pending_sent = true;
                     pending_out.push_back(s);
@@ -688,8 +741,8 @@ static void ws_on_terminal(ws_session & sess, const std::shared_ptr<ws_target> &
         ws_send_steer_failed(sess, s->input, target->resp_id, s->id,
                 "successor_creation_failed", WS_MSG_STEER_SUCC_FAIL, target->lane);
     }
-    if (!carry_out.empty()) {
-        ws_start_successor(sess, target, carry_out);
+    if (!carry_out.empty() || !inject_out.empty()) {
+        ws_start_successor(sess, target, inject_out, carry_out);
     }
 }
 
@@ -1065,6 +1118,78 @@ static void ws_handle_steer(const std::shared_ptr<ws_session> & sess_ptr, const 
     }
 }
 
+// Handles one beta response.inject event: a schema violation gets a generic
+// error and closes the connection, otherwise the items are accepted into the
+// running target response or inject.failed is sent.
+static void ws_handle_inject(const std::shared_ptr<ws_session> & sess_ptr, const json & ev) {
+    ws_session & sess = *sess_ptr;
+
+    // malformed events close the connection, as the official guide requires
+    std::string schema_err;
+    std::string schema_param;
+    if (!ev.contains("response_id") || !ev.at("response_id").is_string() ||
+            ev.at("response_id").get<std::string>().empty()) {
+        schema_err   = "response_id is required and must be a non-empty string.";
+        schema_param = "response_id";
+    } else if (!ev.contains("input") || !ev.at("input").is_array()) {
+        schema_err   = "input is required and must be an array of input items.";
+        schema_param = "input";
+    } else if (ev.at("input").empty()) {
+        schema_err   = "input must contain at least one input item.";
+        schema_param = "input";
+    } else {
+        for (const auto & item : ev.at("input")) {
+            if (!item.is_object()) {
+                schema_err   = "input items must be objects.";
+                schema_param = "input";
+                break;
+            }
+        }
+    }
+    if (!schema_err.empty()) {
+        ws_send_json(sess, ws_make_error(400, "invalid_request_error", "invalid_input",
+                schema_err, schema_param, ""));
+        ws_close_session(sess);
+        return;
+    }
+
+    const std::string response_id = ev.at("response_id").get<std::string>();
+    const json & input = ev.at("input");
+
+    // decide under the index lock; sends happen after it is released. The lane
+    // echo follows the steer rule: set when the target is available.
+    bool accepted = false;
+    std::string lane;
+    std::string fail_code;
+    std::string fail_msg;
+    {
+        std::lock_guard<std::mutex> lock(sess.idx_mtx);
+        auto it = sess.targets.find(response_id);
+        if (it == sess.targets.end()) {
+            fail_code = "response_not_found";
+            fail_msg  = "Response '" + response_id + "' not found.";
+        } else {
+            const std::shared_ptr<ws_target> & tgt = it->second;
+            lane = tgt->lane;
+            if (tgt->status != "running") {
+                fail_code = "response_already_completed";
+                fail_msg  = "Response '" + response_id + "' has already completed.";
+            } else {
+                for (const auto & item : input) {
+                    tgt->inject_items.push_back(item);
+                }
+                accepted = true;
+            }
+        }
+    }
+
+    if (accepted) {
+        ws_send_inject_created(sess, response_id, lane);
+    } else {
+        ws_send_inject_failed(sess, response_id, input, fail_code, fail_msg, lane);
+    }
+}
+
 // Handles one client text frame. Invalid events get an error event and do not
 // stop the session.
 static void ws_handle_message(const std::shared_ptr<ws_session> & sess_ptr, const std::string & msg) {
@@ -1085,6 +1210,10 @@ static void ws_handle_message(const std::shared_ptr<ws_session> & sess_ptr, cons
     const std::string typ = json_value(ev, "type", std::string());
     if (typ == "response.steer") {
         ws_handle_steer(sess_ptr, ev);
+        return;
+    }
+    if (typ == "response.inject") {
+        ws_handle_inject(sess_ptr, ev);
         return;
     }
     if (typ != "response.create") {
