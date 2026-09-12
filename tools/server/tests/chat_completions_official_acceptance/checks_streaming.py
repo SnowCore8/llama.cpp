@@ -136,6 +136,57 @@ def run_streaming_checks(
         "ok" if not chunk_errs else f"sdk_err={chunk_errs[:1]}",
     )
 
+    # Official default: string "obfuscation" on every chunk; the chunk carrying
+    # finish_reason uses "" (stream_options.include_obfuscation defaults to true).
+    obf_str_ok = all(isinstance(c.get("obfuscation"), str) for c in chunks)
+    n_obf_nonempty = sum(1 for c in chunks if c.get("obfuscation"))
+    n_finish_obf = 0
+    finish_obf_empty = True
+    for c in chunks:
+        chs = c.get("choices") or []
+        if chs and isinstance(chs[0], dict) and chs[0].get("finish_reason"):
+            n_finish_obf += 1
+            if c.get("obfuscation") != "":
+                finish_obf_empty = False
+    ok_obf_default = (
+        bool(chunks)
+        and obf_str_ok
+        and finish_obf_empty
+        and n_finish_obf >= 1
+        and n_obf_nonempty >= 1
+    )
+    report.add(
+        "stream_event",
+        "chunk.obfuscation.default",
+        "PASS" if ok_obf_default else "FAIL",
+        f"n={len(chunks)} str_ok={obf_str_ok} n_finish={n_finish_obf} "
+        f"finish_empty={finish_obf_empty} nonempty={n_obf_nonempty}",
+    )
+
+    # Official: stream_options.include_obfuscation=false omits the field entirely.
+    dcode, _, draw = client.request(
+        "POST",
+        "/v1/chat/completions",
+        {
+            "model": model,
+            "max_tokens": 32,
+            "stream": True,
+            "temperature": 0,
+            "stream_options": {"include_obfuscation": False},
+            "messages": [{"role": "user", "content": "Reply with exactly: OBF_OFF"}],
+            **extra,
+        },
+        stream=True,
+    )
+    dchunks = _chunks(parse_sse(draw) if dcode == 200 else [])
+    n_obf_present = sum(1 for c in dchunks if "obfuscation" in c)
+    report.add(
+        "stream_event",
+        "chunk.obfuscation.disabled",
+        "PASS" if dcode == 200 and dchunks and n_obf_present == 0 else "FAIL",
+        f"HTTP {dcode} n={len(dchunks)} n_with_obfuscation={n_obf_present}",
+    )
+
     forced: dict[str, str] = {}
 
     # --- force tool_calls delta ---
@@ -273,6 +324,31 @@ def run_streaming_checks(
         if isinstance(u.get("prompt_tokens"), int) and isinstance(u.get("completion_tokens"), int):
             forced["usage.final_chunk"] = f"prompt={u.get('prompt_tokens')} completion={u.get('completion_tokens')}"
 
+    # Official include_usage stream: "usage": null on every chunk except the final
+    # usage chunk (empty choices + usage object).
+    uchunks = _chunks(uevents)
+    usage_row = next(
+        (
+            c
+            for c in uchunks
+            if isinstance(c.get("usage"), dict) and (c.get("choices") or []) == []
+        ),
+        None,
+    )
+    usage_null_ok = all(
+        "usage" in c and c.get("usage") is None for c in uchunks if c is not usage_row
+    )
+    ok_usage_null = (
+        ucode == 200 and bool(uchunks) and usage_row is not None and usage_null_ok
+    )
+    report.add(
+        "stream_event",
+        "chunk.usage.null",
+        "PASS" if ok_usage_null else "FAIL",
+        f"HTTP {ucode} n={len(uchunks)} usage_chunk={'yes' if usage_row is not None else 'no'} "
+        f"usage_null_ok={usage_null_ok}",
+    )
+
     _mark_conditional(report, forced)
 
     # Ensure catalog rows for core checks
@@ -316,3 +392,17 @@ def run_completion_object_checks(
             "PASS" if k in data else "FAIL",
             repr(data.get(k))[:80],
         )
+
+    # Official non-stream assistant message carries "refusal" (null when not refused).
+    msg = None
+    choices = data.get("choices") or []
+    if choices and isinstance(choices[0], dict):
+        msg = choices[0].get("message")
+    has_refusal = isinstance(msg, dict) and "refusal" in msg
+    refusal_val = msg.get("refusal") if isinstance(msg, dict) else None
+    report.add(
+        "completion_object",
+        "message.refusal",
+        "PASS" if has_refusal and refusal_val is None else "FAIL",
+        f"present={has_refusal} value={refusal_val!r}",
+    )

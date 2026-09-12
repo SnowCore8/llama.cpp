@@ -1362,6 +1362,8 @@ Returns the `Model` object for the given id. The id must match the model `id` fi
 
 Given an input `prompt`, it returns the predicted completion. Streaming mode is also supported. While no strong claims of compatibility with OpenAI API spec is being made, in our experience it suffices to support many apps.
 
+Streaming chunks carry the top-level `obfuscation` string by default (random padding; the final `finish_reason` chunk carries an empty string); set `stream_options.include_obfuscation` to `false` to omit it. With `stream_options.include_usage: true`, every regular chunk carries `"usage": null` and a final chunk with an empty `choices` array carries the full usage statistics.
+
 *Options:*
 
 See [OpenAI Completions API documentation](https://platform.openai.com/docs/api-reference/completions).
@@ -1392,6 +1394,8 @@ print(completion.choices[0].text)
 ### POST `/v1/chat/completions`: OpenAI-compatible Chat Completions API
 
 Given a ChatML-formatted json description in `messages`, it returns the predicted completion. Both synchronous and streaming mode are supported, so scripted and interactive applications work fine. While no strong claims of compatibility with OpenAI API spec is being made, in our experience it suffices to support many apps. Only models with a [supported chat template](https://github.com/ggml-org/llama.cpp/wiki/Templates-supported-by-llama_chat_apply_template) can be used optimally with this endpoint. By default, the ChatML template will be used.
+
+Streaming chunks carry the top-level `obfuscation` string by default (random padding; the final `finish_reason` chunk carries an empty string); set `stream_options.include_obfuscation` to `false` to omit it. With `stream_options.include_usage: true`, every regular chunk carries `"usage": null` and a final chunk with an empty `choices` array carries the full usage statistics. The non-streaming assistant `message` carries `refusal` (`null` when there is no refusal).
 
 *Options:*
 
@@ -1599,7 +1603,7 @@ llama-server keeps completed Responses so clients can continue with `previous_re
 
 Missing or expired ids return HTTP 400. Without `--openai-files-path`, the store is process-local (lost on restart / not shared across router child processes).
 
-Local deepenings (not cloud-equivalent): `max_tool_calls` drops calls beyond the cap (excess attempts ignored); `context_management` with `compaction` auto-folds long history into a local opaque item; `stream_options.include_obfuscation` adds SSE `obfuscation` payloads; `truncation=auto` drops oldest input items beyond a local soft limit while `truncation=disabled` returns HTTP 400 when over that limit; Responses + Chat Completions validate OpenAI-shaped `prompt` (Responses only) / `prompt_cache_*`; Responses reject invalid `metadata` / `safety_identifier` / `service_tier` / `include` / `phase` values and an unknown `tool_choice: {"type": "allowed_tools"}` mode with HTTP 400; OpenAI Completions validates `echo`/`suffix`/`best_of`/`n` shapes - see `tools/server/tests/OFFICIAL_API_SCOPE.md`.
+Local deepenings (not cloud-equivalent): `max_tool_calls` drops calls beyond the cap (excess attempts ignored); `context_management` with `compaction` auto-folds long history into a local opaque item; `stream_options.include_obfuscation` controls SSE `obfuscation` payloads (default on, as in the official API; `false` omits them); `truncation=auto` drops oldest input items beyond a local soft limit while `truncation=disabled` returns HTTP 400 when over that limit; Responses + Chat Completions validate OpenAI-shaped `prompt` (Responses only) / `prompt_cache_*`; Responses reject invalid `metadata` / `safety_identifier` / `service_tier` / `include` / `phase` values and an unknown `tool_choice: {"type": "allowed_tools"}` mode with HTTP 400; OpenAI Completions validates `echo`/`suffix`/`best_of`/`n` shapes - see `tools/server/tests/OFFICIAL_API_SCOPE.md`.
 
 #### Durable store (`--openai-files-path`)
 
@@ -1645,7 +1649,7 @@ curl -s http://localhost:8080/v1/responses \
 
 #### Streaming and background responses
 
-`stream: true` follows the official SSE phases, and every event carries a monotonic `sequence_number`: `response.created` and `response.in_progress` come first, then for each output item `response.output_item.added`, `response.content_part.added`, the incremental events (`response.output_text.delta`, `response.function_call_arguments.delta`, `response.reasoning_summary_text.delta`), the matching `*.done` events, and a terminal `response.completed` / `response.incomplete`.
+`stream: true` follows the official SSE phases, and every event carries a monotonic `sequence_number`: `response.created` and `response.in_progress` come first, then for each output item `response.output_item.added`, `response.content_part.added`, the incremental events (`response.output_text.delta`, `response.function_call_arguments.delta`, `response.reasoning_summary_text.delta`), the matching `*.done` events, and a terminal `response.completed` / `response.incomplete`. Every SSE event's data object also carries an `obfuscation` padding string by default; set `stream_options.include_obfuscation` to `false` to omit it.
 
 `background: true` answers immediately with an `in_progress` response (the streaming variant starts its stream immediately) that stays retrievable via `GET /v1/responses/{id}` and cancellable via `POST /v1/responses/{id}/cancel` while it runs; a `store: false` background response is still retained for this, but remains invalid as `previous_response_id`. A background stream that loses its connection keeps running server side and can be reattached with `GET /v1/responses/{id}?stream=true`, optionally with `starting_after=<sequence_number>` to replay buffered events after that cursor before following live output. Reattaching to a response without a resumable stream session returns HTTP 404, and a cursor whose replay prefix was already dropped returns HTTP 400 (meaning: restart without `starting_after`); a resume without a cursor follows from the oldest whole event still retained. If a following client falls behind far enough that its replay window is evicted, the server sends a terminal SSE `error` event (`code: server_error`) and closes the stream instead of ending silently.
 

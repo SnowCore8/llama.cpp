@@ -71,6 +71,9 @@ CORE_STREAM_CHECKS = [
     "finish_reason",
     "stream_done_sentinel",
     "chunk_sdk_validate",
+    "chunk.obfuscation.default",
+    "chunk.obfuscation.disabled",
+    "chunk.usage.null",
 ]
 
 CONDITIONAL_STREAM_CHECKS = [

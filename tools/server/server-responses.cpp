@@ -1110,10 +1110,11 @@ json server_responses_reasoning_summary(const std::string & reasoning_text, cons
 }
 
 bool server_responses_want_stream_obfuscation(const json & request_body) {
+    // OpenAI includes the obfuscation field by default
     if (!request_body.contains("stream_options") || !request_body.at("stream_options").is_object()) {
-        return false;
+        return true;
     }
-    return json_value(request_body.at("stream_options"), "include_obfuscation", false);
+    return json_value(request_body.at("stream_options"), "include_obfuscation", true);
 }
 
 void server_responses_maybe_obfuscate_event(json & event_data, const json & request_body) {

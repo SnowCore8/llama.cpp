@@ -185,17 +185,133 @@ def run_completions_checks(
             events = parse_sse(raw) if code == 200 else []
             joined = ""
             has_usage = False
+            usage_null_ok = True
+            n_events = 0
+            n_obf_str = 0
+            n_obf_nonempty = 0
+            n_finish_obf = 0
+            finish_obf_empty = True
             for _, obj in events:
-                if isinstance(obj, dict):
-                    joined += _completion_text(obj)
-                    if isinstance(obj.get("usage"), dict):
-                        has_usage = True
-            ok = code == 200 and "text/event-stream" in ct and len(events) > 0 and has_usage
+                if not isinstance(obj, dict):
+                    continue
+                n_events += 1
+                joined += _completion_text(obj)
+                usage = obj.get("usage")
+                is_usage_chunk = isinstance(usage, dict) and (obj.get("choices") or []) == []
+                if isinstance(usage, dict):
+                    has_usage = True
+                if not is_usage_chunk and (usage is not None or "usage" not in obj):
+                    usage_null_ok = False
+                obf = obj.get("obfuscation")
+                if isinstance(obf, str):
+                    n_obf_str += 1
+                    if obf:
+                        n_obf_nonempty += 1
+                    chs = obj.get("choices") or []
+                    if chs and isinstance(chs[0], dict) and chs[0].get("finish_reason"):
+                        n_finish_obf += 1
+                        if obf != "":
+                            finish_obf_empty = False
+            # Official include_usage stream: "usage": null on every chunk except the usage
+            # chunk; obfuscation defaults on ("" on the finish chunk, random elsewhere).
+            usage_null_ok = usage_null_ok and n_events > 0
+            obf_ok = (
+                n_events > 0
+                and n_obf_str == n_events
+                and n_finish_obf >= 1
+                and finish_obf_empty
+                and n_obf_nonempty >= 1
+            )
+            ok = (
+                code == 200
+                and "text/event-stream" in ct
+                and len(events) > 0
+                and has_usage
+                and usage_null_ok
+                and obf_ok
+            )
             report.add(
                 "create_param",
                 field,
                 "PASS" if ok else ("NOT_IMPLEMENTED" if code == 404 else "FAIL"),
-                f"HTTP {code} n_events={len(events)} has_usage={has_usage} text={joined!r}"[:200],
+                f"HTTP {code} n_events={len(events)} has_usage={has_usage} "
+                f"usage_null_ok={usage_null_ok} obf_ok={obf_ok} text={joined!r}"[:200],
+            )
+
+            # Official default (no stream_options): string "obfuscation" on every chunk,
+            # "" on the finish chunk (include_obfuscation defaults to true).
+            code_obf, _hdr_obf, raw_obf = client.request(
+                "POST",
+                "/v1/completions",
+                {
+                    "model": model,
+                    "prompt": "/no_think\nReply with exactly: OAI_CMPL_OBF_DEF",
+                    "max_tokens": 24,
+                    "temperature": 0,
+                    "stream": True,
+                },
+                stream=True,
+            )
+            obf_events = parse_sse(raw_obf) if code_obf == 200 else []
+            default_all_str = bool(obf_events)
+            n_default_nonempty = 0
+            n_default_finish = 0
+            default_finish_empty = True
+            for _, obj in obf_events:
+                if not isinstance(obj, dict):
+                    default_all_str = False
+                    continue
+                v = obj.get("obfuscation")
+                if not isinstance(v, str):
+                    default_all_str = False
+                    continue
+                if v:
+                    n_default_nonempty += 1
+                chs = obj.get("choices") or []
+                if chs and isinstance(chs[0], dict) and chs[0].get("finish_reason"):
+                    n_default_finish += 1
+                    if v != "":
+                        default_finish_empty = False
+            ok_obf_default = (
+                code_obf == 200
+                and default_all_str
+                and n_default_finish >= 1
+                and default_finish_empty
+                and n_default_nonempty >= 1
+            )
+            report.add(
+                "create_param",
+                "stream_options_obfuscation_default",
+                "PASS" if ok_obf_default else ("NOT_IMPLEMENTED" if code_obf == 404 else "FAIL"),
+                f"HTTP {code_obf} n_events={len(obf_events)} all_str={default_all_str} "
+                f"n_finish={n_default_finish} finish_empty={default_finish_empty} "
+                f"nonempty={n_default_nonempty}"[:200],
+            )
+
+            # Official: stream_options.include_obfuscation=false omits the field entirely.
+            code_off, _hdr_off, raw_off = client.request(
+                "POST",
+                "/v1/completions",
+                {
+                    "model": model,
+                    "prompt": "/no_think\nReply with exactly: OAI_CMPL_OBF_OFF",
+                    "max_tokens": 24,
+                    "temperature": 0,
+                    "stream": True,
+                    "stream_options": {"include_obfuscation": False},
+                },
+                stream=True,
+            )
+            off_events = parse_sse(raw_off) if code_off == 200 else []
+            n_off_with_obf = sum(
+                1 for _, obj in off_events if isinstance(obj, dict) and "obfuscation" in obj
+            )
+            ok_obf_off = code_off == 200 and bool(off_events) and n_off_with_obf == 0
+            report.add(
+                "create_param",
+                "stream_options_obfuscation_disabled",
+                "PASS" if ok_obf_off else ("NOT_IMPLEMENTED" if code_off == 404 else "FAIL"),
+                f"HTTP {code_off} n_events={len(off_events)} n_with_obfuscation={n_off_with_obf}",
             )
             continue
 

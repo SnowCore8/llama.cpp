@@ -464,6 +464,12 @@ json server_task_result_cmpl_final::to_json_oaicompat() {
         res["usage"] = usage_json_oaicompat();
         return res;
     }
+    if (generation_params.include_obfuscation) {
+        res["obfuscation"] = ""; // final chunk uses an empty string, as in the official example
+    }
+    if (include_usage) {
+        res["usage"] = nullptr;
+    }
     if (!include_usage) {
         return res;
     }
@@ -478,6 +484,9 @@ json server_task_result_cmpl_final::to_json_oaicompat() {
         {"id",                 oaicompat_cmpl_id},
         {"usage",              usage_json_oaicompat()},
     });
+    if (generation_params.include_obfuscation) {
+        chunks.back()["obfuscation"] = "";
+    }
     return chunks;
 }
 
@@ -495,6 +504,9 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat() {
     }
 
     json message_obj = msg.to_json_oaicompat();
+    if (!message_obj.contains("refusal")) {
+        message_obj["refusal"] = nullptr; // official non-stream message carries refusal, null when not refused
+    }
     if (generation_params.oai_web_search_ran &&
             generation_params.oai_web_search_results.is_array()) {
         server_web_search_annotate_chat_message(
@@ -567,7 +579,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat_stream() {
 
     json deltas = json::array();
     for (const auto & diff : oaicompat_msg_diffs) {
-        deltas.push_back({
+        json chunk = {
             {"choices", json::array({
                 json {
                     {"finish_reason", nullptr},
@@ -580,7 +592,14 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat_stream() {
             {"model", oaicompat_model},
             {"system_fingerprint", std::string(llama_build_info())},
             {"object", "chat.completion.chunk"},
-        });
+        };
+        if (generation_params.include_obfuscation) {
+            chunk["obfuscation"] = random_string();
+        }
+        if (generation_params.include_usage) {
+            chunk["usage"] = nullptr;
+        }
+        deltas.push_back(std::move(chunk));
     }
 
     // Local web_search deepen: emit url_citation annotations on the terminal chunk
@@ -615,6 +634,12 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat_stream() {
         {"system_fingerprint", std::string(llama_build_info())},
         {"object",             "chat.completion.chunk"},
     });
+    if (generation_params.include_obfuscation) {
+        deltas.back()["obfuscation"] = ""; // final chunk uses an empty string, as in the official example
+    }
+    if (generation_params.include_usage) {
+        deltas.back()["usage"] = nullptr;
+    }
     if (!generation_params.oaicompat_chat_service_tier.empty()) {
         json & last = deltas.back();
         last["service_tier"] = generation_params.oaicompat_chat_service_tier;
@@ -636,6 +661,9 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat_stream() {
             {"object",             "chat.completion.chunk"},
             {"usage",              usage_json_oaicompat()},
         });
+        if (generation_params.include_obfuscation) {
+            deltas.back()["obfuscation"] = "";
+        }
     }
 
     if (stats.is_set()) {
@@ -1397,6 +1425,12 @@ json server_task_result_cmpl_partial::to_json_oaicompat() {
         {"object",             "text_completion"},
         {"id",                 oaicompat_cmpl_id}
     };
+    if (generation_params.include_obfuscation) {
+        res["obfuscation"] = random_string();
+    }
+    if (generation_params.include_usage) {
+        res["usage"] = nullptr;
+    }
 
     // extra fields for debugging purposes
     if (verbose) {
@@ -1419,7 +1453,7 @@ json server_task_result_cmpl_partial::to_json_oaicompat_chat() {
 
     std::vector<json> deltas;
     auto add_delta = [&](const json & delta) {
-        deltas.push_back({
+        json chunk = {
             {"choices", json::array({
                 json {
                     {"finish_reason", nullptr},
@@ -1432,7 +1466,14 @@ json server_task_result_cmpl_partial::to_json_oaicompat_chat() {
             {"model", oaicompat_model},
             {"system_fingerprint", std::string(llama_build_info())},
             {"object", "chat.completion.chunk"},
-        });
+        };
+        if (generation_params.include_obfuscation) {
+            chunk["obfuscation"] = random_string();
+        }
+        if (generation_params.include_usage) {
+            chunk["usage"] = nullptr;
+        }
+        deltas.push_back(std::move(chunk));
     };
     // We have to send an initial update to conform to openai behavior
     if (first || is_progress) {

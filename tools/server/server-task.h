@@ -49,11 +49,12 @@ enum stop_type {
 };
 
 struct task_params {
-    bool stream          = false;
-    bool include_usage   = false;
-    bool cache_prompt    = true; // remember the prompt to avoid reprocessing all prompt
-    bool return_tokens   = false;
-    bool return_progress = false;
+    bool stream              = false;
+    bool include_usage       = false;
+    bool include_obfuscation = true; // OpenAI includes the obfuscation field by default
+    bool cache_prompt        = true; // remember the prompt to avoid reprocessing all prompt
+    bool return_tokens       = false;
+    bool return_progress     = false;
 
     int32_t sse_ping_interval = 30; // seconds between SSE comment pings while the stream stays silent, -1 disables
 

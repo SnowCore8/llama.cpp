@@ -616,6 +616,34 @@ def run_semantic_checks(
         f"true={c_true}/{has_true} false={c_false}/{has_false}",
     )
 
+    # --- stream_options omitted: obfuscation is on by default ---
+    code_def, _, raw_def = client.request(
+        "POST",
+        "/v1/responses",
+        {
+            "model": model,
+            "stream": True,
+            "input": "Reply with exactly: OBF_DEFAULT",
+            "temperature": 0,
+            "max_output_tokens": 16,
+            **extra,
+        },
+        stream=True,
+    )
+    n_def_events = 0
+    n_def_obf = 0
+    for _ev, obj in parse_sse(raw_def):
+        if isinstance(obj, dict):
+            n_def_events += 1
+            if "obfuscation" in obj:
+                n_def_obf += 1
+    report.add(
+        "semantic",
+        "stream_options_obfuscation_default",
+        "PASS" if code_def == 200 and n_def_obf > 0 else "FAIL",
+        f"HTTP {code_def} n_events={n_def_events} n_with_obfuscation={n_def_obf}",
+    )
+
     # --- truncation: disabled rejects; auto drops oldest (tokenizer vs n_ctx budget) ---
     secret = "SECRET_TRUNC_ZZ9"
     pcode, props = client.get_json("/props")

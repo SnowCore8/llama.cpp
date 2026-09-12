@@ -26,6 +26,8 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
     add((new field_nested("stream_options"))
         ->add_subfield((new field_bool("include_usage", params.include_usage))
             ->set_desc("Whether to include usage information in the stream"))
+        ->add_subfield((new field_bool("include_obfuscation", params.include_obfuscation))
+            ->set_desc("Whether to include obfuscation strings in streamed chunks"))
         ->set_desc("Additional options for streaming responses"));
 
     add((new field_bool("cache_prompt", params.cache_prompt))
