@@ -216,9 +216,12 @@ void server_conversations_store::evict_lru_unlocked() {
 }
 
 void server_conversations_store::drop_unlocked(const std::string & id) {
-    entries.erase(id);
-    lru_stamp.erase(id);
-    mtime_stamp.erase(id);
+    // callers may pass a key owned by entries; erase it last (or copy it) so no
+    // later lookup hashes freed memory
+    const std::string key = id;
+    entries.erase(key);
+    lru_stamp.erase(key);
+    mtime_stamp.erase(key);
 }
 
 bool server_conversations_store::enabled() {
