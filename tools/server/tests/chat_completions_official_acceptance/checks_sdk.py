@@ -188,7 +188,8 @@ def run_sdk_checks(
             )
 
         try:
-            page = client.chat.completions.list(limit=5)
+            # list defaults to asc; the entry we just stored is the newest, so ask desc
+            page = client.chat.completions.list(limit=5, order="desc")
             ids = [c.id for c in page.data]
             report.add(
                 "sdk",

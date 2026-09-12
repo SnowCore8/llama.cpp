@@ -5382,13 +5382,15 @@ void server_routes::init_routes() {
     this->get_chat_completions = [this](const server_http_req & req) {
         auto res = create_response();
         int limit = 20;
-        bool order_desc = true;
+        const std::string order = req.get_param("order", "asc");
+        if (order != "asc" && order != "desc") {
+            res->error(format_error_response("'order' must be 'asc' or 'desc'", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        const bool order_desc = order == "desc";
         try {
             limit = std::stoi(req.get_param("limit", "20"));
         } catch (...) {}
-        if (req.get_param("order", "desc") == "asc") {
-            order_desc = false;
-        }
         res->ok(server_chat_completions_store::instance().list(
             req.get_param("after"),
             limit,
