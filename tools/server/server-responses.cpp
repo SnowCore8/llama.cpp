@@ -640,6 +640,147 @@ void server_responses_remember(
     server_responses_store::instance().put(std::move(entry));
 }
 
+static void server_responses_echo_prompt_cache_options(json & response_obj, const json & request_body) {
+    if (!request_body.contains("prompt_cache_options") ||
+            !request_body.at("prompt_cache_options").is_object()) {
+        return;
+    }
+    if (!response_obj.contains("prompt_cache_options") ||
+            !response_obj.at("prompt_cache_options").is_object()) {
+        response_obj["prompt_cache_options"] = request_body.at("prompt_cache_options");
+    }
+    // The SDK requires mode+ttl on the echoed object; fill local defaults, user values win.
+    json & opts = response_obj.at("prompt_cache_options");
+    if (!opts.contains("mode") || opts.at("mode").is_null()) {
+        opts["mode"] = "implicit";
+    }
+    if (!opts.contains("ttl") || opts.at("ttl").is_null()) {
+        opts["ttl"] = "30m";
+    }
+}
+
+// Request tools plus the web_search tools stripped before templating; the Response
+// echo carries this shape, so the comparison must see both sides alike.
+static json server_responses_tools_for_compare(const json & request_body) {
+    json tools = json::array();
+    if (request_body.contains("tools") && request_body.at("tools").is_array()) {
+        tools = request_body.at("tools");
+    }
+    if (request_body.contains("__oai_web_search_echo_tools") &&
+            request_body.at("__oai_web_search_echo_tools").is_array()) {
+        for (const auto & t : request_body.at("__oai_web_search_echo_tools")) {
+            tools.push_back(t);
+        }
+    }
+    return tools;
+}
+
+static void server_responses_inject_prompt_cache_diagnostics(json & response_obj, const json & request_body) {
+    if (!request_body.contains("prompt_cache_options") ||
+            !request_body.at("prompt_cache_options").is_object()) {
+        return;
+    }
+    const json & opts = request_body.at("prompt_cache_options");
+    if (!opts.contains("comparison_response_id") || !opts.at("comparison_response_id").is_string()) {
+        return;
+    }
+    const std::string comparison_id = opts.at("comparison_response_id").get<std::string>();
+    if (comparison_id.empty()) {
+        return;
+    }
+    if (!response_obj.contains("usage") || !response_obj.at("usage").is_object()) {
+        return;
+    }
+    const json & usage = response_obj.at("usage");
+    if (!usage.contains("input_tokens") || !usage.at("input_tokens").is_number()) {
+        return;
+    }
+    const int64_t cur_input = usage.at("input_tokens").get<int64_t>();
+    if (cur_input <= 0) {
+        return;
+    }
+    int64_t cur_cached = 0;
+    if (usage.contains("input_tokens_details") && usage.at("input_tokens_details").is_object()) {
+        const json & itd = usage.at("input_tokens_details");
+        if (itd.contains("cached_tokens") && itd.at("cached_tokens").is_number()) {
+            cur_cached = itd.at("cached_tokens").get<int64_t>();
+        }
+    }
+
+    const auto entry = server_responses_store::instance().get(comparison_id);
+    int64_t base_input = 0;
+    bool have_base = false;
+    if (entry.has_value() && entry->response.contains("usage") && entry->response.at("usage").is_object()) {
+        const json & base_usage = entry->response.at("usage");
+        if (base_usage.contains("input_tokens") && base_usage.at("input_tokens").is_number()) {
+            base_input = base_usage.at("input_tokens").get<int64_t>();
+            have_base = base_input > 0;
+        }
+    }
+    if (!have_base) {
+        response_obj["prompt_cache_diagnostics"] = json {
+            {"type", "comparison_response_not_found"},
+        };
+        return;
+    }
+
+    // Expected = the prefix the two requests can share at most; a repeated prompt
+    // locally reuses all but its last 4 tokens, so allow that slack.
+    const int64_t expected = std::min(cur_input, base_input);
+    if (cur_cached >= expected - 4) {
+        response_obj["prompt_cache_diagnostics"] = json {
+            {"type", "cache_hit"},
+        };
+        return;
+    }
+
+    // Miss: attribute it by diffing the baseline response echo against this request,
+    // first match wins; the fallback reports input_changed.
+    const json & base = entry->response;
+    auto member_or_null = [](const json & obj, const char * key) -> json {
+        if (obj.is_object() && obj.contains(key) && !obj.at(key).is_null()) {
+            return obj.at(key);
+        }
+        return nullptr;
+    };
+    auto nested_or_null = [](const json & obj, const char * outer, const char * inner) -> json {
+        if (!obj.is_object() || !obj.contains(outer) || !obj.at(outer).is_object()) {
+            return nullptr;
+        }
+        const json & o = obj.at(outer);
+        return o.contains(inner) && !o.at(inner).is_null() ? o.at(inner) : json(nullptr);
+    };
+
+    std::string reason = "input_changed";
+    if (member_or_null(request_body, "model") != member_or_null(base, "model")) {
+        reason = "model_changed";
+    } else if (member_or_null(request_body, "prompt_cache_key") != member_or_null(base, "prompt_cache_key")) {
+        reason = "prompt_cache_key_changed";
+    } else {
+        json req_tier = member_or_null(request_body, "service_tier");
+        if (req_tier.is_string() && req_tier.get<std::string>() == "fast") {
+            req_tier = "priority"; // the response echo stores the normalized tier
+        }
+        if (req_tier != member_or_null(base, "service_tier")) {
+            reason = "service_tier_changed";
+        } else if (server_responses_tools_for_compare(request_body) != member_or_null(base, "tools")) {
+            reason = "tools_changed";
+        } else if (nested_or_null(request_body, "text", "format") != nested_or_null(base, "text", "format")) {
+            reason = "text_format_changed";
+        } else if (nested_or_null(request_body, "reasoning", "effort") != nested_or_null(base, "reasoning", "effort")) {
+            reason = "reasoning_effort_changed";
+        } else if (nested_or_null(request_body, "text", "verbosity") != nested_or_null(base, "text", "verbosity")) {
+            reason = "verbosity_changed";
+        }
+    }
+    response_obj["prompt_cache_diagnostics"] = json {
+        {"type", "cache_miss"},
+        {"reason", reason},
+        {"cache_missed_tokens", expected - cur_cached},
+        {"comparison_reusable_tokens", base_input},
+    };
+}
+
 json server_responses_enrich_response(json response_obj, const json & request_body) {
     if (!response_obj.contains("object")) {
         response_obj["object"] = "response";
@@ -741,6 +882,10 @@ json server_responses_enrich_response(json response_obj, const json & request_bo
             }
         }
     }
+
+    // Echoed prompt_cache_options complete with local defaults; a comparison id adds diagnostics.
+    server_responses_echo_prompt_cache_options(response_obj, request_body);
+    server_responses_inject_prompt_cache_diagnostics(response_obj, request_body);
 
     if (!response_obj.contains("error")) {
         response_obj["error"] = nullptr;

@@ -298,6 +298,14 @@ void server_openai_validate_cloud_shaped_fields(const json & body, bool allow_pr
                 throw std::invalid_argument("'prompt_cache_options.ttl' must be one of: 5m, 30m, 1h");
             }
         }
+        // comparison_response_id is a Responses diagnostics hint; an unknown id is not an
+        // error (the response reports comparison_response_not_found), so only check the shape.
+        if (opts.contains("comparison_response_id") && !opts.at("comparison_response_id").is_null()) {
+            if (!opts.at("comparison_response_id").is_string()) {
+                throw std::invalid_argument(
+                    "'prompt_cache_options.comparison_response_id' must be a string");
+            }
+        }
         // explicit mode requires a prompt_cache_key (local affinity key).
         if (opts.contains("mode") && opts.at("mode").is_string() &&
                 opts.at("mode").get<std::string>() == "explicit") {

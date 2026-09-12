@@ -274,6 +274,14 @@ def run_prompt_cache_checks(
     _check_retention_and_implicit(client, report, model, extra)
     _check_prompt_cache_options_ttl_ladder(client, report, model, extra)
 
+    # comparison_response_id diagnostics: the request must stay 200, the baseline
+    # comes from the response store, an unknown id reports not-found.
+    _check_comparison_diagnostics_not_found(client, report, model, extra)
+    _check_comparison_diagnostics_hit(client, report, model, extra)
+    _check_comparison_diagnostics_tools_changed(client, report, model, extra)
+    _check_comparison_diagnostics_retrieve(client, report, model, extra)
+    _check_comparison_response_id_not_string(client, report, model, extra)
+
     # Adverse agentic traffic: rotating keys, implicit anchors, concurrent
     # branches, mid-prompt edits, client aborts, hostile key values.
     _check_key_isolation(client, report, model, extra)
@@ -1093,4 +1101,203 @@ def _check_cross_model_isolation(
         "prompt_cache_cross_model_isolation",
         "PASS" if ok else "FAIL",
         f"model={model} other={other} http=({c1},{c2},{c3},{c4}) cached={cached}",
+    )
+
+
+def _diagnostics(data: Any) -> dict[str, Any] | None:
+    """prompt_cache_diagnostics of a response body, or None when absent/not-a-dict."""
+    diag = data.get("prompt_cache_diagnostics") if isinstance(data, dict) else None
+    return diag if isinstance(diag, dict) else None
+
+
+def _check_comparison_diagnostics_not_found(
+    client: ResponsesHttpClient,
+    report: Report,
+    model: str,
+    extra: dict[str, Any],
+) -> None:
+    """A well-formed unknown comparison_response_id must 200 with a not-found diagnostic."""
+    uniq = f"cmdnf{time.time_ns()}"
+    missing = f"resp_nf_{uniq}"
+    body = _cache_body(
+        model,
+        extra,
+        f"comparison not found pad {uniq}\nReply with exactly: CMPNF_{uniq[-5:]}",
+        key=f"resp-cmpnf-{uniq}",
+        max_output=16,
+    )
+    body["prompt_cache_options"] = {"comparison_response_id": missing}
+    code, data = client.post_json("/v1/responses", body)
+    diag = _diagnostics(data)
+    ok = code == 200 and diag is not None and diag.get("type") == "comparison_response_not_found"
+    report.add(
+        "cache",
+        "prompt_cache_diagnostics_not_found",
+        "PASS" if ok else "FAIL",
+        f"http={code} id={missing!r} diagnostics={diag}",
+    )
+
+
+def _check_comparison_diagnostics_hit(
+    client: ResponsesHttpClient,
+    report: Report,
+    model: str,
+    extra: dict[str, Any],
+) -> None:
+    """Repeating one prompt with the previous response id must report cache_hit."""
+    uniq = f"cmhit{time.time_ns()}"
+    key = f"resp-cmhit-{uniq}"
+    text = (
+        f"comparison hit pad {uniq}: " + ("alpha-bravo " * 24)
+        + f"\nReply with exactly: CMPHIT_{uniq[-5:]}"
+    )
+    c1, d1 = client.post_json(
+        "/v1/responses", _cache_body(model, extra, text, key=key, max_output=16)
+    )
+    rid = d1.get("id") if isinstance(d1, dict) else None
+    if c1 != 200 or not isinstance(rid, str) or not rid:
+        report.add(
+            "cache",
+            "prompt_cache_diagnostics_hit",
+            "FAIL",
+            f"base create http={c1} id={rid!r}",
+        )
+        return
+    body2 = _cache_body(model, extra, text, key=key, max_output=16)
+    body2["prompt_cache_options"] = {"comparison_response_id": rid}
+    c2, d2 = client.post_json("/v1/responses", body2)
+    diag = _diagnostics(d2)
+    inp, cached, _ = _usage_cache(d2 if isinstance(d2, dict) else {})
+    hit_ok = diag is not None and diag.get("type") == "cache_hit"
+    # the warm prefix must also show in usage (>= input - 4 local slack)
+    reuse_ok = inp > 0 and cached >= inp - 4
+    ok = c2 == 200 and hit_ok and reuse_ok
+    report.add(
+        "cache",
+        "prompt_cache_diagnostics_hit",
+        "PASS" if ok else "FAIL",
+        f"http=({c1},{c2}) input={inp} cached={cached} reuse_ok={reuse_ok} diagnostics={diag}",
+    )
+
+
+def _check_comparison_diagnostics_tools_changed(
+    client: ResponsesHttpClient,
+    report: Report,
+    model: str,
+    extra: dict[str, Any],
+) -> None:
+    """Same input, renamed tool: the miss must be attributed to tools_changed."""
+    uniq = f"cmtool{time.time_ns()}"
+    key = f"resp-cmtool-{uniq}"
+    text = (
+        f"comparison tools pad {uniq}: " + ("charlie-delta " * 24)
+        + f"\nReply with exactly: CMPTOOL_{uniq[-5:]}"
+    )
+
+    def one_tool(name: str) -> list[dict[str, Any]]:
+        return [{
+            "type": "function",
+            "name": name,
+            "description": "acceptance probe",
+            "parameters": {"type": "object", "properties": {}},
+        }]
+
+    body = _cache_body(model, extra, text, key=key, max_output=16)
+    body["tools"] = one_tool("probe_one")
+    c1, d1 = client.post_json("/v1/responses", body)
+    rid = d1.get("id") if isinstance(d1, dict) else None
+    if c1 != 200 or not isinstance(rid, str) or not rid:
+        report.add(
+            "cache",
+            "prompt_cache_diagnostics_tools_changed",
+            "FAIL",
+            f"base create http={c1} id={rid!r}",
+        )
+        return
+    body2 = _cache_body(model, extra, text, key=key, max_output=16)
+    body2["tools"] = one_tool("probe_two")
+    body2["prompt_cache_options"] = {"comparison_response_id": rid}
+    c2, d2 = client.post_json("/v1/responses", body2)
+    diag = _diagnostics(d2)
+    missed = diag.get("cache_missed_tokens") if diag is not None else None
+    ok = (
+        c2 == 200
+        and diag is not None
+        and diag.get("type") == "cache_miss"
+        and diag.get("reason") == "tools_changed"
+        and isinstance(missed, int)
+        and missed > 0
+    )
+    report.add(
+        "cache",
+        "prompt_cache_diagnostics_tools_changed",
+        "PASS" if ok else "FAIL",
+        f"http=({c1},{c2}) expected_reason=tools_changed diagnostics={diag}",
+    )
+
+
+def _check_comparison_diagnostics_retrieve(
+    client: ResponsesHttpClient,
+    report: Report,
+    model: str,
+    extra: dict[str, Any],
+) -> None:
+    """GET must return the same prompt_cache_diagnostics object as create."""
+    uniq = f"cmret{time.time_ns()}"
+    body = _cache_body(
+        model,
+        extra,
+        f"comparison retrieve pad {uniq}\nReply with exactly: CMRET_{uniq[-5:]}",
+        key=f"resp-cmret-{uniq}",
+        max_output=16,
+    )
+    body["prompt_cache_options"] = {"comparison_response_id": f"resp_nf_{uniq}"}
+    code, data = client.post_json("/v1/responses", body)
+    rid = data.get("id") if isinstance(data, dict) else None
+    diag = _diagnostics(data)
+    if code != 200 or not isinstance(rid, str) or not rid or diag is None:
+        report.add(
+            "cache",
+            "prompt_cache_diagnostics_retrieve",
+            "FAIL",
+            f"create http={code} id={rid!r} diagnostics={diag}",
+        )
+        return
+    gcode, got = client.get_json(f"/v1/responses/{rid}")
+    got_diag = _diagnostics(got)
+    ok = gcode == 200 and got_diag == diag
+    report.add(
+        "cache",
+        "prompt_cache_diagnostics_retrieve",
+        "PASS" if ok else "FAIL",
+        f"create={diag} retrieve_http={gcode} retrieve={got_diag}",
+    )
+
+
+def _check_comparison_response_id_not_string(
+    client: ResponsesHttpClient,
+    report: Report,
+    model: str,
+    extra: dict[str, Any],
+) -> None:
+    """comparison_response_id must be a string; other shapes are rejected with 400."""
+    uniq = f"cmshp{time.time_ns()}"
+    codes: list[int] = []
+    for bad in (123, {"id": "resp_x"}):
+        body = _cache_body(
+            model,
+            extra,
+            f"comparison shape pad {uniq}\nReply with exactly: CMSHAPE_{uniq[-5:]}",
+            key=f"resp-cmshape-{uniq}",
+            max_output=16,
+        )
+        body["prompt_cache_options"] = {"comparison_response_id": bad}
+        code, _ = client.post_json("/v1/responses", body)
+        codes.append(code)
+    ok = all(c >= 400 for c in codes)
+    report.add(
+        "cache",
+        "comparison_response_id_not_string",
+        "PASS" if ok else "FAIL",
+        f"http={codes}",
     )
