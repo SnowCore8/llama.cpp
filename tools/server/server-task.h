@@ -113,6 +113,7 @@ struct task_params {
     bool        oai_prompt_cache_key_implicit = false; // true = local anchor derived from the prompt tokens
     int32_t     oai_prompt_cache_ttl = 0; // seconds; 0 = process lifetime
     bool        oai_prompt_cache_expired = false; // disk TTL was dead before this request's touch
+    std::vector<int32_t> oai_prompt_cache_breakpoints; // token positions to checkpoint (explicit)
 
     // Local web_search deepen (Responses emits hosted-shaped blocks)
     bool        oai_web_search_ran = false;

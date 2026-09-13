@@ -1525,6 +1525,40 @@ def run_create_param_checks(
             f"create={data.get(field)!r} get_http={gcode} get={got.get(field) if isinstance(got, dict) else None!r}",
         )
 
+    # prompt_cache_breakpoint shape: explicit mode only, at most 4 per request
+    def _bp(mode: Any) -> dict[str, Any]:
+        part: dict[str, Any] = {"type": "input_text", "text": "Reply with exactly: BP_OK"}
+        if mode is not None:
+            part["prompt_cache_breakpoint"] = mode
+        return part
+
+    bp_rows = (
+        ("prompt_cache_breakpoint accepted", [_bp({"mode": "explicit"})], 200, None),
+        ("prompt_cache_breakpoint needs object", [_bp("explicit")], 400, "must be an object"),
+        ("prompt_cache_breakpoint mode explicit", [_bp({"mode": "implicit"})], 400, "must be 'explicit'"),
+        ("prompt_cache_breakpoint at most 4", [_bp({"mode": "explicit"})] * 5, 400, "at most 4"),
+    )
+    for bp_name, bp_parts, bp_code_want, bp_text in bp_rows:
+        code, data = client.post_json(
+            "/v1/responses",
+            {
+                "model": model,
+                "input": [{"type": "message", "role": "user", "content": bp_parts}],
+                "max_output_tokens": 32,
+                "temperature": 0,
+                "reasoning": {"effort": "none"},
+                **{k: v for k, v in extra.items() if k != "reasoning"},
+            },
+        )
+        if bp_code_want == 200:
+            ok = code == bp_code_want and output_text(data).strip() != ""
+            detail = f"HTTP {code} text={output_text(data)[:40]!r}"
+        else:
+            blob = json.dumps(data)
+            ok = code == bp_code_want and bp_text in blob
+            detail = f"HTTP {code} body={blob[:200]!r}"
+        report.add("create_param", bp_name, "PASS" if ok else "FAIL", detail)
+
     # include covered via top_logprobs probe — ensure catalog row exists
     if not any(r.name == "include" for r in report.rows if r.area == "create_param"):
         report.add(

@@ -3760,6 +3760,15 @@ private:
                             }
                         }
 
+                        // stop at an explicit prompt cache breakpoint: the next batch starts
+                        // exactly there, so its checkpoint lands on the breakpoint (no rounding)
+                        if (do_checkpoint &&
+                                std::find(slot.task->params.oai_prompt_cache_breakpoints.begin(),
+                                          slot.task->params.oai_prompt_cache_breakpoints.end(),
+                                          slot.prompt.n_tokens()) != slot.task->params.oai_prompt_cache_breakpoints.end()) {
+                            break;
+                        }
+
                         // process the last few tokens of the prompt separately in order to allow for a checkpoint to be created.
                         // create checkpoints that many tokens before the end of the prompt:
                         //  - 4 + n_ubatch
@@ -3791,6 +3800,10 @@ private:
 
                     const bool is_user_start = spans.is_user_start(n_tokens_start);
                     const bool is_last_user_message = n_tokens_start == last_user_pos;
+                    const bool is_cache_breakpoint = std::find(
+                            slot.task->params.oai_prompt_cache_breakpoints.begin(),
+                            slot.task->params.oai_prompt_cache_breakpoints.end(),
+                            n_tokens_start) != slot.task->params.oai_prompt_cache_breakpoints.end();
 
                     // entire prompt has been processed
                     if (slot.prompt.n_tokens() == slot.task->n_tokens()) {
@@ -3807,8 +3820,8 @@ private:
                         slot.init_sampler();
                     } else {
                         // skip ordinary mid-prompt checkpoints, unless the batch starts a user
-                        // message or we are near the end of the prompt
-                        if (!is_user_start && !near_prompt_end) {
+                        // message, an explicit cache breakpoint, or we are near the end of the prompt
+                        if (!is_user_start && !near_prompt_end && !is_cache_breakpoint) {
                             do_checkpoint = false;
                         }
                     }
@@ -3826,9 +3839,10 @@ private:
                     do_checkpoint = do_checkpoint && !has_mtmd;
 
                     // no need to create checkpoints that are too close together, unless it's the last user message
+                    // or an explicit cache breakpoint (which must land exactly, min-step does not apply)
                     do_checkpoint = do_checkpoint && (
                             slot.prompt.checkpoints.empty() ||
-                            is_last_user_message || near_prompt_end ||
+                            is_last_user_message || near_prompt_end || is_cache_breakpoint ||
                             n_tokens_start > slot.prompt.checkpoints.back().n_tokens + params_base.checkpoint_min_step);
                     SLT_DBG(slot, "main/do_checkpoint = %s, pos_min = %d, pos_max = %d\n", do_checkpoint ? "yes" : "no", pos_min, pos_max);
 
@@ -4540,6 +4554,50 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                     data);
 
             task.params.message_spans = task.tokens.find_message_spans(delimiters);
+
+            // explicit prompt cache breakpoints: map {role, ordinal} to the token position
+            // just past the end of that message span (the checkpoint boundary)
+            if (data.contains("__oai_prompt_cache_breakpoints") &&
+                    data.at("__oai_prompt_cache_breakpoints").is_array()) {
+                for (const auto & bp : data.at("__oai_prompt_cache_breakpoints")) {
+                    if (!bp.is_object()) {
+                        continue;
+                    }
+                    const std::string role_str = json_value(bp, "role", std::string());
+                    const int32_t ordinal = json_value(bp, "ordinal", 0);
+                    const common_chat_role role = common_chat_role_from_string(role_str);
+
+                    if (role == COMMON_CHAT_ROLE_UNKNOWN) {
+                        SRV_WRN("prompt_cache_breakpoint: role '%s' has no delimiters, skipping\n", role_str.c_str());
+                        continue;
+                    }
+                    // count spans of this role in order; the ordinal is 1-based
+                    int32_t seen = 0;
+                    bool found = false;
+                    for (const auto & span : task.params.message_spans.spans) {
+                        if (span.role != role || ++seen != ordinal) {
+                            continue;
+                        }
+                        const size_t end = span.pos + span.len;
+                        if (end > (size_t) INT32_MAX) {
+                            SRV_WRN("prompt_cache_breakpoint: message end %" PRIu64 " out of range, skipping\n", (uint64_t) end);
+                            break;
+                        }
+                        const int32_t pos = (int32_t) end;
+                        if (std::find(task.params.oai_prompt_cache_breakpoints.begin(),
+                                    task.params.oai_prompt_cache_breakpoints.end(), pos) ==
+                                task.params.oai_prompt_cache_breakpoints.end()) {
+                            task.params.oai_prompt_cache_breakpoints.push_back(pos);
+                        }
+                        found = true;
+                        break;
+                    }
+                    if (!found) {
+                        SRV_WRN("prompt_cache_breakpoint: %s message #%d not found in prompt, skipping\n",
+                                role_str.c_str(), ordinal);
+                    }
+                }
+            }
 
             task.id_slot = json_value(data, "id_slot", -1);
             sse_ping_interval = task.params.sse_ping_interval;

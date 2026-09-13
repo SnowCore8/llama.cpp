@@ -113,10 +113,15 @@ json server_chat_convert_responses_to_chatcmpl(const json & response_body) {
                         if (!input_item.contains("text")) {
                             throw std::invalid_argument("'Input text' requires 'text'");
                         }
-                        chatcmpl_content.push_back({
+                        json part = {
                             {"text", input_item.at("text")},
                             {"type", "text"},
-                        });
+                        };
+                        // carry the key as-is; shape is checked by oaicompat_chat_params_parse
+                        if (input_item.contains("prompt_cache_breakpoint") && !input_item.at("prompt_cache_breakpoint").is_null()) {
+                            part["prompt_cache_breakpoint"] = input_item.at("prompt_cache_breakpoint");
+                        }
+                        chatcmpl_content.push_back(std::move(part));
                     } else if (type == "input_image") {
                         // While `detail` is marked as required,
                         // it has default value("auto") and can be omitted.
@@ -124,12 +129,17 @@ json server_chat_convert_responses_to_chatcmpl(const json & response_body) {
                         if (!input_item.contains("image_url")) {
                             throw std::invalid_argument("'image_url' is required");
                         }
-                        chatcmpl_content.push_back({
+                        json part = {
                             {"image_url", json {
                                 {"url", input_item.at("image_url")}
                             }},
                             {"type", "image_url"},
-                        });
+                        };
+                        // carry the key as-is; shape is checked by oaicompat_chat_params_parse
+                        if (input_item.contains("prompt_cache_breakpoint") && !input_item.at("prompt_cache_breakpoint").is_null()) {
+                            part["prompt_cache_breakpoint"] = input_item.at("prompt_cache_breakpoint");
+                        }
+                        chatcmpl_content.push_back(std::move(part));
                     } else {
                         throw std::invalid_argument("'type' must be one of 'input_text' or 'input_image'");
                     }

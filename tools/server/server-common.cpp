@@ -2084,6 +2084,47 @@ json oaicompat_chat_params_parse(
     if (!messages.is_array()) {
         throw std::invalid_argument("Expected 'messages' to be an array");
     }
+
+    // prompt_cache_breakpoint: validate on the raw parts (the media rewrite below mutates
+    // them). Breakpoints are located later as {role, message ordinal}; 4 per request max.
+    std::vector<std::pair<std::string, int32_t>> oai_prompt_cache_breakpoints;
+    {
+        std::map<std::string, int32_t> role_counts;
+        size_t n_breakpoints = 0;
+        for (const auto & msg : messages) {
+            const std::string role = json_value(msg, "role", std::string());
+            const int32_t ordinal = ++role_counts[role];
+
+            if (!msg.contains("content") || !msg.at("content").is_array()) {
+                continue;
+            }
+            bool msg_has_breakpoint = false;
+            for (const auto & p : msg.at("content")) {
+                if (!p.is_object() || !p.contains("prompt_cache_breakpoint") ||
+                        p.at("prompt_cache_breakpoint").is_null()) {
+                    continue;
+                }
+                msg_has_breakpoint = true;
+                n_breakpoints++;
+                const json & bp = p.at("prompt_cache_breakpoint");
+                if (!bp.is_object()) {
+                    throw std::invalid_argument("'prompt_cache_breakpoint' must be an object");
+                }
+                if (!bp.contains("mode") || !bp.at("mode").is_string() ||
+                        bp.at("mode").get<std::string>() != "explicit") {
+                    throw std::invalid_argument("'prompt_cache_breakpoint.mode' must be 'explicit'");
+                }
+            }
+            // locate a message once, even if several of its parts carry a breakpoint
+            if (msg_has_breakpoint) {
+                oai_prompt_cache_breakpoints.emplace_back(role, ordinal);
+            }
+        }
+        if (n_breakpoints > 4) {
+            throw std::invalid_argument("'prompt_cache_breakpoint' is allowed at most 4 times per request");
+        }
+    }
+
     for (auto & msg : messages) {
         std::string role = json_value(msg, "role", std::string());
         if (role != "assistant" && !msg.contains("content")) {
@@ -2378,6 +2419,16 @@ json oaicompat_chat_params_parse(
     }
 
     llama_params["message_delimiters"] = chat_params.message_delimiters.to_json();
+
+    // explicit prompt cache breakpoints: message anchors resolved to token positions by
+    // server-context (per-request checkpoint positions). Empty = no extra checkpoints.
+    if (!oai_prompt_cache_breakpoints.empty()) {
+        json bps = json::array();
+        for (const auto & bp : oai_prompt_cache_breakpoints) {
+            bps.push_back({ {"role", bp.first}, {"ordinal", bp.second} });
+        }
+        llama_params["__oai_prompt_cache_breakpoints"] = std::move(bps);
+    }
 
     // Reasoning budget: pass parameters through to sampling layer
     {
