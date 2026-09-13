@@ -123,9 +123,9 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `-s, --seed SEED` | RNG seed (default: -1, use random seed for -1) |
 | `--sampler-seq, --sampling-seq SEQUENCE` | simplified sequence for samplers that will be used (default: edskypmxt) |
 | `--ignore-eos` | ignore end of stream token and continue generating (implies --logit-bias EOS-inf) |
-| `--temp, --temperature N` | temperature (default: 0.80) |
+| `--temp, --temperature N` | temperature (default: 1.00) |
 | `--top-k N` | top-k sampling (default: 40, 0 = disabled)<br/>(env: LLAMA_ARG_TOP_K) |
-| `--top-p N` | top-p sampling (default: 0.95, 1.0 = disabled) |
+| `--top-p N` | top-p sampling (default: 1.00, 1.0 = disabled) |
 | `--min-p N` | min-p sampling (default: 0.05, 0.0 = disabled) |
 | `--top-nsigma, --top-n-sigma N` | top-n-sigma sampling (default: -1.00, -1.0 = disabled) |
 | `--xtc-probability N` | xtc probability (default: 0.00, 0.0 = disabled) |
@@ -508,7 +508,7 @@ Multiple prompts are also supported. In this case, the completion result will be
 
 Note for `multimodal_data` in JSON object prompts. This should be an array of strings, containing base64 encoded multimodal data such as images and audio. There must be an identical number of MTMD media markers in the string prompt element which act as placeholders for the data provided to this parameter. The multimodal data files will be substituted in order. The marker string (e.g. `<__media__>`) can be found by calling `mtmd_default_marker()` defined in [the MTMD C API](https://github.com/ggml-org/llama.cpp/blob/5fd160bbd9d70b94b5b11b0001fd7f477005e4a0/tools/mtmd/mtmd.h#L87). A client *must not* specify this field unless the server has the multimodal capability. Clients should check `/models` or `/v1/models` for the `multimodal` capability before a multimodal request.
 
-`temperature`: Adjust the randomness of the generated text. Default: `0.8`
+`temperature`: Adjust the randomness of the generated text. Default: `1.0`
 
 `dynatemp_range`: Dynamic temperature range. The final temperature will be in the range of `[temperature - dynatemp_range; temperature + dynatemp_range]` Default: `0.0`, which is disabled.
 
@@ -516,7 +516,7 @@ Note for `multimodal_data` in JSON object prompts. This should be an array of st
 
 `top_k`: Limit the next token selection to the K most probable tokens.  Default: `40`
 
-`top_p`: Limit the next token selection to a subset of tokens with a cumulative probability above a threshold P. Default: `0.95`
+`top_p`: Limit the next token selection to a subset of tokens with a cumulative probability above a threshold P. Default: `1.0`
 
 `min_p`: The minimum probability for a token to be considered, relative to the probability of the most likely token. Default: `0.05`
 
@@ -844,11 +844,11 @@ By default, it is read-only. To make POST request to change global properties, y
     "params": {
       "n_predict": -1,
       "seed": 4294967295,
-      "temperature": 0.800000011920929,
+      "temperature": 1.0,
       "dynatemp_range": 0.0,
       "dynatemp_exponent": 1.0,
       "top_k": 40,
-      "top_p": 0.949999988079071,
+      "top_p": 1.0,
       "min_p": 0.05000000074505806,
       "xtc_probability": 0.0,
       "xtc_threshold": 0.10000000149011612,
@@ -994,11 +994,11 @@ If query param `?fail_on_no_slot=1` is set, this endpoint will respond with stat
     "params": {
       "n_predict": -1,
       "seed": 4294967295,
-      "temperature": 0.800000011920929,
+      "temperature": 1.0,
       "dynatemp_range": 0.0,
       "dynatemp_exponent": 1.0,
       "top_k": 40,
-      "top_p": 0.949999988079071,
+      "top_p": 1.0,
       "min_p": 0.05000000074505806,
       "top_n_sigma": -1.0,
       "xtc_probability": 0.0,
@@ -1059,11 +1059,11 @@ If query param `?fail_on_no_slot=1` is set, this endpoint will respond with stat
     "params": {
       "n_predict": -1,
       "seed": 4294967295,
-      "temperature": 0.800000011920929,
+      "temperature": 1.0,
       "dynatemp_range": 0.0,
       "dynatemp_exponent": 1.0,
       "top_k": 40,
-      "top_p": 0.949999988079071,
+      "top_p": 1.0,
       "min_p": 0.05000000074505806,
       "top_n_sigma": -1.0,
       "xtc_probability": 0.0,

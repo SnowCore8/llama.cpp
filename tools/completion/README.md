@@ -189,9 +189,9 @@ llama-completion.exe -m models\gemma-1.1-7b-it.Q4_K_M.gguf --ignore-eos -n -1
 | `-s, --seed SEED` | RNG seed (default: -1, use random seed for -1) |
 | `--sampler-seq, --sampling-seq SEQUENCE` | simplified sequence for samplers that will be used (default: edskypmxt) |
 | `--ignore-eos` | ignore end of stream token and continue generating (implies --logit-bias EOS-inf) |
-| `--temp, --temperature N` | temperature (default: 0.80) |
+| `--temp, --temperature N` | temperature (default: 1.00) |
 | `--top-k N` | top-k sampling (default: 40, 0 = disabled)<br/>(env: LLAMA_ARG_TOP_K) |
-| `--top-p N` | top-p sampling (default: 0.95, 1.0 = disabled) |
+| `--top-p N` | top-p sampling (default: 1.00, 1.0 = disabled) |
 | `--min-p N` | min-p sampling (default: 0.05, 0.0 = disabled) |
 | `--top-nsigma, --top-n-sigma N` | top-n-sigma sampling (default: -1.00, -1.0 = disabled) |
 | `--xtc-probability N` | xtc probability (default: 0.00, 0.0 = disabled) |
@@ -378,9 +378,9 @@ It is important to note that the generated text may be shorter than the specifie
 
 ### Temperature
 
--   `--temp N`: Adjust the randomness of the generated text (default: 0.8).
+-   `--temp N`: Adjust the randomness of the generated text (default: 1.0).
 
-Temperature is a hyperparameter that controls the randomness of the generated text. It affects the probability distribution of the model's output tokens. A higher temperature (e.g., 1.5) makes the output more random and creative, while a lower temperature (e.g., 0.5) makes the output more focused, deterministic, and conservative. The default value is 0.8, which provides a balance between randomness and determinism. At the extreme, a temperature of 0 will always pick the most likely next token, leading to identical outputs in each run.
+Temperature is a hyperparameter that controls the randomness of the generated text. It affects the probability distribution of the model's output tokens. A higher temperature (e.g., 1.5) makes the output more random and creative, while a lower temperature (e.g., 0.5) makes the output more focused, deterministic, and conservative. The default value is 1.0, matching the OpenAI API default. At the extreme, a temperature of 0 will always pick the most likely next token, leading to identical outputs in each run.
 
 Example usage: `--temp 0`
 

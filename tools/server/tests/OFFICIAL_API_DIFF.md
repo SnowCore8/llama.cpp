@@ -4,7 +4,7 @@
 
 **权威来源是 [OFFICIAL_API_SCOPE.md](OFFICIAL_API_SCOPE.md)**：全部契约细节、依据与验收证据以该文档为准；本文件只做分类汇总，scope 更新时同步本表。
 
-验收基线：2026-09-13，v100 tip `551ee1755`（本地提交，未 push）。验收结果见 §6。
+验收基线：2026-09-13，v100 分支本地提交（未 push）：全量验收起于 tip `551ee1755`，缺省对齐改动后经新构建（8091）全量复验。验收结果见 §6。
 
 ## 1. 未实现 / 显式拒绝（Unable / intentionally non-goal）
 
@@ -63,8 +63,6 @@
 | 10 | `prompt_cache_diagnostics` | 云端 token 计量 | 本地简化口径：expected=min(本次/基线 `input_tokens`)，`cached >= expected-4` → `cache_hit`；不产出 `context_compacted`/`unavailable`；`reason` 首中即止 | 详见 scope「记录（未修）」 |
 | 11 | SSE `error` / `response.failed` | 流中错误事件 | 默认配置**不可达**：流开始前的错误按非流式 HTTP 错误体返回；SSE error+failed 只在流已开始后 reader 出错时产生 | 验收对应行保持 SKIP；`pre_created_error_is_plain_json` 断言非流式错误体形状 |
 | 12 | Embeddings `encoding_format` 非 string | 400 | 400，但 message 透传 nlohmann 异常原文（`[json.exception.type_error.302] ...`） | 官方 message 为自由文本，未做措辞映射 |
-| 13 | Completions `max_tokens` 缺省 | 官方默认 `16` | 省略 = 不限（`n_predict=-1`，至 EOS/槽位上限；实测 32728 completion tokens，`finish_reason=length`） | 未实现官方缺省上限；需要 16 上限的客户端须显式传 `max_tokens=16` |
-| 14 | 缺省采样参数 | 官方 `temperature=1` / `top_p=1` | 本地缺省 `temperature=0.80` / `top_p=0.95`（另 `min_p=0.05` / `top_k=40` 官方无对应字段；llama.cpp 原生） | 采样对齐依赖显式传参；逐项对照见 scope 默认值节 |
 
 ## 5. 本地超集与扩展（Supersets / local-only surfaces）
 
@@ -83,14 +81,15 @@
 
 | Suite | 模型 | 结果 | 证据 |
 |---|---|---|---|
-| Responses 全量 | Qwen3.5-0.8B-F16（V100，夹具服务器） | **373 = 350 PASS / 0 FAIL / 23 SKIP** | `/tmp/full-verify-resp4.json` |
-| Chat 全量 | Qwen3.5-0.8B-F16 | 142 = 139 PASS / 2 FAIL / 1 SKIP | `/tmp/chat-full2.json` |
+| Responses 全量 | Qwen3.5-0.8B-F16（V100，夹具服务器） | **373 = 350 PASS / 0 FAIL / 23 SKIP** | `/tmp/oai-defs-resp.json`（缺省对齐后复验） |
+| Chat 全量 | Qwen3.5-0.8B-F16 | 142 = 139 PASS / 2 FAIL / 1 SKIP | `/tmp/oai-defs-chat.json`（缺省对齐后复验） |
 | Responses 子集（6 组,模型行为类复核） | Qwen3.5-9B-Q4_K_M | **244 = 236 PASS / 0 FAIL / 8 SKIP** | `/tmp/w9b-review.json` |
 | Chat 全量（模型行为类复核） | Qwen3.5-9B-Q4_K_M | **142 = 141 PASS / 0 FAIL / 1 SKIP** | `/tmp/w9b-chat.json` |
 
 - 0.8B chat 的 2 个 FAIL 均为**模型行为类**（9B 复核 PASS）：`tool_choice_required_emits_tool_call`（0.8B 拖 content 到 length）、`presence_penalty`（0.8B 无重复前提不成立）。
 - SKIP 均为环境/机型条件：hybrid 模型无 checkpoint（`prompt_cache_single_text_append`）、单模型服务器（`prompt_cache_cross_model_isolation`）、不可强注入（`response.failed`/`error` 类）、no probe value、no seed id 等。
 - 9B 复核服务器须带 `LLAMA_WEB_SEARCH_FIXTURE`（与 0.8B 验收配置一致），否则 `web_search` 类行走真实外网、结果不可复现。
+- 2026-09-13 缺省对齐后复验（新构建 8091）：Responses 373 / Chat 142 与基线逐行 status 一致、0 新增 FAIL；上表前两行（0.8B 全量）证据为复验报告，基线证据保留在 `/tmp/full-verify-resp4.json`、`/tmp/chat-full2.json`。
 
 ## 维护约定
 
