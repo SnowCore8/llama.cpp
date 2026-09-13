@@ -743,7 +743,7 @@ Returns a JSON object with a field `prompt` containing a string of the input mes
 >
 > This endpoint is **not** OAI-compatible. For OAI-compatible client, use `/v1/embeddings` instead.
 
-The same as [the embedding example](../embedding) does.
+The same as [the embedding example](../../examples/embedding) does.
 
 This endpoint also supports multimodal embeddings. See the documentation for the `/completions` endpoint for details on how to send a multimodal prompt.
 
@@ -2310,23 +2310,6 @@ Note that the following endpoints are exempt from being considered as incoming t
 
 ## More examples
 
-### Interactive mode
-
-Check the sample in [chat.mjs](chat.mjs).
-Run with NodeJS version 16 or later:
-
-```sh
-node chat.mjs
-```
-
-Another sample in [chat.sh](chat.sh).
-Requires [bash](https://www.gnu.org/software/bash/), [curl](https://curl.se) and [jq](https://jqlang.github.io/jq/).
-Run with bash:
-
-```sh
-bash chat.sh
-```
-
 Apart from error types supported by OAI, we also have custom types that are specific to functionalities of llama.cpp:
 
 **When /metrics or /slots endpoint is disabled**
@@ -2365,4 +2348,4 @@ You can specify default preferences for the web UI using `--ui-config <JSON conf
 
 > **Note:** The old flags `--webui-config` and `--webui-config-file` are deprecated but still work as aliases.
 
-You may find available preferences in [settings-keys.ts](../ui/src/lib/constants/settings-keys.ts).
+You may find available preferences in [settings-keys.ts](../ui/src/lib/constants/settings-keys.constants.ts).
