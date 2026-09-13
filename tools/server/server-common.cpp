@@ -682,6 +682,22 @@ void server_openai_validate_completions_create(const json & body) {
             throw std::invalid_argument("'logprobs' must be an integer between 0 and 5");
         }
     }
+    // Official Completions: stop is a string or an array of up to 4 strings.
+    if (body.contains("stop") && !body.at("stop").is_null()) {
+        if (!body.at("stop").is_string() && !body.at("stop").is_array()) {
+            throw std::invalid_argument("'stop' must be a string or an array of strings");
+        }
+        if (body.at("stop").is_array()) {
+            if (body.at("stop").size() > 4) {
+                throw std::invalid_argument("'stop' must contain at most 4 sequences");
+            }
+            for (const auto & item : body.at("stop")) {
+                if (!item.is_string()) {
+                    throw std::invalid_argument("'stop' must be a string or an array of strings");
+                }
+            }
+        }
+    }
 }
 
 void server_openai_validate_chat_create_fields(const json & body) {
@@ -780,6 +796,22 @@ void server_openai_validate_chat_create_fields(const json & body) {
     }
     if (body.contains("reasoning_effort")) {
         server_openai_validate_reasoning_effort_field(body.at("reasoning_effort"), "reasoning_effort");
+    }
+    // Official Chat Completions: stop is a string or an array of up to 4 strings.
+    if (body.contains("stop") && !body.at("stop").is_null()) {
+        if (!body.at("stop").is_string() && !body.at("stop").is_array()) {
+            throw std::invalid_argument("'stop' must be a string or an array of strings");
+        }
+        if (body.at("stop").is_array()) {
+            if (body.at("stop").size() > 4) {
+                throw std::invalid_argument("'stop' must contain at most 4 sequences");
+            }
+            for (const auto & item : body.at("stop")) {
+                if (!item.is_string()) {
+                    throw std::invalid_argument("'stop' must be a string or an array of strings");
+                }
+            }
+        }
     }
 }
 
