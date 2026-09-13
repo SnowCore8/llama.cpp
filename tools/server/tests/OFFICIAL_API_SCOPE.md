@@ -189,6 +189,43 @@ When the rows above stay green, the “消解最小化实现” campaign for in-
 | `encoding_format` | - | - | - | `float` |
 
 - 标记：`-` = 该端点没有该参数；`no default` = 参数存在但 spec 未给默认值（不传参时的服务端行为在 spec 层面未承诺）。
-- Responses 没有顶层 `reasoning_effort` / `verbosity`，对应配置在 `reasoning` / `text.verbosity` 子对象内；spec 将 Responses `truncation` 标为 deprecated（默认值仍为 `disabled`，保留供参考）；`stop` 顶层默认 `null`，字符串变体分支另有遗留 `default`（`<|endoftext|>`），以顶层为准。
+- Responses 没有顶层 `reasoning_effort` / `verbosity`，对应配置在 `reasoning` / `text.verbosity` 子对象内（递归 `anyOf` 后两处默认同为 `medium`）；spec 将 Responses `truncation` 标为 deprecated（默认值仍为 `disabled`，保留供参考）；`stop` 顶层默认 `null`，字符串变体分支另有遗留 `default`（`<|endoftext|>`），以顶层为准。
 - 官方响应示例回显实际生效的采样值（`temperature: 1.0`、`top_p: 1.0`、`presence_penalty: 0.0`、`frequency_penalty: 0.0`），与本表一致。
 - 本地对照：llama.cpp 服务端采样默认（`temp 0.80`、`top_p 0.95`、`min_p 0.05`、`top_k 40`，`common/common.h`）与官方不同，采样相关的对齐与验收必须显式传参，不依赖"不传参"的跨端等价。
+
+### Local omitted-parameter behavior (probed 2026-09-13)
+
+把上表逐项实测"本地不传参"时的实际行为（探针 `/tmp/defaults_probe.py`、`/tmp/defaults_probe_d3c.py`；证据 `/tmp/defaults-probe-1.json`、`/tmp/defaults-probe-d3c2.json`；服务器 = 验收配置 8080）。证据口径：`GET /props` 的 `default_generation_settings.params` 是服务端缺省；`GET /slots` 的 per-slot `params` 是**上一次请求实际生效的参数**（已用显式 `temperature=1`/`top_p=1` 对照验证会原样回显），故"不传参"时的采样生效值可直接读出。判词：`ok` = 与官方默认等价；`differs` = 不等价（登记）；`spec 未承诺` = spec 未给默认值，仅记录实测。
+
+| Param | `/v1/chat/completions` | `/v1/responses` | `/v1/completions` | `/v1/embeddings` |
+|-------|------------------------|-----------------|-------------------|------------------|
+| `temperature` | `0.80` differs | `0.80` differs | `0.80` differs | - |
+| `top_p` | `0.95` differs | `0.95` differs | `0.95` differs | - |
+| `presence_penalty` | `0` ok | - | `0` ok | - |
+| `frequency_penalty` | `0` ok | - | `0` ok | - |
+| `n` | `1` ok | - | `1` ok | - |
+| `stream` | `false`（JSON）ok | `false`（JSON）ok | `false`（JSON）ok | - |
+| `logprobs` | `false`（无 logprobs）ok | - | `null` ok | - |
+| `top_logprobs` | spec 未承诺 | spec 未承诺 | - | - |
+| `stop` / `logit_bias` | 不施加 ok | - | 不施加 ok | - |
+| `max_tokens` | spec 未承诺（`n_predict=-1`） | - | **`16` 未实现**：不限，至 EOS/槽位上限（实测 32728 completion tokens，`finish_reason=length`）differs | - |
+| `max_completion_tokens` | spec 未承诺（`n_predict=-1`） | - | - | - |
+| `max_output_tokens` | - | spec 未承诺（`n_predict=-1`） | - | - |
+| `seed` | spec 未承诺（随机，`LLAMA_DEFAULT_SEED`） | - | spec 未承诺（随机） | - |
+| `store` | `false`：不落盘（`GET .../messages` -> 404）；显式 `true` 可回取 ok | `true`：落盘（回显 `true`、`GET` 200、store 文件）ok | - | - |
+| `parallel_tool_calls` | 缺省取模板 caps（本例 `supports_parallel_tool_calls=true`）ok | 缺省 `true`（回显 + 实际不限并行）ok | - | - |
+| `service_tier` | 不传不回显；显式回显（`fast`->`priority`）；无调度（§2） | 同 chat | - | - |
+| `reasoning_effort` | 不注入 differs（映射缺口见 §4 #1） | 嵌套 `reasoning.effort`：不注入 differs | - | - |
+| `verbosity` | 不注入 hint differs（显式 `low`/`medium`/`high` 才注入） | 嵌套 `text.verbosity`：不注入 differs | - | - |
+| `truncation` | - | `disabled`：超预算 -> 400（消息含 `set truncation=auto`）ok | - | - |
+| `background` | - | `false`：同步返回 ok | - | - |
+| `best_of` | - | - | 缺省 = `n`（`1`）ok | - |
+| `echo` | - | - | `false`（无 prompt 前缀）ok | - |
+| `suffix` | - | - | 不施加 ok | - |
+| `encoding_format` | - | - | - | 代码缺省 `float`（`server-context.cpp:6570`；本服务器未启 `--embeddings`，501 与套件同 SKIP）ok |
+
+- 采样侧其余本地缺省（官方无对应字段）：`min_p=0.05`、`top_k=40`、`repeat_penalty=1.0`、repeat window 64、`dynatemp=0`、`mirostat=0`、`dry=0`、`xtc=0`（`/props.default_generation_settings`）。
+- 省略任一 `max_*` 且 thinking 打开、未设预算时，本地自动给 8192 reasoning 预算（`server-common.cpp`），thinking 输出上限实测 8192 tokens（chat 总 8201 / responses 总 8198 completion tokens）。
+- `truncation=auto` 按**整项**丢弃最旧 item（多 item 实测保留最新 2 项，`input_tokens=24015`）；单个 item 自身超预算 -> 400（消息不带 `set truncation=auto` 提示）。
+- Completions `prompt` 省略 -> 400 `'prompt' is required`（官方遗留字符串分支的 `'<|endoftext|>'` 默认未实现，本地更严）。
+- 新增登记偏差已同步 [OFFICIAL_API_DIFF.md](OFFICIAL_API_DIFF.md) §4 #13/#14。
