@@ -1525,6 +1525,42 @@ def run_create_param_checks(
             f"create={data.get(field)!r} get_http={gcode} get={got.get(field) if isinstance(got, dict) else None!r}",
         )
 
+    # prompt.version / object variables / placeholder splice (local prompt templates)
+    template_rows = (
+        ("prompt.version selects template file", {"id": "pmpt_w2b_ver", "version": "v2"}, 200,
+         "W2B_V2"),
+        ("prompt.version missing file -> 400", {"id": "pmpt_w2b_ver", "version": "v9"}, 400,
+         "No such prompt template version"),
+        ("prompt.variables object input_text", {"id": "pmpt_w2b_vars", "variables": {
+            "say": {"type": "input_text", "text": "Reply with exactly: W2B_VAR"}}}, 200,
+         "W2B_VAR"),
+        ("prompt.variables input_file -> 400", {"id": "pmpt_w2b_vars", "variables": {
+            "say": {"type": "input_file", "file_id": "file_zzz"}}}, 400,
+         "'input_file' variables are not supported"),
+        ("prompt variable placeholder unknown -> 400", {"id": "pmpt_w2b_unknown"}, 400,
+         "Unknown prompt variable: not_provided"),
+    )
+    for tmpl_name, tmpl_prompt, want_code, want_text in template_rows:
+        code, data = client.post_json(
+            "/v1/responses",
+            {
+                "model": model,
+                "prompt": tmpl_prompt,
+                "max_output_tokens": 32,
+                "temperature": 0,
+                "reasoning": {"effort": "none"},
+                **{k: v for k, v in extra.items() if k != "reasoning"},
+            },
+        )
+        if want_code == 200:
+            ok = code == want_code and want_text in output_text(data)
+            detail = f"HTTP {code} text={output_text(data)!r}"
+        else:
+            blob = json.dumps(data)
+            ok = code == want_code and want_text in blob
+            detail = f"HTTP {code} body={blob[:200]!r}"
+        report.add("create_param", tmpl_name, "PASS" if ok else "FAIL", detail)
+
     # prompt_cache_breakpoint shape: explicit mode only, at most 4 per request
     def _bp(mode: Any) -> dict[str, Any]:
         part: dict[str, Any] = {"type": "input_text", "text": "Reply with exactly: BP_OK"}

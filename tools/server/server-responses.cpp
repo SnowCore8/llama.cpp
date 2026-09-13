@@ -398,6 +398,155 @@ json server_responses_output_item_to_input(const json & output_item) {
     return nullptr;
 }
 
+// Official ResponsePrompt variables are a string or an input_text/input_image object.
+// Shape is checked on first use, so variables no template references stay ignored.
+// Returns true for text-renderable values (string / input_text), false for images.
+static bool server_responses_prompt_var_is_text(const std::string & key, const json & value) {
+    if (value.is_string()) {
+        return true;
+    }
+    if (!value.is_object()) {
+        throw std::invalid_argument("'prompt.variables." + key + "' must be a string or an object with a 'type'");
+    }
+    const std::string type = json_value(value, "type", std::string());
+    if (type == "input_text") {
+        if (!value.contains("text") || !value.at("text").is_string()) {
+            throw std::invalid_argument("'prompt.variables." + key + "' (input_text) requires a string 'text'");
+        }
+        return true;
+    }
+    if (type == "input_image") {
+        if (!value.contains("image_url") || !value.at("image_url").is_string()) {
+            throw std::invalid_argument("'prompt.variables." + key + "' (input_image) requires a string 'image_url'");
+        }
+        return false;
+    }
+    if (type == "input_file") {
+        // Local conversion has no file support; same contract as input_file input items.
+        throw std::invalid_argument("'input_file' variables are not supported");
+    }
+    if (type.empty()) {
+        throw std::invalid_argument("'prompt.variables." + key + "' object requires a 'type'");
+    }
+    throw std::invalid_argument(
+        "'prompt.variables." + key + "' 'type' must be 'input_text', 'input_image' or 'input_file'");
+}
+
+// Render one {{key}} label; image/file variables cannot sit inside a text field.
+static std::string server_responses_prompt_var_text(const std::string & key, const json & value) {
+    if (!server_responses_prompt_var_is_text(key, value)) {
+        throw std::invalid_argument("'" + key + "' is an image/file variable and cannot be used inside a text field");
+    }
+    return value.is_string() ? value.get<std::string>() : value.at("text").get<std::string>();
+}
+
+// Replace {{key}} labels; keys missing from vars stay verbatim (legacy lenient behavior).
+static std::string server_responses_prompt_substitute(const std::string & text, const json & vars) {
+    std::string out;
+    size_t pos = 0;
+    for (;;) {
+        const size_t open = text.find("{{", pos);
+        if (open == std::string::npos) {
+            break;
+        }
+        const size_t close = text.find("}}", open + 2);
+        if (close == std::string::npos) {
+            break;
+        }
+        out.append(text, pos, open - pos);
+        const std::string key = text.substr(open + 2, close - open - 2);
+        if (vars.contains(key)) {
+            out += server_responses_prompt_var_text(key, vars.at(key));
+        } else {
+            out.append(text, open, close + 2 - open);
+        }
+        pos = close + 2;
+    }
+    out.append(text, pos, std::string::npos);
+    return out;
+}
+
+// A {"type":"variable","name":...} placeholder splices the value as the matching
+// official input part, carrying detail / prompt_cache_breakpoint when present.
+static json server_responses_prompt_var_part(const std::string & name, const json & vars) {
+    if (!vars.contains(name)) {
+        throw std::invalid_argument("Unknown prompt variable: " + name);
+    }
+    const json & value = vars.at(name);
+    if (server_responses_prompt_var_is_text(name, value)) {
+        json part = json {
+            {"type", "input_text"},
+            {"text", server_responses_prompt_var_text(name, value)},
+        };
+        if (value.is_object() && value.contains("prompt_cache_breakpoint") &&
+                !value.at("prompt_cache_breakpoint").is_null()) {
+            part["prompt_cache_breakpoint"] = value.at("prompt_cache_breakpoint");
+        }
+        return part;
+    }
+    json part = json {
+        {"type", "input_image"},
+        {"image_url", value.at("image_url")},
+    };
+    for (const char * field : { "detail", "prompt_cache_breakpoint" }) {
+        if (value.contains(field) && !value.at(field).is_null()) {
+            part[field] = value.at(field);
+        }
+    }
+    return part;
+}
+
+// Expand a template `input` array: a top-level variable placeholder becomes a user
+// message carrying the spliced part, a placeholder inside a content list splices in
+// place, other strings take the {{key}} text rules one nesting level deep.
+static json server_responses_prompt_expand_input(const json & items, const json & vars) {
+    json out = json::array();
+    for (const json & raw : items) {
+        if (!raw.is_object()) {
+            throw std::invalid_argument("Prompt template 'input' items must be objects");
+        }
+        if (json_value(raw, "type", std::string()) == "variable") {
+            const std::string name = json_value(raw, "name", std::string());
+            if (name.empty()) {
+                throw std::invalid_argument("Prompt template 'variable' item requires a non-empty 'name'");
+            }
+            // Bare content parts are not valid input items for the chat conversion,
+            // so the spliced part rides in a user message.
+            out.push_back(json {
+                {"type", "message"},
+                {"role", "user"},
+                {"content", json::array({ server_responses_prompt_var_part(name, vars) })},
+            });
+            continue;
+        }
+        json item = raw;
+        for (const auto & field : item.items()) {
+            if (field.value().is_string()) {
+                field.value() = server_responses_prompt_substitute(field.value().get<std::string>(), vars);
+            }
+        }
+        if (item.contains("content") && item.at("content").is_array()) {
+            json content = json::array();
+            for (const json & raw_part : item.at("content")) {
+                json part = raw_part;
+                if (part.is_object() && json_value(part, "type", std::string()) == "variable") {
+                    const std::string name = json_value(part, "name", std::string());
+                    if (name.empty()) {
+                        throw std::invalid_argument("Prompt template 'variable' part requires a non-empty 'name'");
+                    }
+                    part = server_responses_prompt_var_part(name, vars);
+                } else if (part.is_object() && part.contains("text") && part.at("text").is_string()) {
+                    part["text"] = server_responses_prompt_substitute(part.at("text").get<std::string>(), vars);
+                }
+                content.push_back(std::move(part));
+            }
+            item["content"] = std::move(content);
+        }
+        out.push_back(std::move(item));
+    }
+    return out;
+}
+
 json server_responses_prepare_request(json body) {
     return server_responses_prepare_request(std::move(body), nullptr, 0);
 }
@@ -413,45 +562,31 @@ json server_responses_prepare_request(
         throw std::invalid_argument("'model' is required");
     }
 
-    // Local prompt templates under --openai-files-path/prompts/{id}.json
-    // Expands instructions/input from template + {{variables}} before history merge.
-    auto substitute_vars = [](std::string text, const json & vars) {
-        if (!vars.is_object()) {
-            return text;
-        }
-        for (const auto & el : vars.items()) {
-            if (!el.value().is_string()) {
-                continue;
-            }
-            const std::string needle = "{{" + el.key() + "}}";
-            const std::string repl = el.value().get<std::string>();
-            for (;;) {
-                const auto pos = text.find(needle);
-                if (pos == std::string::npos) {
-                    break;
-                }
-                text.replace(pos, needle.size(), repl);
-            }
-        }
-        return text;
-    };
+    // Local prompt templates under --openai-files-path/prompts/{id}.json; a prompt
+    // version selects {id}@{version}.json. Expands instructions/input + variables.
     if (body.contains("prompt") && body.at("prompt").is_object()) {
         const json & prompt = body.at("prompt");
         const std::string pid = json_value(prompt, "id", std::string());
         if (pid.empty()) {
             throw std::invalid_argument("'prompt.id' is required and must be a non-empty string");
         }
+        const std::string pver = json_value(prompt, "version", std::string());
         json tmpl;
         const std::string & root = openai_persist::root();
         if (root.empty()) {
             throw std::invalid_argument(
                 "prompt templates require --openai-files-path (prompts/<id>.json)");
         }
-        const std::string path =
-            root + "/prompts/" + openai_persist::safe_id(pid) + ".json";
+        std::string path = root + "/prompts/" + openai_persist::safe_id(pid);
+        if (!pver.empty()) {
+            path += "@" + openai_persist::safe_id(pver);
+        }
+        path += ".json";
         std::ifstream in(path);
         if (!in) {
-            throw std::invalid_argument("No such prompt template: " + pid);
+            throw std::invalid_argument(pver.empty()
+                ? "No such prompt template: " + pid
+                : "No such prompt template version: " + pid + "@" + pver);
         }
         try {
             std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -467,18 +602,25 @@ json server_responses_prepare_request(
                               : json::object();
         if (tmpl.contains("instructions") && tmpl.at("instructions").is_string()) {
             const std::string instr =
-                substitute_vars(tmpl.at("instructions").get<std::string>(), vars);
+                server_responses_prompt_substitute(tmpl.at("instructions").get<std::string>(), vars);
             if (!body.contains("instructions") || body.at("instructions").is_null() ||
                     (body.at("instructions").is_string() &&
                      body.at("instructions").get<std::string>().empty())) {
                 body["instructions"] = instr;
             }
         }
-        if (tmpl.contains("input") && tmpl.at("input").is_string()) {
-            const std::string inp =
-                substitute_vars(tmpl.at("input").get<std::string>(), vars);
-            if (!body.contains("input") || body.at("input").is_null()) {
-                body["input"] = inp;
+        if (tmpl.contains("input")) {
+            if (tmpl.at("input").is_string()) {
+                const std::string inp =
+                    server_responses_prompt_substitute(tmpl.at("input").get<std::string>(), vars);
+                if (!body.contains("input") || body.at("input").is_null()) {
+                    body["input"] = inp;
+                }
+            } else if (tmpl.at("input").is_array()) {
+                json expanded = server_responses_prompt_expand_input(tmpl.at("input"), vars);
+                if (!body.contains("input") || body.at("input").is_null()) {
+                    body["input"] = std::move(expanded);
+                }
             }
         }
     }
