@@ -63,6 +63,10 @@
 | 9 | `prompt_cache_diagnostics` | 云端 token 计量 | 本地简化口径：expected=min(本次/基线 `input_tokens`)，`cached >= expected-4` → `cache_hit`；不产出 `context_compacted`/`unavailable`；`reason` 首中即止 | 详见 scope「Recorded deviations」 |
 | 10 | SSE `error` / `response.failed` | 流中错误事件 | 默认配置**不可达**：流开始前的错误按非流式 HTTP 错误体返回；SSE error+failed 只在流已开始后 reader 出错时产生 | 验收对应行保持 SKIP；`pre_created_error_is_plain_json` 断言非流式错误体形状 |
 | 11 | Embeddings `encoding_format` 非 string | 400 | 400，但 message 透传 nlohmann 异常原文（`[json.exception.type_error.302] ...`） | 官方 message 为自由文本，未做措辞映射 |
+| 12 | legacy `/v1/completions` 未知 model | 两类实拍均非“从未存在 id” | 不校验（echo served name） | 从未存在 id 0 实拍，不发明形状 |
+| 13 | `GET /v1/models/{未知}` | 无错误形状定义（OpenAPI 只声明 200） | 404 + int `code` + `The model 'x' does not exist` | 无实拍可依，保留现状 |
+| 14 | router 模式未知 model（本地扩展） | 无 router 概念 | proxy 层统一 404 + A 族（chat/responses/embeddings） | 与单模型 responses 的 400 + B 族分层不同 |
+| 15 | WS `/v1/responses` 未知 model | WS error 事件（本地信封） | 400 + `model_not_found`（B 族 message） | 套件未覆盖，未实测断言 |
 
 ## 5. 本地超集与扩展（Supersets / local-only surfaces）
 
@@ -81,8 +85,9 @@
 
 | Suite | 模型 | 结果 | 证据 |
 |---|---|---|---|
-| Responses 全量 | Qwen3.5-0.8B-F16（V100，夹具服务器） | **373 = 343 PASS / 5 FAIL / 1 PARTIAL / 24 SKIP** | `/tmp/drift/resp-full-final.json`（hint 漂移处置后重基线） |
-| Chat 全量 | Qwen3.5-0.8B-F16 | **143 = 137 PASS / 2 FAIL / 1 PARTIAL / 3 SKIP** | `/tmp/drift/chat-full-final.json`（同上） |
+| Responses 全量 | Qwen3.5-0.8B-F16（V100，夹具服务器） | **375 = 344 PASS / 5 FAIL / 1 PARTIAL / 25 SKIP** | `/tmp/b1-responses.json`（未知 model 形状落地后重基线） |
+| Chat 全量 | Qwen3.5-0.8B-F16 | **144 = 138 PASS / 2 FAIL / 1 PARTIAL / 3 SKIP** | `/tmp/b1-chat.json`（同上） |
+| Responses embeddings 组（`--embeddings --pooling mean` 实例） | Qwen3.5-0.8B-F16 | **13 = 12 PASS / 1 SKIP** | `/tmp/b1-responses-emb.json`（同上） |
 | Responses 子集（7 组，工具调用行复核） | Qwen3.5-9B-Q4_K_M | **263 = 254 PASS / 0 FAIL / 9 SKIP** | `/tmp/drift/resp-9b.json` |
 | Chat 全量（工具调用行复核） | Qwen3.5-9B-Q4_K_M | **142 = 141 PASS / 0 FAIL / 1 SKIP** | `/tmp/drift/chat-9b.json` |
 
@@ -92,6 +97,7 @@
 - 9B 复核服务器须带 `LLAMA_WEB_SEARCH_FIXTURE`（与 0.8B 验收配置一致），否则 `web_search` 类行走真实外网、结果不可复现。
 - 2026-09-13 缺省对齐后复验（新构建 8091）：Responses 373 / Chat 142 与当时基线逐行 status 一致、0 新增 FAIL（历史记录）；基线证据保留在 `/tmp/full-verify-resp4.json`、`/tmp/chat-full2.json`。
 - 2026-09-13 hint 漂移处置后重基线（gating 提交 `730ae34be` + 套件断言修复）：4 处 cache 断言前提修复与 `input_tokens_matches_create_usage` 对齐（SCOPE「Suite-only fixes」）、行为漂移登记（SCOPE「Recorded deviations」）；逐行差异（旧基线 / A 环境 / after 三路对拍）与断言改动 diff 见 `/tmp/drift-report.md`；旧全量证据 `/tmp/oai-defs-resp.json`、`/tmp/oai-defs-chat.json`，A 环境证据 `/tmp/a-effort/report-resp.json`、`/tmp/a-effort/report-chat-env.json`。
+- 2026-09-13 未知 model 形状对齐后重基线（提交 `07ede89c8`）：三端点新增行各 PASS（chat 404 A 族 / responses 400 B 族 / embeddings 404 A 族）；B 族 wire 形状按原始响应 bytes 核定为 **error 包裹 4 字段**（SDK 异常输出的“扁平”形是其拆包后的 `.body` 视角）；两套件相对上一基线仅新增行差异、0 意外状态变化；证据 `/tmp/b1-{chat,responses,responses-emb}.json`，报告 `/tmp/b1-fix-report.md`。
 
 ## 维护约定
 
