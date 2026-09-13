@@ -155,3 +155,40 @@ When the rows above stay green, the “消解最小化实现” campaign for in-
 - **Responses output logprobs drop empty-text tokens and candidates** — the sampled EOG token carries no text and is not listed in the `output_text` / `output_text.done` logprob entries, so the entries line up with the output text; within each listed entry the inner `top_logprobs` / `top_probs` candidates whose token text is empty (special/control tokens) are dropped, and an entry left with no candidates is dropped as well (Chat Completions keeps the upstream behavior).
 - **Custom tools（本地执行语义，Chat + Responses）** — 模板/grammar 面按合成 function schema 走（`{type:"object",properties:{input:{type:"string"}},required:["input"]}`；custom 条目带该 schema 才进 grammar 生成器），序列化时按工具名表翻译回官方 custom 形状（其余工具保持 function 形状）。`custom.format` 接受但不参与生成（`text` 与 `grammar` 形状均被忽略——本地无 custom 输入的语法约束）。回放：assistant `tool_calls[].type=="custom"` 的 free-form `input` 重新包成 `{"input": …}` 再进模板（与模型生成形态一致）。Chat 流式（官方 Chat streaming 未定义 custom 增量形状，本地镜像非流式）：`delta.tool_calls[]` 带 `type:"custom"` 与 `custom.name`/`custom.input` 增量，`input` 为解码后文本，原始 envelope 片段在可解码前扣留。Responses：非流式 item id `ctc_`+随机、输出项 `ctco_`+随机，流式 item id `ctc_`+index（镜像 `fc_` 命名）；流式在解析完成前按 `response.custom_tool_call_input.delta` 扣留、item 完成时 `.done`。
 - **Reasoning token 计数（本地口径）** — 由 reasoning-budget 采样器统计：COUNTING/WAITING_UTF8 状态每 accept 一个 token 记 1；自然命中 end 序列时扣除该序列 token 数（下限 0，空块报 0）；FORCING（预算耗尽后的强制 end）不计数；DONE 后 re-arm 到新 start 标签时累计继续（多 think 块累加）；采样器创建时 accept 的 prefill（模板预置 think 标签及其后续 prompt token）在计数与预算上双清（reset_count），prefill 后 `n_counted` 从 0 开始。创建条件：模板给出 start/end 标签 且（grammar_lazy / 预算 ≥0 / reasoning_control 任一，或未启用 backend sampling）；后端采样且无上述需求时不做统计，`n_reasoning_tokens=-1` 按 0 上报（无 think 标签时 0 为真值，backend sampling 时 0 为 best-effort）。
+
+## Official parameter defaults（机器可读 spec）
+
+四个 create 端点的请求侧默认值，取自官方 OpenAPI spec（`openai/openai-openapi`，分支 `main`，`openapi.yaml`，`info.version` 2.3.0；拉取于 2026-09-13，文件 sha1 `39619f0a6b32c8f9cc606ab83becfbd5abb76d26`）。**默认值全部藏在 `anyOf` 分支内**：只解顶层或只解 `allOf` 会全部漏掉，网页文档与 SDK docstring 也不渲染该位置（表面像"官方没写默认"）。刷新解析必须递归 `anyOf`/`allOf`；复拉：`https://raw.githubusercontent.com/openai/openai-openapi/main/openapi.yaml`。
+
+| Param | `/v1/chat/completions` | `/v1/responses` | `/v1/completions` | `/v1/embeddings` |
+|-------|------------------------|-----------------|-------------------|------------------|
+| `temperature` | `1` | `1` | `1` | - |
+| `top_p` | `1` | `1` | `1` | - |
+| `presence_penalty` | `0` | - | `0` | - |
+| `frequency_penalty` | `0` | - | `0` | - |
+| `n` | `1` | - | `1` | - |
+| `stream` | `false` | `false` | `false` | - |
+| `logprobs` | `false` | - | `null` | - |
+| `top_logprobs` | no default | no default | - | - |
+| `stop` | `null` | - | `null` | - |
+| `logit_bias` | `null` | - | `null` | - |
+| `max_tokens` | no default | - | `16` | - |
+| `max_completion_tokens` | no default | - | - | - |
+| `max_output_tokens` | - | no default | - | - |
+| `seed` | no default | - | no default | - |
+| `store` | `false` | `true` | - | - |
+| `parallel_tool_calls` | `true` | `true` | - | - |
+| `service_tier` | `auto` | `auto` | - | - |
+| `reasoning_effort` | `medium` | - | - | - |
+| `verbosity` | `medium` | - | - | - |
+| `truncation` | - | `disabled` | - | - |
+| `background` | - | `false` | - | - |
+| `best_of` | - | - | `1` | - |
+| `echo` | - | - | `false` | - |
+| `suffix` | - | - | `null` | - |
+| `encoding_format` | - | - | - | `float` |
+
+- 标记：`-` = 该端点没有该参数；`no default` = 参数存在但 spec 未给默认值（不传参时的服务端行为在 spec 层面未承诺）。
+- Responses 没有顶层 `reasoning_effort` / `verbosity`，对应配置在 `reasoning` / `text.verbosity` 子对象内；spec 将 Responses `truncation` 标为 deprecated（默认值仍为 `disabled`，保留供参考）；`stop` 顶层默认 `null`，字符串变体分支另有遗留 `default`（`<|endoftext|>`），以顶层为准。
+- 官方响应示例回显实际生效的采样值（`temperature: 1.0`、`top_p: 1.0`、`presence_penalty: 0.0`、`frequency_penalty: 0.0`），与本表一致。
+- 本地对照：llama.cpp 服务端采样默认（`temp 0.80`、`top_p 0.95`、`min_p 0.05`、`top_k 40`，`common/common.h`）与官方不同，采样相关的对齐与验收必须显式传参，不依赖"不传参"的跨端等价。
