@@ -2294,22 +2294,6 @@ Example of an error:
 }
 ```
 
-## Sleeping on Idle
-
-The server supports an automatic sleep mode that activates after a specified period of inactivity (no incoming tasks). This feature, introduced in [PR #18228](https://github.com/ggml-org/llama.cpp/pull/18228), can be enabled using the `--sleep-idle-seconds` command-line argument. It works seamlessly in both single-model and multi-model configurations.
-
-When the server enters sleep mode, the model and its associated memory (including the KV cache) are unloaded from RAM to conserve resources. Any new incoming task will automatically trigger the model to reload.
-
-The sleeping status can be retrieved from the `GET /props` endpoint (or `/props?model=(model_name)` in router mode).
-
-Note that the following endpoints are exempt from being considered as incoming tasks. They do not trigger model reloading and do not reset the idle timer:
-- `GET /health`
-- `GET /props`
-- `GET /models`
-- `GET /metrics`
-
-## More examples
-
 Apart from error types supported by OAI, we also have custom types that are specific to functionalities of llama.cpp:
 
 **When /metrics or /slots endpoint is disabled**
@@ -2337,6 +2321,22 @@ Apart from error types supported by OAI, we also have custom types that are spec
     }
 }
 ```
+
+## Sleeping on Idle
+
+The server supports an automatic sleep mode that activates after a specified period of inactivity (no incoming tasks). This feature, introduced in [PR #18228](https://github.com/ggml-org/llama.cpp/pull/18228), can be enabled using the `--sleep-idle-seconds` command-line argument. It works seamlessly in both single-model and multi-model configurations.
+
+When the server enters sleep mode, the model and its associated memory (including the KV cache) are unloaded from RAM to conserve resources. Any new incoming task will automatically trigger the model to reload.
+
+The sleeping status can be retrieved from the `GET /props` endpoint (or `/props?model=(model_name)` in router mode).
+
+Note that the following endpoints are exempt from being considered as incoming tasks. They do not trigger model reloading and do not reset the idle timer:
+- `GET /health`
+- `GET /props`
+- `GET /models`
+- `GET /metrics`
+
+## More examples
 
 ### Custom default Web UI preferences
 
