@@ -63,6 +63,8 @@
 | 10 | `prompt_cache_diagnostics` | 云端 token 计量 | 本地简化口径：expected=min(本次/基线 `input_tokens`)，`cached >= expected-4` → `cache_hit`；不产出 `context_compacted`/`unavailable`；`reason` 首中即止 | 详见 scope「记录（未修）」 |
 | 11 | SSE `error` / `response.failed` | 流中错误事件 | 默认配置**不可达**：流开始前的错误按非流式 HTTP 错误体返回；SSE error+failed 只在流已开始后 reader 出错时产生 | 验收对应行保持 SKIP；`pre_created_error_is_plain_json` 断言非流式错误体形状 |
 | 12 | Embeddings `encoding_format` 非 string | 400 | 400，但 message 透传 nlohmann 异常原文（`[json.exception.type_error.302] ...`） | 官方 message 为自由文本，未做措辞映射 |
+| 13 | Completions `max_tokens` 缺省 | 官方默认 `16` | 省略 = 不限（`n_predict=-1`，至 EOS/槽位上限；实测 32728 completion tokens，`finish_reason=length`） | 未实现官方缺省上限；需要 16 上限的客户端须显式传 `max_tokens=16` |
+| 14 | 缺省采样参数 | 官方 `temperature=1` / `top_p=1` | 本地缺省 `temperature=0.80` / `top_p=0.95`（另 `min_p=0.05` / `top_k=40` 官方无对应字段；llama.cpp 原生） | 采样对齐依赖显式传参；逐项对照见 scope 默认值节 |
 
 ## 5. 本地超集与扩展（Supersets / local-only surfaces）
 
