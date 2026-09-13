@@ -47,6 +47,13 @@ common_reasoning_budget_state common_reasoning_budget_get_state(const struct lla
 // was recorded. Cleared when a new start sequence re-arms the sampler.
 const llama_tokens * common_reasoning_budget_get_end_match(const struct llama_sampler * smpl);
 
+// Number of reasoning tokens accepted so far, or -1 if smpl is nullptr.
+int32_t common_reasoning_budget_get_count(const struct llama_sampler * smpl);
+
+// Reset the reasoning token counter and restore the full budget (e.g. after
+// accepting prompt tokens, which must neither count nor consume the budget).
+void common_reasoning_budget_reset_count(struct llama_sampler * smpl);
+
 // Manually transition the reasoning budget sampler into the FORCING state.
 // Returns true if the transition occurred.
 bool common_reasoning_budget_force(struct llama_sampler * smpl);

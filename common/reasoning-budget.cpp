@@ -58,6 +58,7 @@ struct common_reasoning_budget_ctx {
 
     int32_t budget;           // maximum tokens in reasoning block
     int32_t remaining;        // tokens remaining in budget
+    int32_t n_counted = 0;    // generated reasoning tokens accepted so far
 
     common_reasoning_budget_state state;
 
@@ -93,8 +94,13 @@ static void common_reasoning_budget_accept(struct llama_sampler * smpl, llama_to
         case REASONING_BUDGET_COUNTING:
         case REASONING_BUDGET_WAITING_UTF8:
         {
+            ctx->n_counted++;
+
             const int32_t match = ctx->end_matcher.advance(token);
             if (match >= 0) {
+                // do not count the tokens of the matched end sequence; clamp so an empty
+                // block (start tag directly followed by the end tag) still reports 0
+                ctx->n_counted = std::max(0, ctx->n_counted - (int32_t) ctx->end_matcher.seqs[match].size());
                 ctx->state = REASONING_BUDGET_DONE;
                 ctx->end_match = match;
                 COM_TRC("%s", "deactivated (natural end)\n");
@@ -189,6 +195,7 @@ static void common_reasoning_budget_reset(struct llama_sampler * smpl) {
     auto * ctx = (common_reasoning_budget_ctx *) smpl->ctx;
     ctx->state = REASONING_BUDGET_IDLE;
     ctx->remaining = ctx->budget;
+    ctx->n_counted = 0;
     ctx->start_matcher.reset();
     ctx->end_matcher.reset();
     ctx->force_pos = 0;
@@ -251,6 +258,7 @@ static struct llama_sampler * common_reasoning_budget_init_state(
             /* .forced_tokens = */ forced_tokens,
             /* .budget        = */ budget,
             /* .remaining     = */ budget,
+            /* .n_counted     = */ 0,
             /* .state         = */ initial_state,
             /* .force_pos     = */ 0,
             /* .end_match     = */ -1,
@@ -286,6 +294,26 @@ const llama_tokens * common_reasoning_budget_get_end_match(const struct llama_sa
     }
 
     return &ctx->end_matcher.seqs[ctx->end_match];
+}
+
+int32_t common_reasoning_budget_get_count(const struct llama_sampler * smpl) {
+    if (!smpl) {
+        return -1;
+    }
+
+    return ((const common_reasoning_budget_ctx *) smpl->ctx)->n_counted;
+}
+
+void common_reasoning_budget_reset_count(struct llama_sampler * smpl) {
+    if (!smpl) {
+        return;
+    }
+
+    auto * ctx = (common_reasoning_budget_ctx *) smpl->ctx;
+    ctx->n_counted = 0;
+    // prompt tokens must not consume the budget either: a template-seeded
+    // think tag is often followed by more prompt tokens (e.g. a newline)
+    ctx->remaining = ctx->budget;
 }
 
 bool common_reasoning_budget_force(struct llama_sampler * smpl) {

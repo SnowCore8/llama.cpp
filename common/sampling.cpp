@@ -307,8 +307,9 @@ struct common_sampler * common_sampler_init(
         }
     }
 
-    // reasoning budget sampler (skip when budget is unlimited unless a lazy grammar is active, which needs rbudget for thinking-block suppression)
-    if (!params.reasoning_budget_start.empty() && !params.reasoning_budget_end.empty() && (params.grammar_lazy || params.reasoning_budget_tokens >= 0 || params.reasoning_control)) {
+    // reasoning budget sampler (also created for an unlimited budget without control, to count reasoning tokens;
+    // with backend sampling it is skipped to avoid disabling the backend sampler)
+    if (!params.reasoning_budget_start.empty() && !params.reasoning_budget_end.empty() && (params.grammar_lazy || params.reasoning_budget_tokens >= 0 || params.reasoning_control || !params.backend_sampling)) {
         rbudget = common_reasoning_budget_init(
             vocab,
             {params.reasoning_budget_start},
@@ -320,6 +321,9 @@ struct common_sampler * common_sampler_init(
             llama_sampler_accept(rbudget, token);
             LOG_DBG("%s: reasoning-budget accepted prefill token (%d)\n", __func__, token);
         }
+
+        // prompt-template tokens neither count as generated reasoning tokens nor consume the budget
+        common_reasoning_budget_reset_count(rbudget);
     }
 
     // logit bias: user biases + model suppress tokens (-INFINITY)
@@ -724,6 +728,14 @@ bool common_sampler_reasoning_budget_force(struct common_sampler * gsmpl) {
     }
 
     return common_reasoning_budget_force(gsmpl->rbudget);
+}
+
+int32_t common_sampler_reasoning_budget_count(const struct common_sampler * gsmpl) {
+    if (!gsmpl || !gsmpl->rbudget) {
+        return -1;
+    }
+
+    return common_reasoning_budget_get_count(gsmpl->rbudget);
 }
 
 // helpers
