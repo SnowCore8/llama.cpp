@@ -48,6 +48,8 @@ def run_completions_checks(
     code, data = client.post_json("/v1/completions", base)
     if code == 404:
         report.add("endpoint", "POST /v1/completions", "NOT_IMPLEMENTED", "HTTP 404")
+        report.add("endpoint", "POST /v1/completions (prompt array)", "NOT_IMPLEMENTED", "HTTP 404")
+        report.add("endpoint", "POST /v1/completions (suffix array)", "NOT_IMPLEMENTED", "HTTP 404")
         for field in completion_param_names():
             if field not in ("model", "prompt"):
                 report.add("create_param", field, "NOT_IMPLEMENTED", "completions missing")
@@ -55,6 +57,8 @@ def run_completions_checks(
 
     if code != 200 or not isinstance(data, dict):
         report.add("endpoint", "POST /v1/completions", "FAIL", f"HTTP {code}")
+        report.add("endpoint", "POST /v1/completions (prompt array)", "FAIL", f"HTTP {code}")
+        report.add("endpoint", "POST /v1/completions (suffix array)", "FAIL", f"HTTP {code}")
         return
 
     ok_shape, detail = _validate_shape(data)
@@ -65,6 +69,57 @@ def run_completions_checks(
         "POST /v1/completions",
         "PASS" if ok else "FAIL",
         f"text={text!r} schema={detail}",
+    )
+
+    # prompt array: official prompt may be an array of strings; one choice per prompt (n=1)
+    code_arr, data_arr = client.post_json(
+        "/v1/completions",
+        {
+            "model": model,
+            "prompt": [
+                "/no_think\nReply with exactly: CMPL_ARR_A",
+                "/no_think\nReply with exactly: CMPL_ARR_B",
+            ],
+            "max_tokens": 8,
+            "temperature": 0,
+            "n": 1,
+        },
+    )
+    arr_choices = data_arr.get("choices") if isinstance(data_arr, dict) else None
+    arr_ok = (
+        code_arr == 200
+        and isinstance(data_arr, dict)
+        and _validate_shape(data_arr)[0]
+        and isinstance(arr_choices, list)
+        and len(arr_choices) == 2
+    )
+    report.add(
+        "endpoint",
+        "POST /v1/completions (prompt array)",
+        "PASS" if arr_ok else "FAIL",
+        f"HTTP {code_arr} n_choices={len(arr_choices) if isinstance(arr_choices, list) else -1}",
+    )
+
+    # suffix is officially string or null; an array (even paired with a prompt array) is 400
+    code_sufarr, sufarr = client.post_json(
+        "/v1/completions",
+        {
+            "model": model,
+            "prompt": [
+                "/no_think\nReply with exactly: CMPL_SUF_A",
+                "/no_think\nReply with exactly: CMPL_SUF_B",
+            ],
+            "suffix": ["\nSTOP", "\nEND"],
+            "max_tokens": 8,
+            "temperature": 0,
+            "n": 1,
+        },
+    )
+    report.add(
+        "endpoint",
+        "POST /v1/completions (suffix array)",
+        "PASS" if code_sufarr == 400 else "FAIL",
+        f"HTTP {code_sufarr} (want 400; official suffix is string|null) body={str(sufarr)[:80]}",
     )
 
     code, headers, raw = client.request(

@@ -167,12 +167,28 @@ def run_conversation_checks(
 
         code_no_md, _ = client.post_json(f"/v1/conversations/{cid}", {})
         add("update.no_metadata", code_no_md == 400, f"HTTP {code_no_md} (want 400)")
+
+        # official metadata is `Metadata or null`: null clears it
+        code_null, updated_null = client.post_json(f"/v1/conversations/{cid}", {"metadata": None})
+        code_null_get, after_null = client.get_json(f"/v1/conversations/{cid}")
+        null_d = _as_dict(updated_null)
+        after_null_d = _as_dict(after_null)
+        add(
+            "update.metadata_null",
+            code_null == 200
+            and null_d.get("id") == cid
+            and null_d.get("metadata", "MISSING") is None
+            and code_null_get == 200
+            and after_null_d.get("metadata", "MISSING") is None,
+            f"HTTP {code_null}/{code_null_get} metadata={json.dumps(null_d.get('metadata'))[:40]}",
+        )
     else:
         report.add(cat, "create.items_stored", "FAIL", "create failed, cannot verify stored items")
         report.add(cat, "get", "FAIL", "create failed")
         report.add(cat, "update", "FAIL", "create failed")
         report.add(cat, "update.invalid_metadata", "FAIL", "create failed")
         report.add(cat, "update.no_metadata", "FAIL", "create failed")
+        report.add(cat, "update.metadata_null", "FAIL", "create failed")
 
     code, _ = client.get_json("/v1/conversations/conv_does_not_exist")
     add("get.missing", code == 404, f"HTTP {code} (want 404)")
@@ -187,6 +203,7 @@ def run_conversation_checks(
             "items.add",
             "items.add.too_many",
             "items.add.invalid",
+            "items.add.reasoning_id",
             "items.list.default_desc",
             "items.list.asc",
             "items.list.desc_after",
@@ -348,6 +365,19 @@ def run_conversation_checks(
         code, _ = client.get_json(f"/v1/conversations/{cid2}/items/msg_does_not_exist")
         add("items.get.missing", code == 404, f"HTTP {code} (want 404)")
 
+        # reasoning items use the rs_ id prefix (official example: rs_...)
+        code_rs, added_rs = client.post_json(
+            f"/v1/conversations/{cid2}/items",
+            {"items": [{"type": "reasoning", "summary": []}]},
+        )
+        rs_data = _as_list(_as_dict(added_rs).get("data"))
+        rs_id = rs_data[0].get("id") if rs_data and isinstance(rs_data[0], dict) else ""
+        add(
+            "items.add.reasoning_id",
+            code_rs == 200 and isinstance(rs_id, str) and rs_id.startswith("rs_"),
+            f"HTTP {code_rs} id={rs_id!r}",
+        )
+
     # empty conversation item list has null cursors
     eid = _as_dict(empty).get("id", "")
     if not eid:
@@ -400,7 +430,13 @@ def run_conversation_checks(
     code, c3 = client.post_json("/v1/conversations", {"items": [ITEM_ASSISTANT_LP]})
     cid3 = c3.get("id", "") if isinstance(c3, dict) else ""
     if not cid3:
-        report.add(cat, "items.include.logprobs", "FAIL", f"create failed (HTTP {code})")
+        for name in (
+            "items.include.logprobs",
+            "items.include.add_gating",
+            "items.include.invalid",
+            "items.include.encodings",
+        ):
+            report.add(cat, name, "FAIL", f"create failed (HTTP {code})")
     else:
         code_list, listing = client.get_json(f"/v1/conversations/{cid3}/items")
         ldata = _as_list(_as_dict(listing).get("data"))
@@ -427,6 +463,89 @@ def run_conversation_checks(
             and one_part.get("logprobs") == ITEM_ASSISTANT_LP["content"][0]["logprobs"],
             f"HTTP {code_list}/{code_inc}/{code_one} default_has_lp={'logprobs' in lp_part} "
             f"included_n={len(_as_list(inc_part.get('logprobs')))}",
+        )
+
+        # POST items applies the same include gate to the echoed items
+        code_lpadd_plain, added_plain = client.post_json(
+            f"/v1/conversations/{cid3}/items", {"items": [ITEM_ASSISTANT_LP]}
+        )
+        plain_data = _as_list(_as_dict(added_plain).get("data"))
+        plain_part = (
+            _first_content_part(plain_data[0])
+            if plain_data and isinstance(plain_data[0], dict)
+            else {}
+        )
+        plain_id = _as_dict(plain_data[0]).get("id", "") if plain_data else ""
+        code_lpadd_inc, added_inc = client.post_json(
+            f"/v1/conversations/{cid3}/items?include=message.output_text.logprobs",
+            {"items": [ITEM_ASSISTANT_LP]},
+        )
+        inc_data = _as_list(_as_dict(added_inc).get("data"))
+        inc_added_part = (
+            _first_content_part(inc_data[0])
+            if inc_data and isinstance(inc_data[0], dict)
+            else {}
+        )
+        code_lpget, got_plain = client.get_json(f"/v1/conversations/{cid3}/items/{plain_id}")
+        got_plain_part = _first_content_part(_as_dict(got_plain))
+        add(
+            "items.include.add_gating",
+            code_lpadd_plain == 200
+            and code_lpadd_inc == 200
+            and "logprobs" not in plain_part
+            and inc_added_part.get("logprobs") == ITEM_ASSISTANT_LP["content"][0]["logprobs"]
+            and code_lpget == 200
+            and "logprobs" not in got_plain_part,
+            f"HTTP {code_lpadd_plain}/{code_lpadd_inc} plain_has_lp={'logprobs' in plain_part} "
+            f"inc_n={len(_as_list(inc_added_part.get('logprobs')))}",
+        )
+
+        # unknown include values are rejected on list/get/add (official 8-value enum)
+        code_bad_list, _ = client.get_json(f"/v1/conversations/{cid3}/items?include=bogus_include")
+        code_bad_one, _ = client.get_json(
+            f"/v1/conversations/{cid3}/items/{lp_id}?include=bogus_include"
+        )
+        code_bad_add, _ = client.post_json(
+            f"/v1/conversations/{cid3}/items?include=bogus_include", {"items": [ITEM_TEXT]}
+        )
+        add(
+            "items.include.invalid",
+            code_bad_list == 400 and code_bad_one == 400 and code_bad_add == 400,
+            f"list={code_bad_list} get={code_bad_one} add={code_bad_add} (want 400s)",
+        )
+
+        # include accepts the repeated, bracket-array and comma encodings
+        code_rep, rep_page = client.get_json(
+            f"/v1/conversations/{cid3}/items?include=message.output_text.logprobs"
+            f"&include=reasoning.encrypted_content"
+        )
+        code_arr, arr_page = client.get_json(
+            f"/v1/conversations/{cid3}/items?include[]=message.output_text.logprobs"
+            f"&include[]=reasoning.encrypted_content"
+        )
+        code_com, com_page = client.get_json(
+            f"/v1/conversations/{cid3}/items?include=message.output_text.logprobs"
+            f",reasoning.encrypted_content"
+        )
+
+        def _first_part(page: Any) -> dict[str, Any]:
+            page_data = _as_list(_as_dict(page).get("data"))
+            return (
+                _first_content_part(page_data[0])
+                if page_data and isinstance(page_data[0], dict)
+                else {}
+            )
+
+        enc_expect = ITEM_ASSISTANT_LP["content"][0]["logprobs"]
+        add(
+            "items.include.encodings",
+            code_rep == 200
+            and code_arr == 200
+            and code_com == 200
+            and _first_part(rep_page).get("logprobs") == enc_expect
+            and _first_part(arr_page).get("logprobs") == enc_expect
+            and _first_part(com_page).get("logprobs") == enc_expect,
+            f"repeated={code_rep} array={code_arr} comma={code_com}",
         )
 
     # delete conversation returns the deleted resource and removes it
