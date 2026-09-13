@@ -2,6 +2,8 @@
 
 SDK pin (tests venv): `openai==3.11.0` (latest at run time).
 
+差异分类汇总（本 fork vs OpenAI 公开文档）见 [OFFICIAL_API_DIFF.md](OFFICIAL_API_DIFF.md)；本文档为契约、依据与验收证据的权威源，两文件同步维护。
+
 **对齐目标：** Responses、OpenAI Completions（`/v1/completions`）均按**官方公开 API 形状**对齐（标准 3：可本地观测的行为加深；云端专用能力合法值接受或形状校验，非法 → 400）。
 
 **硬约束：行为与方法/字段一一对应。** 标为「正向行为」的官方方法或 create 字段，必须产生与该名语义一致的可观测效果（例：`tool_choice` 指定工具名 → 仅允许该工具；`max_output_tokens` → 生成上限）。禁止用别的字段静默改写官方字段语义。仅回显/形状校验项不得冒充正向行为；本地 deepen 须单独标明，不得冒充云端等价。
