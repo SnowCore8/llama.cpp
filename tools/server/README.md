@@ -1484,6 +1484,10 @@ curl http://localhost:8080/v1/chat/completions \
 
 **See our [Function calling](../../docs/function-calling.md) docs** for more details, supported native tool call styles (generic tool call style is used as fallback) / examples of use.
 
+Custom tools are defined under the same `tools` field (same `--jinja` requirement) as `{"type": "custom", "custom": {"name": ..., "description": ..., "format": ...}}` (`description` / `format` optional); `tool_choice: {"type": "custom", "custom": {"name": ...}}` forces one by name. The model emits `{"id": ..., "type": "custom", "custom": {"name": ..., "input": ...}}` with the free-form text in `custom.input`, and history replays those `tool_calls[]` entries with `"type": "custom"`. `custom.format` is accepted but ignored during generation (no grammar constraint on the custom input); streaming mirrors the non-streaming shape (the official Chat streaming shape for custom tools is undefined).
+
+`tool_choice` also accepts `{"type": "allowed_tools", "allowed_tools": {"mode": "auto" or "required", "tools": [...]}}`: callable tools are restricted to the listed subset (`mode=required` with no matching tool returns HTTP 400; `mode=auto` whose filter leaves an empty set returns HTTP 400).
+
 *Timings and context usage*
 
 The response contains a `timings` object, for example:
@@ -1603,7 +1607,7 @@ llama-server keeps completed Responses so clients can continue with `previous_re
 
 Missing or expired ids return HTTP 400. Without `--openai-files-path`, the store is process-local (lost on restart / not shared across router child processes).
 
-Local deepenings (not cloud-equivalent): `max_tool_calls` drops calls beyond the cap (excess attempts ignored); `context_management` with `compaction` auto-folds long history into a local opaque item; `stream_options.include_obfuscation` controls SSE `obfuscation` payloads (default on, as in the official API; `false` omits them); `truncation=auto` drops oldest input items beyond a local soft limit while `truncation=disabled` returns HTTP 400 when over that limit; `prompt_cache_options.comparison_response_id` adds local `prompt_cache_diagnostics` on the response (`cache_hit` / `cache_miss` with `reason` / `comparison_response_not_found`; an unknown id still returns HTTP 200), and an echoed `prompt_cache_options` gets local `mode=implicit` / `ttl=30m` defaults (explicit client values win); Responses + Chat Completions validate OpenAI-shaped `prompt` (Responses only) / `prompt_cache_*`; Responses reject invalid `metadata` / `safety_identifier` / `service_tier` / `include` / `phase` values and an unknown `tool_choice: {"type": "allowed_tools"}` mode with HTTP 400; OpenAI Completions validates `echo`/`suffix`/`best_of`/`n` shapes - see `tools/server/tests/OFFICIAL_API_SCOPE.md`.
+Local deepenings (not cloud-equivalent): `max_tool_calls` drops calls beyond the cap (excess attempts ignored); `context_management` with `compaction` auto-folds long history into a local opaque item; `stream_options.include_obfuscation` controls SSE `obfuscation` payloads (default on, as in the official API; `false` omits them); `truncation=auto` drops oldest input items beyond a local soft limit while `truncation=disabled` returns HTTP 400 when over that limit; `prompt_cache_options.comparison_response_id` adds local `prompt_cache_diagnostics` on the response (`cache_hit` / `cache_miss` with `reason` / `comparison_response_not_found`; an unknown id still returns HTTP 200), and an echoed `prompt_cache_options` gets local `mode=implicit` / `ttl=30m` defaults (explicit client values win); Responses + Chat Completions validate OpenAI-shaped `prompt` (Responses only) / `prompt_cache_*`; Responses reject invalid `metadata` / `safety_identifier` / `service_tier` / `include` / `phase` values and an unknown `tool_choice: {"type": "allowed_tools"}` mode with HTTP 400; OpenAI Completions validates `echo`/`suffix`/`best_of`/`n` shapes - see `tools/server/tests/OFFICIAL_API_SCOPE.md` and `tools/server/tests/OFFICIAL_API_DIFF.md`.
 
 #### Durable store (`--openai-files-path`)
 
@@ -1653,6 +1657,14 @@ curl -s http://localhost:8080/v1/responses \
 
 `background: true` answers immediately with an `in_progress` response (the streaming variant starts its stream immediately) that stays retrievable via `GET /v1/responses/{id}` and cancellable via `POST /v1/responses/{id}/cancel` while it runs; a `store: false` background response is still retained for this, but remains invalid as `previous_response_id`. A background stream that loses its connection keeps running server side and can be reattached with `GET /v1/responses/{id}?stream=true`, optionally with `starting_after=<sequence_number>` to replay buffered events after that cursor before following live output. Reattaching to a response without a resumable stream session returns HTTP 404, and a cursor whose replay prefix was already dropped returns HTTP 400 (meaning: restart without `starting_after`); a resume without a cursor follows from the oldest whole event still retained. If a following client falls behind far enough that its replay window is evicted, the server sends a terminal SSE `error` event (`code: server_error`) and closes the stream instead of ending silently.
 
+#### WebSocket transport
+
+`/v1/responses` also accepts WebSocket upgrades. Client messages: `response.create` (same body as the HTTP endpoint; `stream_id` names the lane), `response.steer`, and beta `response.inject`. Server events are the same as the SSE stream, with `stream_id` echoed on every event of a named lane, plus WS-only `response.steer.accepted` / `response.steer.pending` / `response.steer.failed` and `response.inject.created` / `response.inject.failed`. Errors always use the official nested envelope `{type: "error", status, error: {...}}`; `invalid_json` and `unsupported_event_type` are the local connection-level codes. See `tools/server/tests/OFFICIAL_API_SCOPE.md` for the full contract.
+
+- `stream_id`: 1-256 characters of `[A-Za-z0-9_.-]`. Per-connection limits: 16 in-flight responses (excess queued), 32 named lanes (`websocket_stream_limit_reached`), 60-minute connection lifetime (`websocket_connection_limit_reached`).
+- Steering stops the target at its next decode step (`response.incomplete` with `incomplete_details.reason="steered"`), then an automatic successor on the same lane runs the queued steer (a target with tools waits for its terminal instead); more than 32 pending steers per target -> `too_many_pending_steers`.
+- `store=false` responses can only be continued via `previous_response_id` by the connection that issued them (connection-local cache); other connections get `previous_response_not_found`. `background` is ignored over WebSocket ("background is not supported over WebSocket").
+
 #### Token logprobs on streaming output
 
 Text logprobs are returned when requested with `include: ["message.output_text.logprobs"]` or `top_logprobs` greater than 0 (the `include` form asks for the top-1 candidate, raise `top_logprobs` for more). `response.output_text.delta` then carries `logprob` and `top_logprobs` for the delta token, and `response.output_text.done` plus the finished output item carry the full per-token array. Without either request the arrays stay empty; non-streaming responses carry the same entries inside `output_text` content parts.
@@ -1660,6 +1672,16 @@ Text logprobs are returned when requested with `include: ["message.output_text.l
 #### Conversation membership (`conversation`)
 
 Passing `conversation` (a conversation id string, or `{"id": ...}`) makes the request a turn of that conversation: its stored items are prepended to the request input, and the finished turn (this request's own input items plus the response output items) is appended back when the response completes. `store=false` keeps the response out of later retrieval and `previous_response_id` chains (a background response is still retained for GET/cancel while it runs), but the conversation still receives the turn. `conversation` cannot be combined with `previous_response_id` (HTTP 400) and an unknown id returns HTTP 400. Response objects echo the conversation as `{"id": ...}`.
+
+#### Custom tools and `allowed_tools`
+
+Custom tools use the flat Responses shape `{"type": "custom", "name": ..., "description": ..., "format": ...}` (`description` / `format` optional). The model emits a `custom_tool_call` output item (id prefix `ctc_`) carrying the free-form input, streamed through `response.custom_tool_call_input.delta` / `.done`; replay the call and its result in `input` as `custom_tool_call` / `custom_tool_call_output` items. `custom.format` is accepted but ignored during generation (no grammar constraint on the custom input).
+
+`tool_choice` also accepts `{"type": "allowed_tools", "mode": "auto" or "required", "tools": [...]}`: the request `tools` are subset-filtered to the listed names, and `mode=required` with no matching tool returns HTTP 400.
+
+#### Response warmup (`generate: false`)
+
+`generate: false` is accepted on HTTP and WebSocket: it produces a completed, output-less response without running inference (the flag must be a boolean when present, otherwise HTTP 400). Streaming emits only `response.created` and `response.completed` (no `in_progress` phase). It can be used as `previous_response_id` (when retained) and does not append a conversation turn.
 
 ### Conversations: `/v1/conversations`
 
