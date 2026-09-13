@@ -30,7 +30,7 @@
 
 | 面 | 本地契约 |
 |---|---|
-| Responses WS 错误信封 | 一律官方嵌套信封 `{type:"error", status, error:{type, code, message, param}, stream_id?, sequence_number?}`；SSE 扁平 error 帧转发时转换；`error.type` 按官方词表映射（HTTP 状态或 SSE code 推导）；本地补充连接级码 `invalid_json` / `unsupported_event_type` |
+| Responses WS 错误信封 | 一律官方嵌套信封 `{type:"error", status, error:{type, code, message, param}, stream_id?, sequence_number?}`；SSE 扁平 error 帧转发时转换；`error.type` 按词表映射（HTTP 状态或 SSE code 推导；`invalid_request_error` 官方实证，其余为本地词表，明细见 SCOPE「Local contracts」）；本地补充连接级码 `invalid_json` / `unsupported_event_type` |
 | WS lane 与限额 | `stream_id` 1-256 字符 `[A-Za-z0-9_.-]`，命名 lane 的全部事件（含终止与请求级错误）回显 `stream_id`，默认 lane 不带；限额 = 16 个在飞响应（超出排队）/ 32 个命名 lane（第 33 个报 `websocket_stream_limit_reached`）/ 60 分钟连接寿命 |
 | WS 自产事件序号 | `response.steer.*` / `response.inject.*` 的 `sequence_number` 用连接级计数器（官方只规定字段存在，未定义编号基准）；响应流事件保留 per-response 计数 |
 | WS create 的 `background` | 忽略且不回显（官方 "background is not supported over WebSocket"）；不报错、照常生成 |
@@ -64,7 +64,7 @@
 | 10 | SSE `error` / `response.failed` | 流中错误事件 | 默认配置**不可达**：流开始前的错误按非流式 HTTP 错误体返回；SSE error+failed 只在流已开始后 reader 出错时产生 | 验收对应行保持 SKIP；`pre_created_error_is_plain_json` 断言非流式错误体形状 |
 | 11 | Embeddings `encoding_format` 非 string | 400 | 400，但 message 透传 nlohmann 异常原文（`[json.exception.type_error.302] ...`） | 官方 message 为自由文本，未做措辞映射 |
 | 12 | legacy `/v1/completions` 未知 model | 两类实拍均非“从未存在 id” | 不校验（echo served name） | 从未存在 id 0 实拍，不发明形状 |
-| 13 | `GET /v1/models/{未知}` | 无错误形状定义（OpenAPI 只声明 200） | 404 + int `code` + `The model 'x' does not exist` | 无实拍可依，保留现状 |
+| 13 | `GET /v1/models/{未知}` | 无错误形状定义（OpenAPI 只声明 200） | 404 + 四字段错误体（`code:null`）+ `The model 'x' does not exist` | 无实拍可依，保留现状 |
 | 14 | router 模式未知 model（本地扩展） | 无 router 概念 | proxy 层统一 404 + A 族（chat/responses/embeddings） | 与单模型 responses 的 400 + B 族分层不同 |
 | 15 | WS `/v1/responses` 未知 model | WS error 事件（本地信封） | 400 + `model_not_found`（B 族 message） | 套件未覆盖，未实测断言 |
 
@@ -91,6 +91,7 @@
 | Responses 子集（7 组，工具调用行复核） | Qwen3.5-9B-Q4_K_M | **263 = 254 PASS / 0 FAIL / 9 SKIP** | `/tmp/drift/resp-9b.json` |
 | Chat 全量（工具调用行复核） | Qwen3.5-9B-Q4_K_M | **142 = 141 PASS / 0 FAIL / 1 SKIP** | `/tmp/drift/chat-9b.json` |
 
+- **验证口径（2026-09-14 起）**：统一 V100 + Qwen3.5-9B-Q4_K_M（探针与 acceptance 全量）；上表历史 0.8B 数字保留为历史记录，不改写。错误词表修正（401 `invalid_request_error`、503 `service_unavailable_error`）后的 9B 全量新基线待重跑回填（探针与套件验证推迟，见 `/tmp/envelope-report.md` §8）。
 - 0.8B Responses 的 5 FAIL 中 3 为 hint 确定性登记（`max_tool_calls_with_forced_tool` / `parallel_tool_calls_false_single` / `max_tool_calls_cap_completes`）、2 为 flaky（`previous_response_id.reasoning_replay` / `max_tool_calls`）；1 PARTIAL = `forced_function_tool_call`（hint 确定性）；`function_call_output_continue` 为级联 SKIP。9B 复核全部 PASS → 模型能力类，登记见 SCOPE「Recorded deviations」。
 - 0.8B Chat 的 2 个 FAIL：`delta.tool_calls.forced`（hint 确定性登记；fallback 行，9B 主探针成功故不生成）、`tool_choice_required_emits_tool_call`（基线既有 FAIL；9B 复核 PASS）。
 - SKIP 均为环境/机型条件：hybrid 模型无 blob checkpoint（`prompt_cache_single_text_append`，判据相对化后按设计 SKIP）、单模型服务器（`prompt_cache_cross_model_isolation`）、不可强注入（`response.failed`/`error` 类）、no probe value、no seed id、9B sdk `embeddings.create`（未启 embeddings）等。
