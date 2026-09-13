@@ -3,8 +3,8 @@
 ## Purpose
 
 Accept or reject a server against the **public OpenAI stable API**:
-Responses (+ helpers), Conversations, Completions, Models - using docs +
-`openai` Python SDK.
+Responses (+ helpers), Conversations, Completions, Models, Embeddings - using
+docs + `openai` Python SDK.
 
 **Out of scope:** Codex wire shapes; `client.beta.*` platform extras;
 hosted cloud tool *execution*.
@@ -28,10 +28,11 @@ Exit `0` only with no `FAIL` / `PARTIAL` / `NOT_IMPLEMENTED`. `SKIP` is allowed.
 | Conversations | `POST/GET/DELETE /v1/conversations…`, update, items sub-resource (add/list/get/delete) |
 | Completions | `POST /v1/completions` (+ stream) |
 | Models | `GET /v1/models` (OpenAI `Model` shape) |
+| Embeddings | `POST /v1/embeddings` (shape checks; `SKIP` without `--embeddings`) |
 
 Also: create-param catalog, forced SSE, live SDK (`responses.create/stream/parse`,
-`models.*`, `completions.create`, `conversations.*`), image `input_image`, `tool_choice`
-`{auto,required,function,none}`, `reasoning.effort=none`.
+`models.*`, `completions.create`, `conversations.*`, `embeddings.create`), image
+`input_image`, `tool_choice` `{auto,required,function,none}`, `reasoning.effort=none`.
 
 ## Design principles
 
@@ -65,6 +66,7 @@ runner.py / __main__.py
   ├─ checks_endpoints.py
   ├─ checks_models.py
   ├─ checks_completions.py
+  ├─ checks_embeddings.py     # POST /v1/embeddings shape checks (SKIP without --embeddings)
   ├─ checks_create_params.py
   ├─ checks_sdk.py            # live openai SDK
   ├─ checks_streaming.py      # SSE events, background resume, logprobs, web_search stream
@@ -101,10 +103,14 @@ python -m responses_official_acceptance --only streaming,conversation
 ```
 
 `--only` accepts a comma-separated list of groups:
-`endpoint`, `models`, `completions`, `create_param`, `sdk`, `streaming`,
-`scenario`, `semantic`, `prompt_cache`, `conversation`, `ws`.
-`streaming` covers the SSE event checks, `background_stream`, `output_logprobs`
-and `web_search_stream`; `conversation` covers the Conversations API and the
+`endpoint`, `models`, `completions`, `embeddings`, `create_param`, `sdk`,
+`streaming`, `scenario`, `semantic`, `prompt_cache`, `conversation`, `ws`.
+`embeddings` covers `POST /v1/embeddings` (response shape, batch inputs,
+deterministic/distinct vectors, `encoding_format`, input validation); a server
+started without `--embeddings` answers HTTP 501 with a `does not support
+embeddings` error and the rows are recorded as `SKIP`. `streaming` covers the
+SSE event checks, `response_object`, `background_stream`, `output_logprobs` and
+`web_search_stream`; `conversation` covers the Conversations API and the
 response<->conversation membership checks; `ws` covers the Responses WebSocket
 transport (default/named lanes, `stream_id` echo + validation, error envelopes,
 lane FIFO and the 32-named-stream limit; the 16 in-flight and 60-minute
@@ -125,10 +131,11 @@ Notable check families:
   or `top_logprobs>0` both emit logprobs).
 - `items.list.default_limit`: official default page size is 20.
 
-Prompt-template checks (`prompt.id`) need `pmpt_local_*.json` under the server's
-`--openai-files-path/prompts/`. The runner installs them from `../fixtures/prompts/`
-into `$LLAMA_OPENAI_FILES_PATH/prompts/` (or `/tmp/llama-openai-files/prompts/`
-when that directory already exists); set `LLAMA_OPENAI_FILES_PATH` to the server's
-`--openai-files-path` so the fixtures land where the server reads them.
+Prompt-template checks (`prompt.id`) need the `pmpt_*.json` templates under the
+server's `--openai-files-path/prompts/`. The runner installs them from
+`../fixtures/prompts/` into `$LLAMA_OPENAI_FILES_PATH/prompts/` (or
+`/tmp/llama-openai-files/prompts/` when that directory already exists); set
+`LLAMA_OPENAI_FILES_PATH` to the server's `--openai-files-path` so the fixtures
+land where the server reads them.
 
-Requires `openai>=2.53` (and `websockets`) from `tools/server/tests/requirements.txt`.
+Requires `openai>=2.54.0` (and `websockets`) from `tools/server/tests/requirements.txt`.

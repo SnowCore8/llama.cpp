@@ -95,23 +95,46 @@ And then the test in question can be run in another terminal:
 And this should trigger the breakpoint and allow inspection of the server state
 in the debugger terminal.
 
-### Official OpenAI Responses API acceptance
+### Official OpenAI API acceptance
 
 Standalone harness (not pytest) that accepts a **running** server against the
-**public OpenAI Responses API** (docs + `openai` Python SDK types). Codex wire
-shapes are intentionally out of scope.
+official OpenAI API surfaces (docs + `openai` Python SDK) and runs the local
+durability/discovery checks. Codex wire shapes are intentionally out of scope.
+Three suites run through the meta-runner:
+
+- `responses_official_acceptance` - Responses + Conversations + Completions +
+  Models + durable Responses store + Responses WebSocket + live `openai` SDK
+- `chat_completions_official_acceptance` - Chat Completions + Models + durable
+  Chat store + live `openai` SDK
+- `local_durability_acceptance` - store restart resume/reload,
+  `GET /v1/tools`, `/props.slot_save_path`, compact expand
 
 ```shell
 # venv with tools/server/tests/requirements.txt (includes openai)
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
-.venv/bin/python -m responses_official_acceptance \
+.venv/bin/python -m official_api_acceptance \
   --base-url http://127.0.0.1:8080 \
   --api-key sk-1234567890 \
   --model Qwen3.5-9B-Q4_K_M \
   --extra-json '{"chat_template_kwargs":{"enable_thinking":false}}' \
-  --report-json /tmp/responses-official-report.json
+  --report-dir /tmp/official_api_reports
 ```
 
-See `responses_official_acceptance/README.md`. Exit `0` only when the full
-official Responses surface has no `FAIL` / `PARTIAL` / `NOT_IMPLEMENTED`.
+Exit `0` only when every suite reports no `FAIL` / `PARTIAL` / `NOT_IMPLEMENTED`
+(`SKIP` is allowed). The local durability suite runs last and may kill/restart
+`llama-server` to verify durable stores; restart checks need
+`LLAMA_SERVER_RESTART_CMD` (a launch script that brings the server back up;
+without it these checks are `SKIP`) and can be skipped with
+`LOCAL_DURABILITY_SKIP_RESTART=1` (or `--skip-restart` when running that suite
+directly).
+
+See [`official_api_acceptance/README.md`](official_api_acceptance/README.md)
+for the meta-runner,
+[`responses_official_acceptance/README.md`](responses_official_acceptance/README.md),
+[`chat_completions_official_acceptance/README.md`](chat_completions_official_acceptance/README.md)
+and
+[`local_durability_acceptance/README.md`](local_durability_acceptance/README.md)
+for the three suites. The scope contract and its differences from the official
+OpenAI docs are documented in [`OFFICIAL_API_SCOPE.md`](OFFICIAL_API_SCOPE.md)
+and [`OFFICIAL_API_DIFF.md`](OFFICIAL_API_DIFF.md).

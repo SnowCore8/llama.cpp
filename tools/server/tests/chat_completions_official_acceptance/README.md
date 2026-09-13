@@ -18,7 +18,7 @@ Exit `0` only with no `FAIL` / `PARTIAL` / `NOT_IMPLEMENTED`. `SKIP` is allowed.
 |----------|-------|
 | Chat Completions | `POST /v1/chat/completions`, `…/input_tokens` |
 | Store CRUD | list/retrieve/update/delete + `{id}/messages` under `/v1/chat/completions` |
-| Models | `GET /v1/models` |
+| Models | `GET /v1/models` (+ `GET /v1/models/{model}`) |
 
 ## Server prerequisites
 
@@ -55,4 +55,5 @@ python -m chat_completions_official_acceptance \
   --report-json /tmp/chat-official-report.json
 ```
 
-See `../OFFICIAL_API_SCOPE.md`.
+See also: `../official_api_acceptance/README.md` (meta-runner) and
+`../OFFICIAL_API_SCOPE.md`.
