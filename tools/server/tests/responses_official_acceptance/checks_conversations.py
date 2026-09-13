@@ -435,6 +435,7 @@ def run_conversation_checks(
             "items.include.add_gating",
             "items.include.invalid",
             "items.include.encodings",
+            "items.include.full_enum",
         ):
             report.add(cat, name, "FAIL", f"create failed (HTTP {code})")
     else:
@@ -546,6 +547,32 @@ def run_conversation_checks(
             and _first_part(arr_page).get("logprobs") == enc_expect
             and _first_part(com_page).get("logprobs") == enc_expect,
             f"repeated={code_rep} array={code_arr} comma={code_com}",
+        )
+
+        # all 8 official include enum values are accepted on the items list endpoint
+        inc_values = (
+            "file_search_call.results",
+            "web_search_call.results",
+            "web_search_call.action.sources",
+            "message.input_image.image_url",
+            "computer_call_output.output.image_url",
+            "code_interpreter_call.outputs",
+            "reasoning.encrypted_content",
+            "message.output_text.logprobs",
+        )
+        inc_get = []
+        inc_data_ok = True
+        for inc_value in inc_values:
+            code_v, page_v = client.get_json(
+                f"/v1/conversations/{cid3}/items?include={inc_value}"
+            )
+            inc_get.append((inc_value, code_v))
+            inc_data_ok = inc_data_ok and isinstance(_as_dict(page_v).get("data"), list)
+        inc_bad = [(v, c) for v, c in inc_get if c != 200]
+        add(
+            "items.include.full_enum",
+            not inc_bad and inc_data_ok,
+            f"accepted={len(inc_get) - len(inc_bad)}/8 failed={inc_bad} data_list={inc_data_ok}",
         )
 
     # delete conversation returns the deleted resource and removes it
