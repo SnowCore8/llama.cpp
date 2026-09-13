@@ -426,16 +426,19 @@ def run_semantic_checks(
     )
 
     # --- input_tokens endpoint matches create usage.input_tokens ---
+    # Explicit verbosity pins both probes to the shared explicit hint path: the
+    # omitted-default injection applies to the create path only, so an omitted
+    # probe would count the hint on one side and not the other.
     probe_input = "token parity probe " + ("alpha " * 30)
     tcode, tok = client.post_json(
         "/v1/responses/input_tokens",
-        {"model": model, "input": probe_input, **extra},
+        {"model": model, "input": probe_input, "text": {"verbosity": "medium"}, **extra},
     )
     ccode, created = _create(
         client,
         model,
         extra,
-        {"input": probe_input, "temperature": 0, "max_output_tokens": 4},
+        {"input": probe_input, "temperature": 0, "max_output_tokens": 4, "text": {"verbosity": "medium"}},
     )
     tin = tok.get("input_tokens") if isinstance(tok, dict) else None
     cin = (created.get("usage") or {}).get("input_tokens") if isinstance(created, dict) else None

@@ -441,9 +441,14 @@ def _check_retention_and_implicit(
 
     uniq_i = f"imp{time.time_ns()}"
     inp = f"implicit pad {uniq_i}: " + ("november-oscar " * 40) + "\nReply with exactly: IMP_OK"
+    # Unique leading system message: avoids reusing the constant verbosity-hint
+    # prefix written by earlier probes, so the first request starts cold.
     body_imp = {
         "model": model,
-        "input": inp,
+        "input": [
+            _msg("system", f"implicit cache probe {uniq_i}"),
+            _msg("user", inp),
+        ],
         "max_output_tokens": 24,
         "temperature": 0,
         "prompt_cache_options": {"mode": "implicit"},
@@ -753,7 +758,10 @@ def _check_append_reuse(
     """
     uniq = f"grow{time.time_ns()}"
     tag = uniq[-5:]
+    # Unique leading system message: avoids reusing the constant verbosity-hint
+    # prefix written by earlier probes, so the first turn starts cold.
     hist: list[dict[str, Any]] = [
+        _msg("system", f"append cache probe {uniq}"),
         _msg("user", f"append reuse pad {uniq}: " + ("victor-whiskey " * 40)),
         _msg("assistant", "ack " * 20, "output_text"),
     ]
@@ -811,15 +819,17 @@ def _check_single_text_append(
     text = f"single text pad {uniq}: " + ("zulu-yankee " * 40)
     codes: list[int] = []
     cached: list[int] = []
+    inputs: list[int] = []
     has_output = True
     echo_ok = True
     for i in range(3):
         nonce = f"BLOB_{i}_{tag}"
         text = f"{text}\nuser: Reply with exactly: {nonce}"
         code, data = client.post_json("/v1/responses", _cache_body(model, extra, text, key=None, max_output=32))
-        _, c, _ = _usage_cache(data) if isinstance(data, dict) else (0, 0, 0)
+        tin, c, _ = _usage_cache(data) if isinstance(data, dict) else (0, 0, 0)
         codes.append(code)
         cached.append(c)
+        inputs.append(tin)
         # a wedged restore would leave the turn empty; the exact echo is informational,
         # a reasoning model may spend the whole max_output_tokens budget on thinking
         out = output_text(data) if isinstance(data, dict) else ""
@@ -836,7 +846,9 @@ def _check_single_text_append(
             "FAIL",
             f"http={codes} cached={cached} has_output={has_output} echo_ok={echo_ok} (informational)",
         )
-    elif max(cached[1:]) > 0:
+    elif max(cached[1:]) >= max(1, inputs[-1] // 4):
+        # hint-lead-only hits (constant 20-token default hint) are not growth reuse;
+        # require reuse >= 25% of the prompt
         report.add(
             "cache",
             "prompt_cache_single_text_append",
@@ -849,7 +861,7 @@ def _check_single_text_append(
             "prompt_cache_single_text_append",
             "SKIP",
             f"cached={cached}: no checkpoint at/below the append boundary "
-            "(expected for hybrid/recurrent models, dense models reuse)",
+            "(expected for hybrid/recurrent models, dense models reuse; growth needs >= inputs//4)",
         )
 
 

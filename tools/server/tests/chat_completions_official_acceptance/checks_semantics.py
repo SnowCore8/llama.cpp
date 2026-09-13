@@ -172,16 +172,19 @@ def run_semantic_checks(
     )
 
     # --- input_tokens matches create usage ---
+    # Explicit verbosity pins both probes to the shared explicit hint path: the
+    # omitted-default injection applies to the create path only, so an omitted
+    # probe would count the hint on one side and not the other.
     probe_msgs = [{"role": "user", "content": "token parity probe " + ("alpha " * 30)}]
     tcode, tok = client.post_json(
         "/v1/chat/completions/input_tokens",
-        {"model": model, "messages": probe_msgs, **extra},
+        {"model": model, "messages": probe_msgs, "verbosity": "medium", **extra},
     )
     ccode, created = _create(
         client,
         model,
         extra,
-        {"messages": probe_msgs, "max_tokens": 4},
+        {"messages": probe_msgs, "max_tokens": 4, "verbosity": "medium"},
     )
     tin = tok.get("input_tokens") if isinstance(tok, dict) else None
     cin = (created.get("usage") or {}).get("prompt_tokens") if isinstance(created, dict) else None
@@ -368,6 +371,8 @@ def run_semantic_checks(
 
     # --- prompt_cache_options.mode=implicit: auto key warms without explicit prompt_cache_key ---
     uniq_i = f"imp{time.time_ns()}"
+    # Unique leading system message: avoids reusing the constant verbosity-hint
+    # prefix written by earlier probes, so the first request starts cold.
     msg_i = {
         "role": "user",
         "content": f"implicit pad {uniq_i}: " + ("juliet-kilo " * 40) + "\nReply with exactly: IMP_OK",
@@ -376,7 +381,7 @@ def run_semantic_checks(
         "prompt_cache_options": {"mode": "implicit"},
         "prompt_cache_retention": "in_memory",
         "max_tokens": 24,
-        "messages": [msg_i],
+        "messages": [{"role": "system", "content": f"implicit cache probe {uniq_i}"}, msg_i],
     }
     c1, d1 = _create(client, model, extra, body_imp)
     c2, d2 = _create(client, model, extra, body_imp)
