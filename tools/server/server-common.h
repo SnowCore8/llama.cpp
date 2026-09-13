@@ -92,7 +92,11 @@ struct server_grammar_trigger {
     }
 };
 
-json format_error_response(const std::string & message, const enum error_type type);
+// official error body: {code: string|null, message, param: string|null, type}; empty param/code become null
+json format_error_response(const std::string & message, const enum error_type type, const std::string & param = "", const std::string & code = "");
+
+// HTTP status code for an error body, from its "type"; keep in sync with format_error_response
+int error_status_from_body(const json & error_data, int fallback = 500);
 
 // official OpenAI error body for an unknown model name (HTTP 404, code "model_not_found")
 json format_oai_model_not_found(const std::string & model_name);

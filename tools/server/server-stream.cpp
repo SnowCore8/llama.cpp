@@ -445,7 +445,7 @@ std::shared_ptr<stream_pipe_consumer> stream_pipe_consumer::create(stream_sessio
 static server_http_res_ptr make_error_response(int status, const std::string & message, error_type type) {
     auto res = std::make_unique<server_http_res>();
     json err = format_error_response(message, type);
-    res->status = json_value(err, "code", status);
+    res->status = error_status_from_body(err, status);
     res->content_type = "application/json; charset=utf-8";
     res->data = safe_json_to_str({{"error", err}});
     return res;
@@ -521,8 +521,8 @@ server_http_context::handler_t server_stream_make_lookup_handler() {
             auto res = std::make_unique<server_http_res>();
             res->status = 400;
             res->content_type = "application/json; charset=utf-8";
-            res->data = safe_json_to_str({{"error", {{"message", std::string("invalid body: ") + e.what()},
-                                                     {"type", "invalid_request_error"}}}});
+            res->data = safe_json_to_str({{"error", format_error_response(
+                std::string("invalid body: ") + e.what(), ERROR_TYPE_INVALID_REQUEST)}});
             return res;
         }
 

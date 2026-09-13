@@ -4470,7 +4470,7 @@ struct server_res_generator : server_res_spipe {
         data = safe_json_to_str(response_data);
     }
     void error(const json & error_data) {
-        status = json_value(error_data, "code", 500);
+        status = error_status_from_body(error_data);
         data = safe_json_to_str({{ "error", error_data }});
     }
 };
@@ -5716,13 +5716,9 @@ void server_routes::init_routes() {
             }
             // official error shape for a missing previous response (same wording as WebSocket)
             auto res = create_response();
-            res->status = 400;
-            res->data = safe_json_to_str({{"error", {
-                {"code",    "previous_response_not_found"},
-                {"message", server_responses_previous_not_found_message(msg)},
-                {"param",   "previous_response_id"},
-                {"type",    "invalid_request_error"},
-            }}});
+            res->error(format_error_response(
+                server_responses_previous_not_found_message(msg),
+                ERROR_TYPE_INVALID_REQUEST, "previous_response_id", "previous_response_not_found"));
             return res;
         }
 
@@ -5730,13 +5726,9 @@ void server_routes::init_routes() {
         const std::string req_model = json_value(prepared, "model", std::string());
         if (!req_model.empty() && !is_model_name_accepted(*meta, req_model)) {
             auto res = create_response();
-            res->status = 400;
-            res->data = safe_json_to_str({{"error", {
-                {"code",    "model_not_found"},
-                {"message", string_format("The requested model '%s' does not exist.", req_model.c_str())},
-                {"param",   "model"},
-                {"type",    "invalid_request_error"},
-            }}});
+            res->error(format_error_response(
+                string_format("The requested model '%s' does not exist.", req_model.c_str()),
+                ERROR_TYPE_INVALID_REQUEST, "model", "model_not_found"));
             return res;
         }
 

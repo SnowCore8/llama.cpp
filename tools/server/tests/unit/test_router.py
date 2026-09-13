@@ -492,7 +492,7 @@ def test_router_api_key_required():
         },
     )
     assert res.status_code == 401
-    assert res.body.get("error", {}).get("type") == "authentication_error"
+    assert res.body.get("error", {}).get("type") == "invalid_request_error"
 
     _load_model_and_wait(model_id, headers=auth_headers)
 

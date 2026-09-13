@@ -25,6 +25,7 @@
 #include <type_traits>
 #include <exception>
 #include <stdexcept>
+#include <unordered_map>
 #include <unordered_set>
 #include <chrono>
 #include <thread>
@@ -44,57 +45,65 @@
 #include <unistd.h>
 #endif
 
-json format_error_response(const std::string & message, const enum error_type type) {
+json format_error_response(const std::string & message, const enum error_type type, const std::string & param, const std::string & code) {
     std::string type_str;
-    int code = 500;
     switch (type) {
         case ERROR_TYPE_INVALID_REQUEST:
             type_str = "invalid_request_error";
-            code = 400;
             break;
         case ERROR_TYPE_AUTHENTICATION:
-            type_str = "authentication_error";
-            code = 401;
+            // official 401 body type is invalid_request_error (probed)
+            type_str = "invalid_request_error";
             break;
         case ERROR_TYPE_NOT_FOUND:
             type_str = "not_found_error";
-            code = 404;
             break;
         case ERROR_TYPE_SERVER:
             type_str = "server_error";
-            code = 500;
             break;
         case ERROR_TYPE_PERMISSION:
             type_str = "permission_error";
-            code = 403;
             break;
         case ERROR_TYPE_NOT_SUPPORTED:
             type_str = "not_supported_error";
-            code = 501;
             break;
         case ERROR_TYPE_UNAVAILABLE:
-            type_str = "unavailable_error";
-            code = 503;
+            // official 503 body type is service_unavailable_error (api reference)
+            type_str = "service_unavailable_error";
             break;
         case ERROR_TYPE_EXCEED_CONTEXT_SIZE:
             type_str = "exceed_context_size_error";
-            code = 400;
             break;
     }
+    // empty param/code become null, as the official error shape wants
     return json {
-        {"code", code},
+        {"code",    code.empty()  ? json(nullptr) : json(code)},
         {"message", message},
-        {"type", type_str},
+        {"param",   param.empty() ? json(nullptr) : json(param)},
+        {"type",    type_str},
     };
 }
 
+// HTTP status code for an error body, from its "type"; keep in sync with format_error_response
+int error_status_from_body(const json & error_data, int fallback) {
+    static const std::unordered_map<std::string, int> status_by_type = {
+        {"invalid_request_error",     400},
+        {"authentication_error",      401},
+        {"not_found_error",           404},
+        {"server_error",              500},
+        {"permission_error",          403},
+        {"not_supported_error",       501},
+        {"service_unavailable_error", 503},
+        {"exceed_context_size_error", 400},
+    };
+    const auto it = status_by_type.find(json_value(error_data, "type", std::string()));
+    return it == status_by_type.end() ? fallback : it->second;
+}
+
 json format_oai_model_not_found(const std::string & model_name) {
-    return json {{"error", {
-        {"code",    "model_not_found"},
-        {"message", string_format("The model `%s` does not exist or you do not have access to it.", model_name.c_str())},
-        {"param",   nullptr},
-        {"type",    "invalid_request_error"},
-    }}};
+    return json {{"error", format_error_response(
+        string_format("The model `%s` does not exist or you do not have access to it.", model_name.c_str()),
+        ERROR_TYPE_INVALID_REQUEST, "", "model_not_found")}};
 }
 
 bool server_openai_is_reasoning_effort(const std::string & effort) {

@@ -80,7 +80,7 @@ static server_http_context::handler_t ex_wrapper(server_http_context::handler_t 
         res->status = 500;
         try {
             json error_data = format_error_response(message, error);
-            res->status = json_value(error_data, "code", 500);
+            res->status = error_status_from_body(error_data);
             res->data = safe_json_to_str({{ "error", error_data }});
             SRV_WRN("got exception: %s\n", res->data.c_str());
         } catch (const std::exception & e) {
@@ -383,7 +383,9 @@ int llama_server(common_params & params, int argc, char ** argv) {
         res->status = 403;
         res->data = safe_json_to_str({
             {"error", {
+                {"code", nullptr},
                 {"message", "this feature is disabled"},
+                {"param", nullptr},
                 {"type", "feature_disabled"},
             }}
         });

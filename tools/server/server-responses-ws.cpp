@@ -208,7 +208,7 @@ static std::string ws_official_error_type(int status, const std::string & type) 
     }
     switch (status) {
         case 400: return "invalid_request_error";
-        case 401: return "authentication_error";
+        case 401: return "invalid_request_error";
         case 403: return "permission_error";
         case 404: return "not_found_error";
         default:  return "server_error";

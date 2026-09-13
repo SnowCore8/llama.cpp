@@ -160,11 +160,7 @@ bool server_http_context::init(const common_params & params) {
                 " (if base_url already ends with /v1, do not append another /v1)";
             res.set_content(
                 safe_json_to_str(json {
-                    {"error", {
-                        {"message", msg},
-                        {"type", "not_found_error"},
-                        {"code", 404}
-                    }}
+                    {"error", format_error_response(msg, ERROR_TYPE_NOT_FOUND)}
                 }),
                 "application/json; charset=utf-8"
             );
@@ -250,11 +246,7 @@ bool server_http_context::init(const common_params & params) {
         res.status = 401;
         res.set_content(
             safe_json_to_str(json {
-                {"error", {
-                    {"message", "Invalid API Key"},
-                    {"type", "authentication_error"},
-                    {"code", 401}
-                }}
+                {"error", format_error_response("Invalid API Key", ERROR_TYPE_AUTHENTICATION, "", "invalid_api_key")}
             }),
             "application/json; charset=utf-8"
         );
@@ -274,11 +266,7 @@ bool server_http_context::init(const common_params & params) {
             res.status = 503;
             res.set_content(
                 safe_json_to_str(json {
-                    {"error", {
-                        {"message", "Loading model"},
-                        {"type", "unavailable_error"},
-                        {"code", 503}
-                    }}
+                    {"error", format_error_response("Loading model", ERROR_TYPE_UNAVAILABLE)}
                 }),
                 "application/json; charset=utf-8"
             );

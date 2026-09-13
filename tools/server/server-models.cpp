@@ -1869,7 +1869,7 @@ static void res_ok(std::unique_ptr<server_http_res> & res, const json & response
 }
 
 static void res_err(std::unique_ptr<server_http_res> & res, const json & error_data) {
-    res->status = json_value(error_data, "code", 500);
+    res->status = error_status_from_body(error_data);
     res->data = safe_json_to_str({{ "error", error_data }});
 }
 

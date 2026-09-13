@@ -44,7 +44,7 @@ def test_incorrect_api_key(api_key: str):
     })
     assert res.status_code == 401
     assert "error" in res.body
-    assert res.body["error"]["type"] == "authentication_error"
+    assert res.body["error"]["type"] == "invalid_request_error"
 
 
 def test_correct_api_key():
