@@ -81,7 +81,7 @@
 
 | Suite | 模型 | 结果 | 证据 |
 |---|---|---|---|
-| Responses 全量 | Qwen3.5-0.8B-F16（V100，夹具服务器） | **370 = 347 PASS / 0 FAIL / 23 SKIP** | `/tmp/full-verify-resp.json` |
+| Responses 全量 | Qwen3.5-0.8B-F16（V100，夹具服务器） | **373 = 350 PASS / 0 FAIL / 23 SKIP** | `/tmp/full-verify-resp4.json` |
 | Chat 全量 | Qwen3.5-0.8B-F16 | 142 = 139 PASS / 2 FAIL / 1 SKIP | `/tmp/chat-full2.json` |
 | Responses 子集（6 组,模型行为类复核） | Qwen3.5-9B-Q4_K_M | **244 = 236 PASS / 0 FAIL / 8 SKIP** | `/tmp/w9b-review.json` |
 | Chat 全量（模型行为类复核） | Qwen3.5-9B-Q4_K_M | **142 = 141 PASS / 0 FAIL / 1 SKIP** | `/tmp/w9b-chat.json` |
