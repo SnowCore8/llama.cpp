@@ -371,6 +371,7 @@ def run_semantic_checks(
         extra,
         {
             "max_tool_calls": 1,
+            "temperature": 0,
             "tools": [
                 {
                     "type": "function",
