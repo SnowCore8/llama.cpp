@@ -5427,6 +5427,11 @@ void server_routes::init_routes() {
             res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
             return res;
         }
+        // official default: max_tokens = 16 when the request omits it
+        if ((!body.contains("max_tokens") || body.at("max_tokens").is_null()) &&
+            (!body.contains("n_predict")  || body.at("n_predict").is_null())) {
+            body["max_tokens"] = 16;
+        }
         return handle_completions_impl(
             req,
             SERVER_TASK_TYPE_COMPLETION,
