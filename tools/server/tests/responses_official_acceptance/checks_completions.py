@@ -1090,6 +1090,34 @@ def run_completions_checks(
         f"HTTP {code_ok_bo}",
     )
 
+    # Official stop: string or array of strings, at most 4 sequences. Too many
+    # sequences or a wrong JSON type must be rejected as invalid (400), not 5xx.
+    code_stop_many, data_stop_many = client.post_json(
+        "/v1/completions",
+        {
+            "model": model,
+            "prompt": _PROMPT,
+            "max_tokens": 4,
+            "stop": ["a", "b", "c", "d", "e"],
+        },
+    )
+    report.add(
+        "create_param",
+        "stop.too_many_sequences",
+        "PASS" if code_stop_many == 400 else "FAIL",
+        f"HTTP {code_stop_many} body={str(data_stop_many)[:120]}",
+    )
+    code_stop_type, data_stop_type = client.post_json(
+        "/v1/completions",
+        {"model": model, "prompt": _PROMPT, "max_tokens": 4, "stop": 5},
+    )
+    report.add(
+        "create_param",
+        "stop.invalid_type",
+        "PASS" if code_stop_type == 400 else "FAIL",
+        f"HTTP {code_stop_type} body={str(data_stop_type)[:120]}",
+    )
+
     for field in completion_param_names():
         if any(r.name == field for r in report.rows if r.area == "create_param"):
             continue

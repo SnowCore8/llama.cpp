@@ -56,17 +56,23 @@ _RUNNABLE_NAMES = (
     "steer interrupt -> successor",
     "steer.accepted on successor (re-steer)",
     "steer.error: response_already_completed",
+    "steer.error: response_not_active",
+    "steer.error: successor_creation_failed",
     "steer.pending: waiting for required input",
+    "steer.pending: one per steer, no duplicates",
     "inject.created shape",
     "inject.error: response_not_found",
     "inject.error: response_already_completed",
     "inject schema violation closes connection",
     "store=false continuation over WS (connection-local cache)",
     "store=false continuation rejected outside the connection",
+    "store=false cache is dropped with its connection",
+    "store=true continuation survives the connection",
     "steer successor carries store=false target",
     "store=false: failed same-lane continuation evicts the parent (cross-lane fork keeps it)",
     "generate=false warmup: created+completed, empty output, chainable (store=false)",
     "generate=false warmup does not consume queued steers",
+    "generate: non-boolean rejected (400)",
 )
 
 
@@ -792,6 +798,98 @@ def run_ws_checks(
                   and prev_ok)
             add(name, ok, f"code={err.get('code')!r} type={err.get('type')!r} prev_ok={prev_ok}")
 
+    def steer_response_not_active(deadline: float) -> None:
+        name = "steer.error: response_not_active"
+        # a target that ended as incomplete (not completed) is still known to the
+        # connection but no longer accepts steering input: response_not_active
+        with _connect(ws_connect, client) as ws:
+            ws.send(json.dumps(_create(model, extra, max_output_tokens=1, input=_LONG_PROMPT)))
+            f0 = _read_until(
+                ws, deadline,
+                lambda o, _fs: o.get("type") in _TERMINAL + ("error",),
+                max_frames=2000,
+            )
+            created0 = next((f for f in f0 if f.get("type") == "response.created"), None)
+            term0 = next((f for f in f0 if f.get("type") in _TERMINAL), None)
+            err0 = next((f for f in f0 if f.get("type") == "error"), None)
+            rid = _resp_id(created0)
+            if (not isinstance(rid, str) or err0 is not None or term0 is None
+                    or term0.get("type") != "response.incomplete"):
+                t0 = term0.get("type") if isinstance(term0, dict) else None
+                add(name, False, f"setup: id={rid!r} terminal={t0!r} (types={_types_of(f0)})")
+                return
+            ws.send(json.dumps({"type": "response.steer", "previous_response_id": rid, "input": "hello"}))
+            frames = _read_until(ws, deadline, lambda o, _fs: o.get("type") in ("response.steer.failed", "error"))
+            fail = next((f for f in frames if f.get("type") == "response.steer.failed"), None)
+            if fail is None:
+                add(name, False, f"no steer.failed (types={_types_of(frames)})")
+                return
+            err = _err_of(fail)
+            steer = fail.get("steer") if isinstance(fail.get("steer"), dict) else {}
+            prev_ok = steer.get("previous_response_id") == rid
+            no_id = "id" not in steer
+            ok = (err.get("type") == "invalid_request_error" and err.get("code") == "response_not_active"
+                  and prev_ok and no_id)
+            add(name, ok, f"terminal=incomplete code={err.get('code')!r} type={err.get('type')!r} "
+                          f"prev_ok={prev_ok} no_id={no_id}")
+
+    def steer_successor_failed(deadline: float) -> None:
+        name = "steer.error: successor_creation_failed"
+        tools = [
+            {
+                "type": "function",
+                "name": "get_project_status",
+                "description": "Get the status of a project",
+                "parameters": {"type": "object", "properties": {"project": {"type": "string"}},
+                               "required": ["project"]},
+            }
+        ]
+        with _connect(ws_connect, client) as ws:
+            # a) steer while the target is still running; the target completes with an
+            #    unanswered tool call, so the queued steer parks as pending input
+            ev = _create(model, extra, tools=tools, tool_choice={"type": "function", "name": "get_project_status"},
+                         input="Use the get_project_status tool to check the task tracker project.",
+                         max_output_tokens=64)
+            ws.send(json.dumps(ev))
+            pre = _read_until(ws, deadline, lambda o, _fs: o.get("type") in _START_STOP)
+            rid = next((_resp_id(f) for f in pre if f.get("type") == "response.created"), None)
+            if not isinstance(rid, str):
+                add(name, False, f"no response.created (types={_types_of(pre)})")
+                return
+            ws.send(json.dumps({"type": "response.steer", "previous_response_id": rid,
+                                "input": "Also mention the deadline."}))
+            f1 = _read_until(
+                ws, deadline,
+                lambda o, _fs: o.get("type") in ("response.steer.pending", "response.steer.failed", "error"),
+                max_frames=2000,
+            )
+            pend = next((f for f in f1 if f.get("type") == "response.steer.pending"), None)
+            sbad = next((f for f in f1 if f.get("type") in ("response.steer.failed", "error")), None)
+            if pend is None or sbad is not None:
+                sb = sbad.get("type") if isinstance(sbad, dict) else None
+                add(name, False, f"setup: no steer.pending (found={sb!r} types={_types_of(f1)})")
+                return
+            # b) an explicit create carries the pending steer, then fails before
+            #    response.created: the carried input comes back as successor_creation_failed
+            cont = _create(model, extra, max_output_tokens=16)
+            cont["previous_response_id"] = rid
+            cont["temperature"] = "hot"  # reliably rejected at the route level
+            ws.send(json.dumps(cont))
+            f2 = _read_until(ws, deadline, lambda o, _fs: o.get("type") == "response.steer.failed", max_frames=2000)
+            fail2 = next((f for f in f2 if f.get("type") == "response.steer.failed"), None)
+            err2 = next((f for f in f2 if f.get("type") == "error"), None)
+            if fail2 is None:
+                add(name, False, f"no steer.failed after the failed carrier (types={_types_of(f2)})")
+                return
+            e2 = _err_of(fail2)
+            steer2 = fail2.get("steer") if isinstance(fail2.get("steer"), dict) else {}
+            carrier_ok = isinstance(err2, dict) and err2.get("status") == 400
+            prev_ok = steer2.get("previous_response_id") == rid
+            ok = (e2.get("type") == "invalid_request_error" and e2.get("code") == "successor_creation_failed"
+                  and prev_ok and carrier_ok)
+            carc = err2.get("status") if isinstance(err2, dict) else None
+            add(name, ok, f"carrier_status={carc!r} code={e2.get('code')!r} type={e2.get('type')!r} prev_ok={prev_ok}")
+
     def steer_pending(deadline: float) -> None:
         name = "steer.pending: waiting for required input"
         tools = [
@@ -892,6 +990,52 @@ def run_ws_checks(
             add(name, ok, f"pending_ok={pend_ok} reason={p_reason!r} "
                           f"req={len(req)} fc={len(fcalls)} cont_term={ctype} "
                           f"steer_failed={fail is not None or f2bad is not None or cbad is not None}")
+
+    def steer_pending_once(deadline: float) -> None:
+        name = "steer.pending: one per steer, no duplicates"
+        # two queued submissions on a completed-with-tools target: each steer gets
+        # exactly one response.steer.pending (the flag makes the event emit once)
+        tools = [
+            {
+                "type": "function",
+                "name": "get_project_status",
+                "description": "Get the status of a project",
+                "parameters": {"type": "object", "properties": {"project": {"type": "string"}},
+                               "required": ["project"]},
+            }
+        ]
+        with _connect(ws_connect, client) as ws:
+            ev = _create(model, extra, tools=tools, tool_choice={"type": "function", "name": "get_project_status"},
+                         input="Use the get_project_status tool to check the task tracker project.",
+                         max_output_tokens=64)
+            ws.send(json.dumps(ev))
+            pre = _read_until(ws, deadline, lambda o, _fs: o.get("type") in _START_STOP, max_frames=2000)
+            rid = _resp_id(next((f for f in pre if f.get("type") == "response.created"), None))
+            if not isinstance(rid, str):
+                add(name, False, f"no response.created (types={_types_of(pre)})")
+                return
+            ws.send(json.dumps({"type": "response.steer", "previous_response_id": rid, "input": "Also be brief."}))
+            ws.send(json.dumps({"type": "response.steer", "previous_response_id": rid, "input": "And add a caveat."}))
+            frames: list[dict[str, Any]] = []
+            while len(frames) < 2000:
+                obj = _recv_frame(ws, deadline)
+                if obj is None:
+                    break
+                frames.append(obj)
+                n_pend = sum(1 for f in frames if f.get("type") == "response.steer.pending")
+                if n_pend >= 2 or obj.get("type") in ("response.steer.failed", "error"):
+                    break
+            accepted = [f for f in frames if f.get("type") == "response.steer.accepted"]
+            pends = [f for f in frames if f.get("type") == "response.steer.pending"]
+            fails = [f for f in frames if f.get("type") in ("response.steer.failed", "error")]
+            acc_ids = [(f.get("steer") or {}).get("id") for f in accepted]
+            pend_ids = [(f.get("steer") or {}).get("id") for f in pends]
+            two_each = len(accepted) == 2 and len(pends) == 2
+            distinct = len(set(pend_ids)) == 2
+            matched = set(pend_ids) <= set(acc_ids)
+            ok = two_each and distinct and matched and not fails
+            add(name, ok, f"accepted={len(accepted)} pending={len(pends)} distinct={distinct} "
+                          f"matched={matched} failed={len(fails)}")
 
     def inject_created(deadline: float) -> None:
         name = "inject.created shape"
@@ -1091,6 +1235,90 @@ def run_ws_checks(
                       f"http: {code_b} code={eb.get('code')!r} type={eb.get('type')!r} msg={msg_b!r}; "
                       f"forge: {code_c} code={ec.get('code')!r} type={ec.get('type')!r} msg={msg_c!r}")
             add(name, a_ok and b_ok and c_ok, detail)
+
+    def store_false_cache_dropped_on_close(deadline: float) -> None:
+        name = "store=false cache is dropped with its connection"
+        rid: Any = None
+        with _connect(ws_connect, client) as ws:
+            ws.send(json.dumps(_create(model, extra, store=False, max_output_tokens=16)))
+            f0 = _read_until(
+                ws, deadline,
+                lambda o, _fs: o.get("type") in _TERMINAL + ("error",),
+                max_frames=2000,
+            )
+            created0 = next((f for f in f0 if f.get("type") == "response.created"), None)
+            term0 = next((f for f in f0 if f.get("type") in _TERMINAL), None)
+            err0 = next((f for f in f0 if f.get("type") == "error"), None)
+            rid = _resp_id(created0)
+            if (not isinstance(rid, str) or err0 is not None or term0 is None
+                    or term0.get("type") != "response.completed"):
+                t0 = term0.get("type") if isinstance(term0, dict) else None
+                add(name, False, f"setup: id={rid!r} terminal={t0!r} (types={_types_of(f0)})")
+                return
+        # the owner connection is gone: no new connection may continue it
+        with _connect(ws_connect, client) as ws2:
+            ev = _create(model, extra, max_output_tokens=16)
+            ev["previous_response_id"] = rid
+            ws2.send(json.dumps(ev))
+            f1 = _read_until(
+                ws2, min(deadline, time.monotonic() + 15.0),
+                lambda o, _fs: o.get("type") in ("error", "response.created", "response.failed"),
+            )
+            err1 = next((f for f in f1 if f.get("type") == "error"), None)
+            created1 = next((f for f in f1 if f.get("type") == "response.created"), None)
+        st1 = err1.get("status") if isinstance(err1, dict) else None
+        code1 = _err_of(err1).get("code")
+        ws_ok = err1 is not None and st1 == 400 and code1 == "previous_response_not_found" and created1 is None
+        # the HTTP surface stays consistent after the connection closed
+        body = {"model": model, "input": "x", "previous_response_id": rid, "max_output_tokens": 16, **extra}
+        code_h, data_h = client.post_json("/v1/responses", body)
+        eh = _err_of(data_h)
+        http_ok = (code_h == 400 and eh.get("type") == "invalid_request_error"
+                   and eh.get("code") == "previous_response_not_found")
+        add(name, ws_ok and http_ok,
+            f"ws: status={st1!r} code={code1!r} started={created1 is not None}; "
+            f"http: {code_h} code={eh.get('code')!r}")
+
+    def store_true_continuation(deadline: float) -> None:
+        name = "store=true continuation survives the connection"
+        rid: Any = None
+        with _connect(ws_connect, client) as ws:
+            ws.send(json.dumps(_create(model, extra, store=True, max_output_tokens=16)))
+            f0 = _read_until(
+                ws, deadline,
+                lambda o, _fs: o.get("type") in _TERMINAL + ("error",),
+                max_frames=2000,
+            )
+            created0 = next((f for f in f0 if f.get("type") == "response.created"), None)
+            term0 = next((f for f in f0 if f.get("type") in _TERMINAL), None)
+            err0 = next((f for f in f0 if f.get("type") == "error"), None)
+            rid = _resp_id(created0)
+            if (not isinstance(rid, str) or err0 is not None or term0 is None
+                    or term0.get("type") != "response.completed"):
+                t0 = term0.get("type") if isinstance(term0, dict) else None
+                add(name, False, f"setup: id={rid!r} terminal={t0!r} (types={_types_of(f0)})")
+                return
+        # store=true lives in the global store, so a fresh connection can continue it
+        with _connect(ws_connect, client) as ws2:
+            ev = _create(model, extra, max_output_tokens=16)
+            ev["previous_response_id"] = rid
+            ws2.send(json.dumps(ev))
+            f1 = _read_until(
+                ws2, deadline,
+                lambda o, _fs: o.get("type") in _TERMINAL + ("error",),
+                max_frames=2000,
+            )
+            created1 = next((f for f in f1 if f.get("type") == "response.created"), None)
+            term1 = next((f for f in f1 if f.get("type") in _TERMINAL), None)
+            err1 = next((f for f in f1 if f.get("type") == "error"), None)
+            cid = _resp_id(created1)
+            new_created = isinstance(cid, str) and cid != rid
+            cont_term = term1.get("type") if isinstance(term1, dict) else None
+            ok = new_created and cont_term == "response.completed" and err1 is None
+            detail = f"first={rid!r} second={cid!r} terminal={cont_term!r} error={err1 is not None}"
+            if err1 is not None:
+                detail += f" err={json.dumps(_err_of(err1))[:110]}"
+            add(name, ok, detail)
 
     def steer_successor_store_false(deadline: float) -> None:
         name = "steer successor carries store=false target"
@@ -1368,6 +1596,20 @@ def run_ws_checks(
                           f"steer_failed={state['sfail'] is not None} err={state['err'] is not None}; "
                           f"tail={_types_of(frames[-8:])}")
 
+    def generate_non_boolean(deadline: float) -> None:
+        name = "generate: non-boolean rejected (400)"
+        # generate must be a boolean; a string slips past the warmup branch and is
+        # rejected by the create path as a transport-level 400
+        with _connect(ws_connect, client) as ws:
+            ws.send(json.dumps(_create(model, extra, generate="yes")))
+            frames, outcome, ev = _drain_one(ws, deadline, max_frames=32)
+            err = _err_of(ev)
+            st = ev.get("status") if isinstance(ev, dict) else None
+            msg = str(err.get("message"))
+            ok = (outcome == "error" and st == 400 and err.get("type") == "invalid_request_error"
+                  and "boolean" in msg)
+            add(name, ok, f"outcome={outcome} status={st} error={json.dumps(err)[:180]}")
+
     guarded("connect/create default lane", default_lane)
     guarded("stream_id echo (named lane)", named_lane_echo)
     guarded("stream_id validation", stream_id_validation)
@@ -1388,17 +1630,23 @@ def run_ws_checks(
     guarded("steer interrupt -> successor", steer_interrupt_successor)
     guarded("steer.accepted on successor (re-steer)", steer_successor_resteer)
     guarded("steer.error: response_already_completed", steer_already_completed)
+    guarded("steer.error: response_not_active", steer_response_not_active)
+    guarded("steer.error: successor_creation_failed", steer_successor_failed)
     guarded("steer.pending: waiting for required input", steer_pending)
+    guarded("steer.pending: one per steer, no duplicates", steer_pending_once)
     guarded("inject.created shape", inject_created)
     guarded("inject.error: response_not_found", inject_not_found)
     guarded("inject.error: response_already_completed", inject_already_completed)
     guarded("inject schema violation closes connection", inject_schema_close)
     guarded("store=false continuation over WS (connection-local cache)", store_false_continuation)
     guarded("store=false continuation rejected outside the connection", store_false_outside_connection)
+    guarded("store=false cache is dropped with its connection", store_false_cache_dropped_on_close)
+    guarded("store=true continuation survives the connection", store_true_continuation)
     guarded("steer successor carries store=false target", steer_successor_store_false)
     guarded("store=false: failed same-lane continuation evicts the parent (cross-lane fork keeps it)",
             store_false_failed_same_lane_eviction)
     guarded("generate=false warmup: created+completed, empty output, chainable (store=false)",
             gen_false_warmup_shape)
     guarded("generate=false warmup does not consume queued steers", gen_false_warmup_steers)
+    guarded("generate: non-boolean rejected (400)", generate_non_boolean)
     add_skips()

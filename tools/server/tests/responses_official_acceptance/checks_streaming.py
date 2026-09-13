@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Callable
 
 from .catalog import CONDITIONAL_STREAM_EVENTS, CORE_STREAM_EVENTS
@@ -548,6 +549,103 @@ def run_streaming_checks(
         "PASS" if not raw_events and reasoning_item is not None and "content" not in reasoning_item
         else "FAIL",
         f"events={raw_events} content={'content' in (reasoning_item or {})}",
+    )
+
+    # --- pre-flight rejection: a prompt that exceeds the context is rejected before
+    #     response.created, so the client gets a plain JSON error, not SSE frames ---
+    huge = "test " * 60000
+    xcode, xheaders, xraw = client.request(
+        "POST",
+        "/v1/responses",
+        {
+            "model": model,
+            "input": huge,
+            "max_output_tokens": 8,
+            "stream": True,
+            **extra,
+        },
+        stream=True,
+    )
+    xct = xheaders.get("Content-Type", "")
+    try:
+        xjson = json.loads(xraw.decode(errors="replace") or "null")
+    except Exception:
+        xjson = None
+    xbody = _as_dict(xjson)
+    xinner = _as_dict(xbody.get("error")) or xbody
+    pre_ok = (
+        xcode == 400
+        and "text/event-stream" not in xct
+        and isinstance(xjson, dict)
+        and isinstance(xinner.get("message"), str)
+        and bool(xinner.get("message"))
+    )
+    report.add(
+        "stream_event",
+        "pre_created_error_is_plain_json",
+        "PASS" if pre_ok else "FAIL",
+        f"HTTP {xcode} ct={xct!r} type={xinner.get('type')!r} msg={str(xinner.get('message'))[:90]!r}",
+    )
+
+    # --- custom tool call stream: item added -> input delta -> input done -> item done ---
+    ccode, _, craw = client.request(
+        "POST",
+        "/v1/responses",
+        {
+            "model": model,
+            "input": "Call the dj_play tool now.",
+            "max_output_tokens": 128,
+            "temperature": 0,
+            "stream": True,
+            "tools": [{"type": "custom", "name": "dj_play", "format": {"type": "text"}}],
+            "tool_choice": {"type": "custom", "name": "dj_play"},
+            **extra,
+        },
+        stream=True,
+    )
+    cevents = parse_sse(craw) if ccode == 200 else []
+    c_added = [
+        i
+        for i, (t, obj) in enumerate(cevents)
+        if t == "response.output_item.added"
+        and _as_dict(obj.get("item")).get("type") == "custom_tool_call"
+    ]
+    c_delta = [
+        (i, _as_dict(obj))
+        for i, (t, obj) in enumerate(cevents)
+        if t == "response.custom_tool_call_input.delta"
+    ]
+    c_done = [
+        (i, _as_dict(obj))
+        for i, (t, obj) in enumerate(cevents)
+        if t == "response.custom_tool_call_input.done"
+    ]
+    c_item_done = [
+        _as_dict(obj.get("item"))
+        for t, obj in cevents
+        if t == "response.output_item.done"
+        and _as_dict(obj.get("item")).get("type") == "custom_tool_call"
+    ]
+    c_delta_text = "".join(str(obj.get("delta", "")) for _, obj in c_delta)
+    c_done_input = c_done[0][1].get("input") if c_done else None
+    c_item = c_item_done[0] if c_item_done else {}
+    c_order_ok = bool(c_added and c_delta and c_done) and c_added[0] < c_delta[0][0] < c_done[0][0]
+    c_ok = (
+        ccode == 200
+        and c_order_ok
+        and all(isinstance(obj.get("delta"), str) for _, obj in c_delta)
+        and isinstance(c_done_input, str)
+        and c_item.get("name") == "dj_play"
+        and isinstance(c_item.get("call_id"), str)
+    )
+    report.add(
+        "stream_event",
+        "custom_tool_call_stream",
+        "PASS" if c_ok else "FAIL",
+        f"HTTP {ccode} added={len(c_added)} delta={len(c_delta)} done={len(c_done)} "
+        f"order_ok={c_order_ok} name={c_item.get('name')!r} id={str(c_item.get('id'))[:20]!r} "
+        f"call_id={str(c_item.get('call_id'))[:20]!r} delta={c_delta_text[:44]!r} "
+        f"input={str(c_done_input)[:32]!r}",
     )
 
     _mark_conditional(report, set(types), forced)

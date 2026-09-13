@@ -11,6 +11,7 @@ from pathlib import Path
 from .checks_completions import run_completions_checks
 from .checks_conversations import run_conversation_checks, run_conversation_response_checks
 from .checks_create_params import run_create_param_checks
+from .checks_embeddings import run_embeddings_checks
 from .checks_endpoints import run_endpoint_checks
 from .checks_models import run_models_checks
 from .checks_prompt_cache import run_prompt_cache_checks
@@ -34,6 +35,7 @@ SUITE_GROUPS = (
     "endpoint",
     "models",
     "completions",
+    "embeddings",
     "create_param",
     "sdk",
     "streaming",
@@ -157,6 +159,8 @@ def main(argv: list[str] | None = None) -> int:
         _run_suite(report, "endpoint", run_models_checks, client, report, args.model)
     if "completions" in sel:
         _run_suite(report, "endpoint", run_completions_checks, client, report, args.model, extra)
+    if "embeddings" in sel:
+        _run_suite(report, "endpoint", run_embeddings_checks, client, report, args.model)
     if "create_param" in sel:
         _run_suite(report, "create_param", run_create_param_checks, client, report, args.model, extra, rid)
     if "sdk" in sel:

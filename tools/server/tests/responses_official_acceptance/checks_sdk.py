@@ -94,6 +94,50 @@ def run_sdk_checks(
         report.add("sdk", "responses.retrieve", "SKIP", "no stored response id")
 
     try:
+        from openai.types.responses import ResponseCustomToolCall
+
+        tool_resp = client.responses.create(
+            model=model,
+            input="Call the dj_play tool now.",
+            tools=[{"type": "custom", "name": "dj_play", "format": {"type": "text"}}],
+            tool_choice={"type": "custom", "name": "dj_play"},
+            max_output_tokens=128,
+            extra_body=extra_body,
+        )
+        tool_items = [
+            item
+            for item in (getattr(tool_resp, "output", None) or [])
+            if getattr(item, "type", None) == "custom_tool_call"
+        ]
+        tool_item = tool_items[0] if tool_items else None
+        fields_ok = (
+            tool_item is not None
+            and getattr(tool_item, "name", None) == "dj_play"
+            and isinstance(getattr(tool_item, "input", None), str)
+            and isinstance(getattr(tool_item, "call_id", None), str)
+            and isinstance(getattr(tool_item, "id", None), str)
+        )
+        typed = isinstance(tool_item, ResponseCustomToolCall)
+        detail = (
+            f"n={len(tool_items)} typed={typed} name={getattr(tool_item, 'name', None)!r} "
+            f"input={str(getattr(tool_item, 'input', None))[:60]!r} "
+            f"id={str(getattr(tool_item, 'id', None))[:20]!r}"
+        )
+        if tool_item is not None and not typed:
+            # Item present but the SDK union did not type it; field checks decide the verdict.
+            detail += " (fields-only: SDK union missed custom_tool_call)"
+        report.add("sdk", "responses.create.custom_tool", "PASS" if fields_ok else "FAIL", detail)
+    except ImportError as e:
+        report.add(
+            "sdk",
+            "responses.create.custom_tool",
+            "SKIP",
+            f"ResponseCustomToolCall missing: {e}"[:200],
+        )
+    except Exception as e:
+        report.add("sdk", "responses.create.custom_tool", "FAIL", f"{type(e).__name__}: {e}"[:240])
+
+    try:
         types: list[str] = []
         with client.responses.stream(
             model=model,
@@ -374,6 +418,34 @@ def run_sdk_checks(
         report.add("sdk", "models.list", "FAIL", f"{type(e).__name__}: {e}"[:200])
 
     try:
+        emb = client.embeddings.create(model=model, input="SDK embeddings roundtrip probe")
+        vec = emb.data[0].embedding
+        ok = (
+            emb.object == "list"
+            and emb.model == model
+            and emb.data[0].object == "embedding"
+            and emb.data[0].index == 0
+            and isinstance(vec, list)
+            and len(vec) > 1
+            and all(isinstance(x, float) for x in vec)
+            and emb.usage.prompt_tokens > 0
+            and emb.usage.total_tokens == emb.usage.prompt_tokens
+        )
+        report.add(
+            "sdk",
+            "embeddings.create",
+            "PASS" if ok else "FAIL",
+            f"n={len(emb.data)} dim={len(vec)} model={emb.model!r} usage={emb.usage!r}",
+        )
+    except Exception as e:
+        msg = f"{type(e).__name__}: {e}"[:240]
+        # Server started without --embeddings answers with this message; not a failure.
+        if "does not support embeddings" in msg:
+            report.add("sdk", "embeddings.create", "SKIP", msg)
+        else:
+            report.add("sdk", "embeddings.create", "FAIL", msg)
+
+    try:
         # /no_think: raw Completions has no chat template; reasoning models otherwise
         # spend the token budget inside <think> and miss the exact reply.
         cmpl = client.completions.create(
@@ -405,7 +477,7 @@ def run_sdk_checks(
         with client.completions.create(
             model=model,
             # Instruct-style marker (same idea as non-stream SDK_OAI_CMPL). Avoid
-            # "The answer is SDK_CMPL_S1" — models often continue S2/S3… without S1.
+            # "The answer is SDK_CMPL_S1" - models often continue S2/S3... without S1.
             prompt="/no_think\nReply with exactly: SDK_CMPL_STREAM",
             max_tokens=32,
             temperature=0,

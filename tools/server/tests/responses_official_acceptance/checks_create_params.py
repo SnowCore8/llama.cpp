@@ -642,6 +642,72 @@ def run_create_param_checks(
         f"HTTP {code}",
     )
 
+    # --- tools.custom_tool_call: official custom tool (free-form input) on Responses ---
+    code, data = create(
+        {
+            "tools": [{"type": "custom", "name": "dj_play", "format": {"type": "text"}}],
+            "tool_choice": {"type": "custom", "name": "dj_play"},
+            "input": "Call the dj_play tool now.",
+            "temperature": 0,
+            "max_output_tokens": 128,
+        }
+    )
+    ctcs = [
+        x
+        for x in (data.get("output") or [])
+        if isinstance(x, dict) and x.get("type") == "custom_tool_call"
+    ]
+    ctc = ctcs[0] if ctcs else {}
+    ctc_id = ctc.get("id")
+    ctc_ok = (
+        code == 200
+        and bool(ctcs)
+        and ctc.get("name") == "dj_play"
+        and isinstance(ctc.get("input"), str)
+        and isinstance(ctc.get("call_id"), str)
+        and isinstance(ctc_id, str)
+        and ctc_id.startswith("ctc_")
+    )
+    report.add(
+        "create_param",
+        "tools.custom_tool_call",
+        "PASS" if ctc_ok else "FAIL",
+        f"HTTP {code} n={len(ctcs)} name={ctc.get('name')!r} id={str(ctc_id)[:32]!r} "
+        f"input={str(ctc.get('input'))[:80]!r}",
+    )
+
+    # --- input.custom_tool_call_replay: replayed custom call + output are accepted ---
+    code, data = create(
+        {
+            "input": [
+                {"role": "user", "content": "Play song a with the dj_play tool."},
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_ctc_1",
+                    "name": "dj_play",
+                    "input": '{"song": "a"}',
+                },
+                {"type": "custom_tool_call_output", "call_id": "call_ctc_1", "output": "ok"},
+                {"role": "user", "content": "Reply with exactly: CTC_REPLAY_OK"},
+            ],
+            "temperature": 0,
+            "max_output_tokens": 64,
+        }
+    )
+    replay_types = [
+        x.get("type") for x in (data.get("output") or []) if isinstance(x, dict)
+    ]
+    replay_text = output_text(data) if code == 200 else ""
+    replay_err = data.get("error") if isinstance(data, dict) else None
+    replay_ok = code == 200 and replay_err is None
+    report.add(
+        "create_param",
+        "input.custom_tool_call_replay",
+        "PASS" if replay_ok else "FAIL",
+        f"HTTP {code} out={replay_types[:3]} text={replay_text[:50]!r}"
+        + ("" if replay_ok else f" err={str(replay_err)[:90]}"),
+    )
+
     # --- official field limits: metadata / safety_identifier / service_tier / include ---
     code_md_ok, _ = create({"metadata": {"k" * 64: "v" * 512}})
     code_md_many, _ = create(
@@ -747,7 +813,7 @@ def run_create_param_checks(
         f"content_key={has_content_key} status={data.get('status')!r} text={output_text(data)!r}",
     )
 
-    # invalid reasoning.effort → 400
+    # invalid reasoning.effort -> 400
     code, data = create(
         {
             "reasoning": {"effort": "not-a-real-effort"},
@@ -819,7 +885,7 @@ def run_create_param_checks(
         "ok" if not effort_fail else ",".join(effort_fail),
     )
 
-    # Invalid sibling fields → 400
+    # Invalid sibling fields -> 400
     invalid_field_cases = [
         ("reasoning.context.invalid", {"effort": "none", "context": "bogus"}),
         ("reasoning.summary.invalid", {"effort": "none", "summary": "bogus"}),
@@ -843,7 +909,7 @@ def run_create_param_checks(
             f"HTTP {c} body={d!r}",
         )
 
-    # reasoning.summary → local summary_text; concise observably shorter than detailed
+    # reasoning.summary -> local summary_text; concise observably shorter than detailed
     code_c, data_c = create(
         {
             "reasoning": {"effort": "high", "summary": "concise"},
@@ -1327,7 +1393,7 @@ def run_create_param_checks(
             )
             continue
         # text.format json_object: grammar-constrained JSON (not prompt luck).
-        # text.verbosity: low system hint → observably shorter than high (same open prompt).
+        # text.verbosity: low system hint -> observably shorter than high (same open prompt).
         if field == "text":
             code, data = create(
                 {
@@ -1517,7 +1583,7 @@ def run_create_param_checks(
             and isinstance(got, dict)
             and got.get(field) == data.get(field)
         )
-        # background already handled; store false wouldn't retrieve — these are store=true default
+        # background already handled; store false wouldn't retrieve - these are store=true default
         report.add(
             "create_param",
             field,
@@ -1595,7 +1661,7 @@ def run_create_param_checks(
             detail = f"HTTP {code} body={blob[:200]!r}"
         report.add("create_param", bp_name, "PASS" if ok else "FAIL", detail)
 
-    # include covered via top_logprobs probe — ensure catalog row exists
+    # include covered via top_logprobs probe - ensure catalog row exists
     if not any(r.name == "include" for r in report.rows if r.area == "create_param"):
         report.add(
             "create_param",
