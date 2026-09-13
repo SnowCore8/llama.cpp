@@ -199,6 +199,22 @@ static json ws_make_error_from_failure(
     return ws_make_error(status, type, code, message, param, stream_id);
 }
 
+// The official error.type uses the HTTP error vocabulary; keep a body-provided
+// type only when it already belongs to it, otherwise derive it from the status.
+static std::string ws_official_error_type(int status, const std::string & type) {
+    if (type == "invalid_request_error" || type == "authentication_error" ||
+            type == "permission_error" || type == "not_found_error" || type == "server_error") {
+        return type;
+    }
+    switch (status) {
+        case 400: return "invalid_request_error";
+        case 401: return "authentication_error";
+        case 403: return "permission_error";
+        case 404: return "not_found_error";
+        default:  return "server_error";
+    }
+}
+
 // Converts a non-streaming error response body to the official nested error event.
 static json ws_error_from_response(const server_http_res & res, const std::string & stream_id) {
     std::string message = "internal error";
@@ -223,7 +239,7 @@ static json ws_error_from_response(const server_http_res & res, const std::strin
             message = res.data;
         }
     }
-    return ws_make_error_from_failure(res.status, type, code, message, param, stream_id);
+    return ws_make_error_from_failure(res.status, ws_official_error_type(res.status, type), code, message, param, stream_id);
 }
 
 // 32 lowercase hex characters from the shared generator.
@@ -383,8 +399,14 @@ static std::string ws_sse_data(const std::string & block) {
 static json ws_prepare_event(const json & in, const std::string & stream_id) {
     json out;
     if (json_value(in, "type", std::string()) == "error") {
+        // the SSE frame carries only the Responses error code: client-input
+        // failures (invalid_prompt) map onto invalid_request_error, the rest
+        // are internal failures
+        const std::string code = in.contains("code") && in.at("code").is_string()
+            ? in.at("code").get<std::string>()
+            : std::string();
         json error_obj = {
-            {"type",    "server_error"},
+            {"type",    code == "invalid_prompt" ? "invalid_request_error" : "server_error"},
             {"code",    in.contains("code") ? in.at("code") : json(nullptr)},
             {"message", json_value(in, "message", std::string())},
             {"param",   in.contains("param") ? in.at("param") : json(nullptr)},
