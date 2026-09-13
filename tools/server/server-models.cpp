@@ -256,19 +256,34 @@ private:
     std::thread th;
 };
 
+// pool key for the per-device model limit: the trimmed --device value of a model,
+// "" when the option is absent (all such models share one default pool)
+static std::string model_device_pool(const server_model_meta & meta) {
+    std::string device;
+    meta.preset.get_option("LLAMA_ARG_DEVICE", device);
+    return string_strip(device);
+}
+
 struct server_lru_sched {
     server_lru_sched(server_models & models) : models(models) {}
 
-    bool has_capacity(std::unique_lock<std::mutex> & lk) {
+    bool has_capacity(std::unique_lock<std::mutex> & lk, const std::string & pool) {
         check_lock(lk);
-        return models.base_params.models_max <= 0
-            || count_running() < (size_t) models.base_params.models_max;
+        const common_params & bp = models.base_params;
+        if (bp.models_max <= 0 && bp.models_max_per_device <= 0) {
+            return true;
+        }
+        if (bp.models_max > 0 && count_running() >= (size_t) bp.models_max) {
+            return false;
+        }
+        return bp.models_max_per_device <= 0 || count_running(pool) < (size_t) bp.models_max_per_device;
     }
 
     // returns "" if no model can be given up
     // a model marked no-evict is only picked when no other one can be given up, so the mark
     // can delay an eviction but never block a load
-    std::string pick_victim(std::unique_lock<std::mutex> & lk) {
+    // if pool_filter is not null, only models of that pool are considered
+    std::string pick_victim(std::unique_lock<std::mutex> & lk, const std::string * pool_filter) {
         check_lock(lk);
         std::string victim;
         int64_t victim_last_used = 0;
@@ -281,6 +296,9 @@ struct server_lru_sched {
             }
             // already on its way out, or a queued request wants it
             if (models.stopping_models.count(m.first) || find(m.first)) {
+                continue;
+            }
+            if (pool_filter && model_device_pool(m.second.meta) != *pool_filter) {
                 continue;
             }
             if (m.second.meta.no_evict) {
@@ -333,16 +351,57 @@ struct server_lru_sched {
         return queue.empty();
     }
 
+    // with no global limit the pools do not compete, so only entries of the same pool wait
+    // for each other; with a global limit the whole queue is served in arrival order
+    bool pools_are_independent(std::unique_lock<std::mutex> & lk) {
+        check_lock(lk);
+        const common_params & bp = models.base_params;
+        return bp.models_max <= 0 && bp.models_max_per_device > 0;
+    }
+
+    // any queued entry, waiting or loading, that wants a model of this pool
+    bool queue_has_pool(std::unique_lock<std::mutex> & lk, const std::string & pool) {
+        check_lock(lk);
+        for (const auto & e : queue) {
+            auto it = models.mapping.find(e.model_id);
+            const std::string p = it == models.mapping.end() ? std::string() : model_device_pool(it->second.meta);
+            if (p == pool) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // true if it is this model's turn to load, and nobody is loading it yet
     bool try_claim(std::unique_lock<std::mutex> & lk, const std::string & model_id) {
         check_lock(lk);
-        if (queue.empty() || queue.front().model_id != model_id || queue.front().loading) {
+        auto it = models.mapping.find(model_id);
+        const std::string pool = it == models.mapping.end() ? std::string() : model_device_pool(it->second.meta);
+        // an entry waits only for entries of its own pool when the pools are independent;
+        // with a global limit all entries compete, so only the queue head may claim
+        const bool independent = pools_are_independent(lk);
+        entry_t * mine = nullptr;
+        for (auto & e : queue) {
+            if (e.model_id == model_id) {
+                mine = &e;
+                break;
+            }
+            if (!independent) {
+                return false;
+            }
+            auto other = models.mapping.find(e.model_id);
+            const std::string other_pool = other == models.mapping.end() ? std::string() : model_device_pool(other->second.meta);
+            if (other_pool == pool) {
+                return false; // pool fair: an earlier request of the same pool goes first
+            }
+        }
+        if (mine == nullptr || mine->loading) {
             return false;
         }
-        if (!has_capacity(lk)) {
+        if (!has_capacity(lk, pool)) {
             return false;
         }
-        queue.front().loading = true;
+        mine->loading = true;
         return true;
     }
 
@@ -365,7 +424,40 @@ struct server_lru_sched {
     // caller must hold models.mutex; never blocks, so it is safe from any thread
     void tick(std::unique_lock<std::mutex> & lk) {
         check_lock(lk);
-        if (models.base_params.models_max <= 0 || queue.empty()) {
+        const int cap_global = models.base_params.models_max;
+        const int cap_device = models.base_params.models_max_per_device;
+        if ((cap_global <= 0 && cap_device <= 0) || queue.empty()) {
+            return;
+        }
+        // per-pool deficits first: a queued request can only take a slot of its own pool
+        if (cap_device > 0) {
+            std::map<std::string, int> n_needed_pool;  // waiting entries per pool
+            std::map<std::string, int> n_claimed_pool; // claimed slots per pool, load not spawned yet
+            for (const auto & e : queue) {
+                auto it = models.mapping.find(e.model_id);
+                const std::string pool = it == models.mapping.end() ? std::string() : model_device_pool(it->second.meta);
+                if (!e.loading) {
+                    n_needed_pool[pool]++;
+                    continue;
+                }
+                if (it != models.mapping.end() && !it->second.meta.is_running()) {
+                    n_claimed_pool[pool]++;
+                }
+            }
+            for (const auto & [pool, n_needed] : n_needed_pool) {
+                int n_free = cap_device - (int) count_running(pool) + (int) count_stopping(pool) - n_claimed_pool[pool];
+                while (n_free < n_needed) {
+                    std::string victim = pick_victim(lk, &pool);
+                    if (victim.empty()) {
+                        break; // all models of this pool are busy, wait for a request to end
+                    }
+                    SRV_INF("evicting idle LRU name=%s (pool=%s) for a queued request\n", victim.c_str(), pool.c_str());
+                    models.request_stop(victim);
+                    n_free++;
+                }
+            }
+        }
+        if (cap_global <= 0) {
             return;
         }
         int n_running  = 0;
@@ -390,9 +482,9 @@ struct server_lru_sched {
                 n_claimed++;
             }
         }
-        int n_free = models.base_params.models_max - n_running + n_stopping - n_claimed;
+        int n_free = cap_global - n_running + n_stopping - n_claimed;
         while (n_free < n_needed) {
-            std::string victim = pick_victim(lk);
+            std::string victim = pick_victim(lk, nullptr);
             if (victim.empty()) {
                 return; // all remaining models are busy, wait for a request to end
             }
@@ -400,6 +492,28 @@ struct server_lru_sched {
             models.request_stop(victim);
             n_free++;
         }
+    }
+
+    size_t count_running(const std::string & pool) {
+        size_t count = 0;
+        for (const auto & m : models.mapping) {
+            if (m.second.meta.is_running() && model_device_pool(m.second.meta) == pool) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    // running models of this pool that were already asked to stop: their slots are about to free
+    size_t count_stopping(const std::string & pool) {
+        size_t count = 0;
+        for (const auto & m : models.mapping) {
+            if (m.second.meta.is_running() && models.stopping_models.count(m.first) &&
+                    model_device_pool(m.second.meta) == pool) {
+                count++;
+            }
+        }
+        return count;
     }
 
   private:
@@ -487,6 +601,7 @@ static void unset_reserved_args(common_preset & preset, bool unset_model_args) {
     preset.unset_option("LLAMA_API_KEY");
     preset.unset_option("LLAMA_ARG_MODELS_DIR");
     preset.unset_option("LLAMA_ARG_MODELS_MAX");
+    preset.unset_option("LLAMA_ARG_MODELS_MAX_PER_DEVICE");
     preset.unset_option("LLAMA_ARG_MODELS_PRESET");
     preset.unset_option("LLAMA_ARG_MODELS_AUTOLOAD");
     if (unset_model_args) {
@@ -1098,21 +1213,29 @@ std::vector<server_model_meta> server_models::get_all_meta() {
     return result;
 }
 
-void server_models::unload_lru() {
-    if (base_params.models_max <= 0) {
+void server_models::unload_lru(const std::string & name) {
+    if (base_params.models_max <= 0 && base_params.models_max_per_device <= 0) {
         return; // no limit
     }
-    // remove one of the servers if we passed the models_max (least recently used - LRU)
+    // remove one of the servers if we passed the models_max or the per-device limit (least recently used - LRU)
     std::string lru_model_name;
+    std::string pool;
+    bool pool_limited = false;
     {
         std::unique_lock<std::mutex> lk(mutex);
-        if (sched->has_capacity(lk)) {
+        auto it = mapping.find(name);
+        pool = it == mapping.end() ? std::string() : model_device_pool(it->second.meta);
+        if (sched->has_capacity(lk, pool)) {
             return;
         }
-        lru_model_name = sched->pick_victim(lk);
+        // a pool that ran out can only be relieved by giving up a model of the same pool
+        pool_limited = base_params.models_max_per_device > 0 &&
+            sched->count_running(pool) >= (size_t) base_params.models_max_per_device;
+        lru_model_name = sched->pick_victim(lk, pool_limited ? &pool : nullptr);
     }
     if (!lru_model_name.empty()) {
-        SRV_INF("models_max limit reached, removing LRU name=%s\n", lru_model_name.c_str());
+        const std::string pool_note = pool_limited ? string_format(" (pool=%s)", pool.c_str()) : std::string();
+        SRV_INF("models_max limit reached%s, removing LRU name=%s\n", pool_note.c_str(), lru_model_name.c_str());
         unload(lru_model_name);
         // wait for unload to complete
         {
@@ -1138,7 +1261,7 @@ void server_models::load(const std::string & name, const load_options & opts) {
         if (!has_model(name)) {
             throw std::runtime_error("model name=" + name + " is not found");
         }
-        unload_lru();
+        unload_lru(name);
     }
 
     std::unique_lock<std::mutex> lk(mutex);
@@ -1157,16 +1280,10 @@ void server_models::load(const std::string & name, const load_options & opts) {
     // releasing its lock and this lock_guard acquiring allows multiple
     // threads to each observe capacity and all proceed to load.
     // Download workers do not use models_max slots.
-    if (opts.mode == SERVER_CHILD_MODE_NORMAL && base_params.models_max > 0) {
-        size_t count_active = 0;
-        for (const auto & m : mapping) {
-            if (m.second.meta.is_running()) {
-                count_active++;
-            }
-        }
-        if (count_active >= (size_t)base_params.models_max) {
-            throw std::runtime_error("model limit reached, try again later");
-        }
+    if (opts.mode == SERVER_CHILD_MODE_NORMAL &&
+            (base_params.models_max > 0 || base_params.models_max_per_device > 0) &&
+            !sched->has_capacity(lk, model_device_pool(meta))) {
+        throw std::runtime_error("model limit reached, try again later");
     }
 
     // prepare new instance info
@@ -1467,13 +1584,19 @@ bool server_models::ensure_model_ready(const std::string & name, const std::func
         return false; // child is sleeping but still running; new request will wake it up
     }
 
+    const std::string pool = model_device_pool(*meta);
+
     bool queued   = false;
     bool did_load = false;
     {
         std::unique_lock<std::mutex> lk(mutex);
         auto it = mapping.find(name);
         if (it != mapping.end() && it->second.meta.status == SERVER_MODEL_STATUS_UNLOADED) {
-            if (sched->has_capacity(lk) && sched->queue_empty(lk)) {
+            // independent pools are only blocked by their own queue; else the queue decides
+            const bool queue_clear = sched->pools_are_independent(lk)
+                ? !sched->queue_has_pool(lk, pool)
+                : sched->queue_empty(lk);
+            if (sched->has_capacity(lk, pool) && queue_clear) {
                 lk.unlock();
                 SRV_INF("model name=%s is not loaded, loading...\n", name.c_str());
                 load(name);
@@ -2095,6 +2218,7 @@ void server_models_routes::init_routes() {
             json props = {
                 {"role",                 "router"},
                 {"max_instances",        params.models_max},
+                {"max_instances_per_device", params.models_max_per_device},
                 {"models_autoload",      params.models_autoload},
                 {"model_alias",          "llama-server"},
                 {"model_path",           "none"},

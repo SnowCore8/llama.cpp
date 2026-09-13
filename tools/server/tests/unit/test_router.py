@@ -13,12 +13,14 @@ def create_server():
 def test_router_props():
     global server
     server.models_max = 2
+    server.models_max_per_device = 1
     server.no_models_autoload = True
     server.start()
     res = server.make_request("GET", "/props")
     assert res.status_code == 200
     assert res.body["role"] == "router"
     assert res.body["max_instances"] == 2
+    assert res.body["max_instances_per_device"] == 1
     assert res.body["models_autoload"] is False
     assert res.body["build_info"].startswith("b")
 
@@ -214,6 +216,130 @@ def test_router_no_evict_yields_when_it_is_the_only_candidate():
         assert _get_model_status("other-a") == "loaded"
         assert _get_model_status("kept") == "unloaded"
     finally:
+        os.remove(preset_path)
+
+
+@pytest.mark.parametrize("models_max", [3, 0])
+def test_router_models_max_per_device_evicts_same_pool_only(models_max):
+    """the per-device limit only gives up models of the same device pool"""
+    global server
+
+    preset_path = os.path.join(TMP_DIR, "test_models_max_per_device.ini")
+    with open(preset_path, "w") as f:
+        f.write(
+            "[pool-a]\n"
+            "hf-repo = ggml-org/test-model-stories260K\n"
+            "\n"
+            "[pool-a2]\n"
+            "hf-repo = ggml-org/test-model-stories260K-infill\n"
+            "\n"
+            "[pool-b]\n"
+            "hf-repo = ggml-org/tinygemma3-GGUF:Q8_0\n"
+            "device = none\n"
+        )
+
+    server.models_preset = preset_path
+    server.models_max = models_max
+    server.models_max_per_device = 1
+    server.start()
+
+    try:
+        # pool-a and pool-a2 have no device, so they share the default pool; pool-b has its own
+        # load pool-b first so that it is also the global LRU: only same-pool filtering picks pool-a
+        _load_model_and_wait("pool-b", timeout=120)
+        _load_model_and_wait("pool-a", timeout=120)
+        assert _get_model_status("pool-a") == "loaded"
+        assert _get_model_status("pool-b") == "loaded"
+
+        # the default pool is full, so loading pool-a2 gives up pool-a only
+        _load_model_and_wait("pool-a2", timeout=120)
+        assert _get_model_status("pool-a2") == "loaded"
+        assert _get_model_status("pool-a") == "unloaded"
+        assert _get_model_status("pool-b") == "loaded"
+    finally:
+        os.remove(preset_path)
+
+
+def test_router_pool_queue_does_not_block_other_pool():
+    """a queued request of one device pool must not hold back loads of another pool"""
+    global server
+
+    preset_path = os.path.join(TMP_DIR, "test_pool_independent_queue.ini")
+    with open(preset_path, "w") as f:
+        f.write(
+            "[pool-a]\n"
+            "hf-repo = ggml-org/test-model-stories260K\n"
+            "\n"
+            "[pool-a2]\n"
+            "hf-repo = ggml-org/test-model-stories260K-infill\n"
+            "\n"
+            "[pool-b]\n"
+            "hf-repo = ggml-org/tinygemma3-GGUF:Q8_0\n"
+            "device = none\n"
+            "\n"
+            "[pool-b2]\n"
+            "hf-repo = ggml-org/test-model-stories260K:F32\n"
+            "device = none\n"
+        )
+
+    server.models_preset = preset_path
+    server.models_max = 0
+    server.models_max_per_device = 1
+    server.start()
+
+    stop_hold = threading.Event()
+    hold_errors: list[Exception] = []
+
+    def hold_pool_a() -> None:
+        while not stop_hold.is_set():
+            try:
+                _tokenize("pool-a", timeout=30)
+            except Exception as e:
+                hold_errors.append(e)
+                return
+
+    try:
+        _load_model_and_wait("pool-a", timeout=120)
+
+        # two staggered requests keep the default pool busy without a single idle moment,
+        # so its only slot can neither be freed nor given up while the checks below run
+        holders = [_Bg(hold_pool_a).start()]
+        time.sleep(1)
+        holders.append(_Bg(hold_pool_a).start())
+        time.sleep(0.5)
+
+        # the default pool is full, so this request waits in the queue
+        queued = _Bg(lambda: _tokenize("pool-a2")).start()
+        assert _get_model_status("pool-a2") == "unloaded"
+
+        # pool-b has a free slot: a request for it must load it although pool-a2 waits
+        b_req = _Bg(lambda: _tokenize("pool-b")).start()
+        _wait_for_model_status("pool-b", {"loaded"}, timeout=30)
+        assert _get_model_status("pool-a2") == "unloaded"
+
+        # pool-b is now full: a request for pool-b2 must give up idle pool-b
+        # while the default pool still waits
+        b2_req = _Bg(lambda: _tokenize("pool-b2")).start()
+        _wait_for_model_status("pool-b2", {"loaded"}, timeout=30)
+        assert _get_model_status("pool-b") == "unloaded"
+        assert _get_model_status("pool-a2") == "unloaded"
+
+        b_req.join()
+        b_req.assert_ok("request against the free pool")
+        b2_req.join()
+        b2_req.assert_ok("request against the second model of the free pool")
+
+        stop_hold.set()
+        for h in holders:
+            h.join()
+        assert hold_errors == []
+
+        # the default pool is served once it goes idle
+        queued.join()
+        queued.assert_ok("queued request of the default pool")
+        _wait_for_model_status("pool-a2", {"loaded"}, timeout=120)
+    finally:
+        stop_hold.set()
         os.remove(preset_path)
 
 

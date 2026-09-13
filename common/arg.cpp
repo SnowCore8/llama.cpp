@@ -3677,6 +3677,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_MODELS_MAX"));
     add_opt(common_arg(
+        {"--models-max-per-device"}, "N",
+        string_format("for router server, maximum number of models to load simultaneously per --device value (default: %d, 0 = disabled)", params.models_max_per_device),
+        [](common_params & params, int value) {
+            params.models_max_per_device = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_MODELS_MAX_PER_DEVICE"));
+    add_opt(common_arg(
         {"--models-autoload"},
         {"--no-models-autoload"},
         string_format("for router server, whether to automatically load models (default: %s)", params.models_autoload ? "enabled" : "disabled"),
