@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from openai.types import Completion
@@ -1116,6 +1117,118 @@ def run_completions_checks(
         "stop.invalid_type",
         "PASS" if code_stop_type == 400 else "FAIL",
         f"HTTP {code_stop_type} body={str(data_stop_type)[:120]}",
+    )
+
+    # Official Completions usage: details objects must exist; total = prompt + completion;
+    # text_tokens = completion_tokens - reasoning_tokens. The unique cold prompt means
+    # nothing is cached and every prompt token is counted as written to cache.
+    def _is_int(v: Any) -> bool:
+        return isinstance(v, int) and not isinstance(v, bool)
+
+    uniq_u = f"usg{time.time_ns()}"
+    code_u, data_u = client.post_json(
+        "/v1/completions",
+        {
+            "model": model,
+            "prompt": f"{uniq_u}: reply with exactly: USAGE_OK",
+            "max_tokens": 8,
+            "temperature": 0,
+        },
+    )
+    usage_u = data_u.get("usage") if isinstance(data_u, dict) else None
+    usage_u = usage_u if isinstance(usage_u, dict) else {}
+    u_pt = usage_u.get("prompt_tokens")
+    u_ct = usage_u.get("completion_tokens")
+    u_tt = usage_u.get("total_tokens")
+    u_ptd = usage_u.get("prompt_tokens_details")
+    u_ptd_d = u_ptd if isinstance(u_ptd, dict) else {}
+    u_ctd = usage_u.get("completion_tokens_details")
+    u_ctd_d = u_ctd if isinstance(u_ctd, dict) else {}
+    ctd_fields = (
+        "accepted_prediction_tokens",
+        "audio_tokens",
+        "reasoning_tokens",
+        "rejected_prediction_tokens",
+        "text_tokens",
+    )
+    ok_usage = (
+        code_u == 200
+        and _is_int(u_pt)
+        and _is_int(u_ct)
+        and _is_int(u_tt)
+        and u_pt >= 0
+        and u_ct >= 0
+        and u_tt >= 0
+        and u_tt == u_pt + u_ct
+        and isinstance(u_ptd, dict)
+        and _is_int(u_ptd_d.get("cached_tokens"))
+        and u_ptd_d.get("cached_tokens") == 0
+        and _is_int(u_ptd_d.get("cache_write_tokens"))
+        and u_ptd_d.get("cache_write_tokens") > 0
+        and isinstance(u_ctd, dict)
+        and all(_is_int(u_ctd_d.get(f)) and u_ctd_d.get(f) >= 0 for f in ctd_fields)
+        and u_ctd_d.get("text_tokens") == u_ct - u_ctd_d.get("reasoning_tokens")
+    )
+    report.add(
+        "scenario",
+        "usage.details",
+        "PASS" if ok_usage else "FAIL",
+        f"HTTP {code_u} pt={u_pt} ct={u_ct} tt={u_tt} "
+        f"cached={u_ptd_d.get('cached_tokens')} write={u_ptd_d.get('cache_write_tokens')} "
+        f"details={u_ctd_d}"[:200],
+    )
+
+    # Stream parity: the trailing empty-choices chunk carries the same usage object;
+    # totals must match there too and both details sub-objects keep int fields.
+    uniq_su = f"usgs{time.time_ns()}"
+    code_su, _hdr_su, raw_su = client.request(
+        "POST",
+        "/v1/completions",
+        {
+            "model": model,
+            "prompt": f"{uniq_su}: reply with exactly: USAGE_STREAM_OK",
+            "max_tokens": 8,
+            "temperature": 0,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        },
+        stream=True,
+    )
+    su_events = parse_sse(raw_su) if code_su == 200 else []
+    su_usage: dict[str, Any] | None = None
+    for _, obj in su_events:
+        if not isinstance(obj, dict):
+            continue
+        u = obj.get("usage")
+        if isinstance(u, dict) and (obj.get("choices") or []) == []:
+            su_usage = u
+    su = su_usage if isinstance(su_usage, dict) else {}
+    su_pt = su.get("prompt_tokens")
+    su_ct = su.get("completion_tokens")
+    su_tt = su.get("total_tokens")
+    su_ptd = su.get("prompt_tokens_details")
+    su_ptd_d = su_ptd if isinstance(su_ptd, dict) else {}
+    su_ctd = su.get("completion_tokens_details")
+    su_ctd_d = su_ctd if isinstance(su_ctd, dict) else {}
+    ok_su = (
+        code_su == 200
+        and isinstance(su_usage, dict)
+        and _is_int(su_pt)
+        and _is_int(su_ct)
+        and _is_int(su_tt)
+        and su_tt == su_pt + su_ct
+        and isinstance(su_ptd, dict)
+        and _is_int(su_ptd_d.get("cached_tokens"))
+        and _is_int(su_ptd_d.get("cache_write_tokens"))
+        and isinstance(su_ctd, dict)
+        and all(_is_int(su_ctd_d.get(f)) for f in ctd_fields)
+    )
+    report.add(
+        "scenario",
+        "usage.stream_details",
+        "PASS" if ok_su else "FAIL",
+        f"HTTP {code_su} pt={su_pt} ct={su_ct} tt={su_tt} "
+        f"ptd={su_ptd_d} ctd={su_ctd_d}"[:200],
     )
 
     for field in completion_param_names():
