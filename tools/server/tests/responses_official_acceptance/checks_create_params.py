@@ -1230,8 +1230,6 @@ def run_create_param_checks(
                 **extra,
             }
             code, _, raw = client.request("POST", "/v1/responses", body, stream=True)
-            from responses_official_acceptance.http_client import parse_sse
-
             has = any(isinstance(obj, dict) and "obfuscation" in obj for _, obj in parse_sse(raw))
             report.add(
                 "create_param",
