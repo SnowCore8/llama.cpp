@@ -88,6 +88,15 @@ json format_error_response(const std::string & message, const enum error_type ty
     };
 }
 
+json format_oai_model_not_found(const std::string & model_name) {
+    return json {{"error", {
+        {"code",    "model_not_found"},
+        {"message", string_format("The model `%s` does not exist or you do not have access to it.", model_name.c_str())},
+        {"param",   nullptr},
+        {"type",    "invalid_request_error"},
+    }}};
+}
+
 bool server_openai_is_reasoning_effort(const std::string & effort) {
     static const std::unordered_set<std::string> k_efforts = {
         "none", "minimal", "low", "medium", "high", "xhigh", "max",

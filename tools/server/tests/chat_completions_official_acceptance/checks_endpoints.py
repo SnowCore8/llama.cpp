@@ -391,3 +391,27 @@ def run_endpoint_checks(
         "PASS" if umcode == 404 else "FAIL",
         f"HTTP {umcode}",
     )
+
+    # OpenAI: an unknown model on create is 404 with the official model_not_found body
+    nfcode, nfdata = client.post_json(
+        "/v1/chat/completions",
+        {
+            "model": "no-such-model-xyz",
+            "max_tokens": 4,
+            "temperature": 0,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    expected_not_found = {
+        "code": "model_not_found",
+        "message": "The model `no-such-model-xyz` does not exist or you do not have access to it.",
+        "param": None,
+        "type": "invalid_request_error",
+    }
+    nf_ok = nfcode == 404 and isinstance(nfdata, dict) and nfdata.get("error") == expected_not_found
+    report.add(
+        "endpoint",
+        "POST /v1/chat/completions (unknown model)",
+        "PASS" if nf_ok else "FAIL",
+        f"HTTP {nfcode} body={json_preview(nfdata)}",
+    )

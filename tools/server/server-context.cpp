@@ -4978,6 +4978,11 @@ server_routes::server_routes(const common_params & params, server_context & ctx_
     });
 }
 
+// accept the served model name and its aliases, as exposed via /v1/models
+static bool is_model_name_accepted(const server_context_meta & meta, const std::string & name) {
+    return name == meta.model_name || meta.model_aliases.count(name) > 0;
+}
+
 static json get_res_model_info(const server_context_meta & meta) {
     // note: do NOT use ctx_server here, otherwise it's not possible to use this during sleep
 
@@ -5450,6 +5455,13 @@ void server_routes::init_routes() {
             res->error(format_error_response("'model' is required", ERROR_TYPE_INVALID_REQUEST));
             return res;
         }
+        // OpenAI: an unknown model -> 404 with the official model_not_found body
+        const std::string req_model = body.at("model").is_string() ? body.at("model").get<std::string>() : std::string();
+        if (!req_model.empty() && !is_model_name_accepted(*meta, req_model)) {
+            res->status = 404;
+            res->data = safe_json_to_str(format_oai_model_not_found(req_model));
+            return res;
+        }
 
         json body_parsed = oaicompat_chat_params_parse(
             body,
@@ -5709,6 +5721,20 @@ void server_routes::init_routes() {
                 {"code",    "previous_response_not_found"},
                 {"message", server_responses_previous_not_found_message(msg)},
                 {"param",   "previous_response_id"},
+                {"type",    "invalid_request_error"},
+            }}});
+            return res;
+        }
+
+        // OpenAI: an unknown model -> 400 with the official 'requested model' body
+        const std::string req_model = json_value(prepared, "model", std::string());
+        if (!req_model.empty() && !is_model_name_accepted(*meta, req_model)) {
+            auto res = create_response();
+            res->status = 400;
+            res->data = safe_json_to_str({{"error", {
+                {"code",    "model_not_found"},
+                {"message", string_format("The requested model '%s' does not exist.", req_model.c_str())},
+                {"param",   "model"},
                 {"type",    "invalid_request_error"},
             }}});
             return res;
@@ -6564,6 +6590,14 @@ std::unique_ptr<server_res_generator> server_routes::handle_embeddings_impl(cons
     std::vector<server_tokens> tokenized_prompts;
     try {
         body = json::parse(req.body);
+        // OpenAI: an unknown model on /v1/embeddings -> 404 with the official model_not_found body
+        const std::string req_model = json_value(body, "model", std::string());
+        if (res_type == TASK_RESPONSE_TYPE_OAI_EMBD && !req_model.empty() &&
+                !is_model_name_accepted(*meta, req_model)) {
+            res->status = 404;
+            res->data = safe_json_to_str(format_oai_model_not_found(req_model));
+            return res;
+        }
 
         // for the shape of input/content, see tokenize_input_prompts()
         json prompt;

@@ -16,6 +16,7 @@ _BATCH = ["batch item alpha", "batch item beta", "batch item gamma"]
 # Row plan, emitted up-front as SKIP when the server runs without --embeddings.
 _ROWS: tuple[tuple[str, str], ...] = (
     ("endpoint", "embeddings.create"),
+    ("endpoint", "embeddings.unknown_model"),
     ("endpoint", "embeddings.batch"),
     ("endpoint", "embeddings.deterministic"),
     ("endpoint", "embeddings.distinct_inputs"),
@@ -108,6 +109,23 @@ def run_embeddings_checks(
         "PASS" if create_ok else "FAIL",
         f"HTTP {code} object={d.get('object')!r} model={d.get('model')!r} n={len(rows)} "
         f"d0_object={item.get('object')!r} index={item.get('index')!r} dim={_dim(vec)} usage={usage!r}"[:240],
+    )
+
+    # OpenAI: an unknown model is 404 with the model_not_found body (same as chat
+    # completions). Reaching this needs a server started with --embeddings.
+    nfcode, nfdata = client.post_json("/v1/embeddings", {"input": "x", "model": "no-such-model-xyz"})
+    expected_not_found = {
+        "code": "model_not_found",
+        "message": "The model `no-such-model-xyz` does not exist or you do not have access to it.",
+        "param": None,
+        "type": "invalid_request_error",
+    }
+    nf_ok = nfcode == 404 and isinstance(nfdata, dict) and nfdata.get("error") == expected_not_found
+    report.add(
+        "endpoint",
+        "embeddings.unknown_model",
+        "PASS" if nf_ok else "FAIL",
+        f"HTTP {nfcode} body={str(nfdata)[:160]}",
     )
 
     # Array input: one data entry per input, index in request order, vectors non-empty.

@@ -1880,7 +1880,9 @@ static bool router_validate_model(std::string & name, server_models & models, bo
     }
     auto meta = models.get_meta(name);
     if (!meta.has_value()) {
-        res_err(res, format_error_response(string_format("model '%s' not found", name.c_str()), ERROR_TYPE_INVALID_REQUEST));
+        // official OpenAI: an unknown model -> 404 model_not_found, same body as single-model mode
+        res->status = 404;
+        res->data = safe_json_to_str(format_oai_model_not_found(name));
         return false;
     }
     // resolve alias to canonical model name

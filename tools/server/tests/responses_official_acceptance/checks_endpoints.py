@@ -534,6 +534,33 @@ def run_endpoint_checks(
     else:
         report.add("endpoint", "DELETE /v1/responses/{id}", "FAIL", "could not create victim")
 
+    # OpenAI: an unknown model on create is 400 with the official model_not_found body
+    nfcode, nfdata = client.post_json(
+        "/v1/responses",
+        {
+            "model": "no-such-model-xyz",
+            "input": "hi",
+            "max_output_tokens": 4,
+        },
+    )
+    expected_not_found = {
+        "code": "model_not_found",
+        "message": "The requested model 'no-such-model-xyz' does not exist.",
+        "param": "model",
+        "type": "invalid_request_error",
+    }
+    nf_ok = (
+        nfcode == 400
+        and isinstance(nfdata, dict)
+        and nfdata.get("error") == expected_not_found
+    )
+    report.add(
+        "endpoint",
+        "POST /v1/responses (unknown model)",
+        "PASS" if nf_ok else "FAIL",
+        f"HTTP {nfcode} body={json_preview(nfdata)}",
+    )
+
     return rid
 
 
