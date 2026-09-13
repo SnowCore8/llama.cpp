@@ -41,6 +41,8 @@ _RUNNABLE_NAMES = (
     "stream_id validation",
     "error shape: unknown event type",
     "error shape: invalid json",
+    "error shape: HTTP 400 -> invalid_request_error",
+    "background is ignored over WS",
     "previous_response_not_found",
     "lane FIFO",
     "two lanes concurrent",
@@ -341,6 +343,33 @@ def run_ws_checks(
             )
             add("error shape: invalid json", ok,
                 f"outcome={outcome} status={st} error={json.dumps(err)[:200]}")
+
+    def http_status_error_type(deadline: float) -> None:
+        # error.type must be one of the five official values; a transport-level 400
+        # is reported as invalid_request_error (status -> type mapping)
+        with _connect(ws_connect, client) as ws:
+            ws.send(json.dumps(_create(model, extra, max_output_tokens="abc")))
+            frames, outcome, ev = _drain_one(ws, deadline, max_frames=32)
+            err = _err_of(ev)
+            st = ev.get("status") if isinstance(ev, dict) else None
+            ok = (
+                outcome == "error"
+                and st == 400
+                and err.get("type") == "invalid_request_error"
+                and isinstance(err.get("message"), str) and bool(err.get("message"))
+            )
+            add("error shape: HTTP 400 -> invalid_request_error", ok,
+                f"outcome={outcome} status={st} error={json.dumps(err)[:200]}")
+
+    def background_ignored(deadline: float) -> None:
+        # official WebSocket mode: background is not supported and is never echoed back
+        with _connect(ws_connect, client) as ws:
+            ws.send(json.dumps(_create(model, extra, background=True, max_output_tokens=8)))
+            frames, outcome, ev = _drain_one(ws, deadline, max_frames=128)
+            leaked = [f.get("type") for f in frames if _has_key(f, "background")]
+            ok = outcome in ("response.completed", "response.incomplete") and not leaked
+            add("background is ignored over WS", ok,
+                f"outcome={outcome} leaked={leaked[:2]} frames={len(frames)}")
 
     def previous_response_missing(deadline: float) -> None:
         sid = "gone"
@@ -1344,6 +1373,8 @@ def run_ws_checks(
     guarded("stream_id validation", stream_id_validation)
     guarded("error shape: unknown event type", unknown_event_type)
     guarded("error shape: invalid json", invalid_json)
+    guarded("error shape: HTTP 400 -> invalid_request_error", http_status_error_type)
+    guarded("background is ignored over WS", background_ignored)
     guarded("previous_response_not_found", previous_response_missing)
     guarded("lane FIFO", lane_fifo)
     guarded("two lanes concurrent", two_lanes)
