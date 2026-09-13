@@ -7207,7 +7207,7 @@ static void test_reasoning_budget_tokens_per_request() {
         {"reasoning_budget_tokens", 0},
     };
     std::vector<raw_buffer> out_files;
-    auto llama_params = oaicompat_chat_params_parse(body, opt, out_files);
+    auto llama_params = oaicompat_chat_params_parse(body, opt, out_files, true);
 
     // The per-request value must win over the server default (-1).
     if (!llama_params.contains("reasoning_budget_tokens")) {
@@ -7240,7 +7240,7 @@ static void test_reasoning_budget_message_per_request() {
         {"reasoning_budget_message", per_request_message},
     };
     std::vector<raw_buffer> out_files;
-    auto llama_params = oaicompat_chat_params_parse(body, opt, out_files);
+    auto llama_params = oaicompat_chat_params_parse(body, opt, out_files, true);
 
     // The per-request value must win over the server default.
     if (!llama_params.contains("reasoning_budget_message")) {

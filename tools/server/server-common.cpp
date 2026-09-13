@@ -23,6 +23,7 @@
 #include <limits>
 #include <cstring>
 #include <type_traits>
+#include <exception>
 #include <stdexcept>
 #include <unordered_set>
 #include <chrono>
@@ -1887,6 +1888,34 @@ static void handle_media(
     }
 }
 
+// Nearest official reasoning_effort levels, for templates that accept only a subset.
+// Ordered by rank distance, higher level first on ties; "none" is never a candidate
+// because it disables thinking.
+static std::vector<std::string> server_openai_reasoning_effort_fallbacks(const std::string & effort) {
+    static const char * levels[] = { "minimal", "low", "medium", "high", "xhigh", "max" };
+    const int n_levels = (int) (sizeof(levels) / sizeof(levels[0]));
+    int rank = -1;
+    for (int i = 0; i < n_levels; ++i) {
+        if (effort == levels[i]) {
+            rank = i;
+            break;
+        }
+    }
+    std::vector<std::string> fallbacks;
+    if (rank < 0) {
+        return fallbacks;
+    }
+    for (int dist = 1; dist < n_levels && (int) fallbacks.size() < 3; ++dist) {
+        if (rank + dist < n_levels) {
+            fallbacks.push_back(levels[rank + dist]);
+        }
+        if ((int) fallbacks.size() < 3 && rank - dist >= 0) {
+            fallbacks.push_back(levels[rank - dist]);
+        }
+    }
+    return fallbacks;
+}
+
 // Name of a tool entry, accepting Chat (function/custom nested) and flat Responses shapes.
 static std::string oai_tool_entry_name(const json & tool) {
     if (!tool.is_object()) {
@@ -1905,7 +1934,8 @@ static std::string oai_tool_entry_name(const json & tool) {
 json oaicompat_chat_params_parse(
     json & body, /* openai api json semantics */
     const server_chat_params & opt,
-    std::vector<raw_buffer> & out_files)
+    std::vector<raw_buffer> & out_files,
+    bool openai_defaults)
 {
     json llama_params;
 
@@ -2449,9 +2479,18 @@ json oaicompat_chat_params_parse(
     // thinking and map to a local thinking_budget_tokens ladder when unset.
     // Enum already validated in server_openai_validate_chat_create_fields /
     // server_openai_validate_reasoning_object (Responses → chatcmpl conversion).
-    if (body.contains("reasoning_effort") && !body.at("reasoning_effort").is_null()) {
-        server_openai_validate_reasoning_effort_field(body.at("reasoning_effort"), "reasoning_effort");
-        const std::string reasoning_effort = body.at("reasoning_effort").get<std::string>();
+    // Omitted effort follows the official default (medium) on OpenAI endpoints unless the
+    // value was already picked via chat_template_kwargs (client) or --reasoning-effort (server).
+    const bool has_body_effort = body.contains("reasoning_effort") && !body.at("reasoning_effort").is_null();
+    const bool use_default_effort = openai_defaults && !has_body_effort && inputs.enable_thinking &&
+        inputs.chat_template_kwargs.find("reasoning_effort") == inputs.chat_template_kwargs.end();
+    std::string oai_injected_effort;
+    if (has_body_effort || use_default_effort) {
+        std::string reasoning_effort = "medium";
+        if (has_body_effort) {
+            server_openai_validate_reasoning_effort_field(body.at("reasoning_effort"), "reasoning_effort");
+            reasoning_effort = body.at("reasoning_effort").get<std::string>();
+        }
         if (reasoning_effort == "none") {
             inputs.enable_thinking = false;
             inputs.chat_template_kwargs["enable_thinking"] = "false";
@@ -2460,6 +2499,10 @@ json oaicompat_chat_params_parse(
             inputs.chat_template_kwargs["enable_thinking"] = "true";
             // Same encoding as request chat_template_kwargs merge (.dump() of JSON string).
             inputs.chat_template_kwargs["reasoning_effort"] = json(reasoning_effort).dump();
+            if (openai_defaults) {
+                // fallback retry applies to OpenAI endpoints only
+                oai_injected_effort = reasoning_effort;
+            }
             // Local deepen: effort → budget when client did not set an explicit budget field.
             if (!body.contains("thinking_budget_tokens") && !body.contains("reasoning_budget_tokens")) {
                 int budget = 1024;
@@ -2480,17 +2523,33 @@ json oaicompat_chat_params_parse(
     }
 
     // verbosity: inject a concise/detailed system hint (local observable behavior).
-    if (body.contains("verbosity") && body.at("verbosity").is_string()) {
-        const std::string v = body.at("verbosity").get<std::string>();
-        std::string hint;
-        if (v == "low") {
-            hint = "Respond very concisely. Prefer short answers with minimal prose.";
-        } else if (v == "medium") {
-            hint = "Respond with a balanced amount of detail. Prefer clear, moderately sized answers.";
-        } else if (v == "high") {
-            hint = "Respond thoroughly and in detail. Prefer expansive explanations.";
-        }
-        if (!hint.empty()) {
+    // An omitted or null verbosity follows the official default (medium) on OpenAI endpoints.
+    std::string v = openai_defaults ? "medium" : std::string();
+    if (body.contains("verbosity") && !body.at("verbosity").is_null()) {
+        // non-string shapes are rejected by server_openai_validate_chat_create_fields
+        v = body.at("verbosity").is_string() ? body.at("verbosity").get<std::string>() : std::string();
+    }
+    std::string hint;
+    if (v == "low") {
+        hint = "Respond very concisely. Prefer short answers with minimal prose.";
+    } else if (v == "medium") {
+        hint = "Respond with a balanced amount of detail. Prefer clear, moderately sized answers.";
+    } else if (v == "high") {
+        hint = "Respond thoroughly and in detail. Prefer expansive explanations.";
+    }
+    if (!hint.empty()) {
+        // System messages must stay first: many templates reject a system message that is
+        // not leading. Extend the leading system/developer message instead of adding one.
+        if (!inputs.messages.empty() &&
+                (inputs.messages[0].role == "system" || inputs.messages[0].role == "developer")) {
+            if (!inputs.messages[0].content_parts.empty()) {
+                inputs.messages[0].content_parts.push_back({ "text", hint });
+            } else if (inputs.messages[0].content.empty()) {
+                inputs.messages[0].content = hint;
+            } else {
+                inputs.messages[0].content += "\n\n" + hint;
+            }
+        } else {
             common_chat_msg sys;
             sys.role = "system";
             sys.content = hint;
@@ -2530,8 +2589,35 @@ json oaicompat_chat_params_parse(
 
     inputs.force_pure_content = opt.force_pure_content;
 
-    // Apply chat template to the list of messages
-    auto chat_params = common_chat_templates_apply(opt.tmpls.get(), inputs);
+    // Apply chat template to the list of messages. Some templates accept only a subset of
+    // the official reasoning_effort levels; when the server injected the value, retry with
+    // the nearest accepted level instead of failing the request. The original exception is
+    // rethrown when no fallback applies.
+    common_chat_params chat_params;
+    try {
+        chat_params = common_chat_templates_apply(opt.tmpls.get(), inputs);
+    } catch (...) {
+        const std::exception_ptr original = std::current_exception();
+        bool applied = false;
+        if (!oai_injected_effort.empty()) {
+            const std::vector<std::string> fallbacks = server_openai_reasoning_effort_fallbacks(oai_injected_effort);
+            for (const auto & fallback : fallbacks) {
+                inputs.chat_template_kwargs["reasoning_effort"] = json(fallback).dump();
+                try {
+                    chat_params = common_chat_templates_apply(opt.tmpls.get(), inputs);
+                    SRV_INF("reasoning_effort '%s' rejected by chat template, using nearest level '%s'\n",
+                            oai_injected_effort.c_str(), fallback.c_str());
+                    applied = true;
+                    break;
+                } catch (...) {
+                    // try the next candidate
+                }
+            }
+        }
+        if (!applied) {
+            std::rethrow_exception(original);
+        }
+    }
 
     llama_params["chat_format"] = static_cast<int>(chat_params.format);
     llama_params["prompt"]      = chat_params.prompt;

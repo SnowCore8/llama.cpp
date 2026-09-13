@@ -44,6 +44,7 @@
 | Responses output logprobs 空文本过滤 | EOG token 无文本、不列入条目；条目内空文本候选（special/control token）剔除，条目被剔空则丢弃（Chat 保留上游行为） |
 | custom 工具执行 | 模板/grammar 面按合成 function schema 走（`{"input":string}` required）；序列化按工具名表翻译回官方 custom 形状；`custom.format` 接受但不参与生成；回放 `input` 重包 `{"input":…}`；Chat 流式（官方未定义）镜像非流式、原始 envelope 片段可解码前扣留；Responses 非流式 id `ctc_`/`ctco_`+随机、流式 `ctc_`+index |
 | Reasoning token 计数 | reasoning-budget 采样器口径：COUNTING/WAITING_UTF8 每 token 记 1，自然 end 序列扣减（下限 0）；FORCING 不计数；多 think 块 re-arm 累加；prefill（模板预置标签）计数与预算双清；不可得（-1）按 0 上报 |
+| `reasoning_effort` / `verbosity` 缺省与模板词表回退（2026-09-13） | 省略（或 `null`）等价官方缺省 `medium`：`reasoning_effort` 省略、未显式给值（`chat_template_kwargs.reasoning_effort` / `--reasoning-effort`）且 thinking 未关闭时注入 `medium`（thinking 开；budget 阶梯同显式值、请求无显式 budget 时缺省 1024），`verbosity` 省略时注入 medium hint；hint 并入首位 system/developer 消息（追加在内容尾部；无则前置新 system，不新增第二条 system 消息）。服务端注入的 effort 先按原值入模板；模板拒绝时按 rank 阶梯（`minimal`<`low`<`medium`<`high`<`xhigh`<`max`，同距取更高者、最多 3 个候选、排除 `none`）改用最近被接受值并记 INFO 日志；无候选可用时抛原异常（HTTP 500）。`none` 语义不变（关闭 thinking，不注入）。客户端 `chat_template_kwargs.reasoning_effort` 与服务端 `--reasoning-effort` 原生通道原值直传、无回退。缺省注入（及随之的回退）仅作用于 OpenAI 端点（Chat / Responses）；`/v1/messages`、`count_tokens`、`/apply-template`、`transcriptions` 维持既有行为 |
 | 流式阶段 | 无 queue 阶段：官方 `response.queued` 事件从不发射，`response.created`/`response.in_progress` 后直接进入生成事件 |
 | `max_tool_calls` 截断 | 超上限的调用被丢弃（多余尝试忽略，不打 `incomplete` 标记） |
 
@@ -51,18 +52,17 @@
 
 | # | 项 | 官方 | 本地 | 说明 |
 |---|---|---|---|---|
-| 1 | `reasoning_effort`/`reasoning.effort` 透传 | 枚举值 | 原值透传进 `chat_template_kwargs`；模板自带词表（Qwen3.8-27B 只认 `xhigh`/`medium`/`low`）时 `minimal`/`high`/`max` → 模板异常 HTTP 500 | 未做 OpenAI→模板词表映射；可用 `chat_template_kwargs.reasoning_effort` 传原生值 |
-| 2 | Responses SSE `obfuscation` | 稳定版仅 `response.shell_call_command.delta` 定义该字段 | 对所有 SSE 事件 data 对象注入，默认开（`stream_options.include_obfuscation=false` 关闭） | 本地偏离，声明接受 |
-| 3 | `response.reasoning_text.delta`/`.done`、`response.refusal.delta`/`.done` | 官方定义 | 不发射（reasoning 只暴露 summary） | 声明接受 |
-| 4 | `prompt_cache_options.ttl` | 仅 `30m` | 超集：另接受 `5m`/`1h`（`24h` 仅属于 `prompt_cache_retention`） | openai SDK 3.11.0 该字段为 `Literal["30m"]`，严格校验的 SDK 解析此类响应会失败 |
-| 5 | `response.created` 事件 | 官方示例含 `usage: null`（schema 标 optional） | 不带 `usage` 键 | 兼容风险低 |
-| 6 | compact `service_tier` 校验 | 官方 compact 文档 5 值 | 复用 create 校验的 7 值（+`fast`/`ultrafast`） | 宽松超集 |
-| 7 | Chat `n` 上限 | 无声明上限 | `n` 超过 `n_parallel` → 400 | 本地容量上限 |
-| 8 | Chat `logprobs`+`tools`+`stream` | 官方未禁止 | 组合 → 400 | 本地限制 |
-| 9 | Completions `best_of` | 文档措辞 "must be greater than `n`" | 接受 `best_of == n` | 宽松 |
-| 10 | `prompt_cache_diagnostics` | 云端 token 计量 | 本地简化口径：expected=min(本次/基线 `input_tokens`)，`cached >= expected-4` → `cache_hit`；不产出 `context_compacted`/`unavailable`；`reason` 首中即止 | 详见 scope「记录（未修）」 |
-| 11 | SSE `error` / `response.failed` | 流中错误事件 | 默认配置**不可达**：流开始前的错误按非流式 HTTP 错误体返回；SSE error+failed 只在流已开始后 reader 出错时产生 | 验收对应行保持 SKIP；`pre_created_error_is_plain_json` 断言非流式错误体形状 |
-| 12 | Embeddings `encoding_format` 非 string | 400 | 400，但 message 透传 nlohmann 异常原文（`[json.exception.type_error.302] ...`） | 官方 message 为自由文本，未做措辞映射 |
+| 1 | Responses SSE `obfuscation` | 稳定版仅 `response.shell_call_command.delta` 定义该字段 | 对所有 SSE 事件 data 对象注入，默认开（`stream_options.include_obfuscation=false` 关闭） | 本地偏离，声明接受 |
+| 2 | `response.reasoning_text.delta`/`.done`、`response.refusal.delta`/`.done` | 官方定义 | 不发射（reasoning 只暴露 summary） | 声明接受 |
+| 3 | `prompt_cache_options.ttl` | 仅 `30m` | 超集：另接受 `5m`/`1h`（`24h` 仅属于 `prompt_cache_retention`） | openai SDK 3.11.0 该字段为 `Literal["30m"]`，严格校验的 SDK 解析此类响应会失败 |
+| 4 | `response.created` 事件 | 官方示例含 `usage: null`（schema 标 optional） | 不带 `usage` 键 | 兼容风险低 |
+| 5 | compact `service_tier` 校验 | 官方 compact 文档 5 值 | 复用 create 校验的 7 值（+`fast`/`ultrafast`） | 宽松超集 |
+| 6 | Chat `n` 上限 | 无声明上限 | `n` 超过 `n_parallel` → 400 | 本地容量上限 |
+| 7 | Chat `logprobs`+`tools`+`stream` | 官方未禁止 | 组合 → 400 | 本地限制 |
+| 8 | Completions `best_of` | 文档措辞 "must be greater than `n`" | 接受 `best_of == n` | 宽松 |
+| 9 | `prompt_cache_diagnostics` | 云端 token 计量 | 本地简化口径：expected=min(本次/基线 `input_tokens`)，`cached >= expected-4` → `cache_hit`；不产出 `context_compacted`/`unavailable`；`reason` 首中即止 | 详见 scope「记录（未修）」 |
+| 10 | SSE `error` / `response.failed` | 流中错误事件 | 默认配置**不可达**：流开始前的错误按非流式 HTTP 错误体返回；SSE error+failed 只在流已开始后 reader 出错时产生 | 验收对应行保持 SKIP；`pre_created_error_is_plain_json` 断言非流式错误体形状 |
+| 11 | Embeddings `encoding_format` 非 string | 400 | 400，但 message 透传 nlohmann 异常原文（`[json.exception.type_error.302] ...`） | 官方 message 为自由文本，未做措辞映射 |
 
 ## 5. 本地超集与扩展（Supersets / local-only surfaces）
 

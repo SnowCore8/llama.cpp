@@ -381,7 +381,8 @@ void server_openai_validate_chat_create_fields(const json & body);
 json oaicompat_chat_params_parse(
     json & body, /* openai api json semantics */
     const server_chat_params & opt,
-    std::vector<raw_buffer> & out_files);
+    std::vector<raw_buffer> & out_files,
+    bool openai_defaults /* apply official OpenAI defaults for omitted reasoning_effort/verbosity */);
 
 // TODO: move it to server-task.cpp
 json format_embeddings_response_oaicompat(

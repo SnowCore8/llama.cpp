@@ -1405,9 +1405,11 @@ The `response_format` parameter supports both plain JSON output (e.g. `{"type": 
 
 `chat_template_kwargs`: Allows sending additional parameters to the json templating system. For example: `{"enable_thinking": false}`
 
-`reasoning_effort`: Official OpenAI ReasoningEffort enum: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. `none` disables thinking; other values enable thinking and are forwarded to the chat template as `chat_template_kwargs.reasoning_effort`. Invalid values → 400.
+`reasoning_effort`: Official OpenAI ReasoningEffort enum: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. `none` disables thinking; other values enable thinking and are forwarded to the chat template as `chat_template_kwargs.reasoning_effort`. Invalid values → 400. When omitted (or `null`), the official default `medium` is applied: thinking is enabled and `medium` is forwarded, unless the template already received an effort through `chat_template_kwargs` or `--reasoning-effort`. The effort value also picks the local thinking budget when the request has no explicit budget field.
 
-The effort value is forwarded verbatim, so a template with its own vocabulary can reject it. Qwen3.8 accepts only `xhigh` (default), `medium` and `low` and raises a template exception (HTTP 500) for `minimal` / `high` / `max`; templates that ignore `reasoning_effort` are unaffected. Same behavior for `--reasoning-effort`. Workaround: pass the template-native value via `chat_template_kwargs.reasoning_effort` instead of the body field.
+A template may accept only a subset of the enum (Qwen3.8 accepts only `xhigh`, `medium`, `low`). For the effort picked by this server (the body field or the `medium` default above), a value rejected by the template is retried with the nearest accepted levels in rank order (`minimal` < `low` < `medium` < `high` < `xhigh` < `max`; on equal distance the higher level comes first; up to 3 candidates; `none` is never used); the substitution is logged. An effort passed explicitly through `chat_template_kwargs.reasoning_effort` or `--reasoning-effort` is forwarded verbatim with no fallback, so a template that rejects it still yields HTTP 500.
+
+`verbosity`: `low`, `medium` or `high`; injects the matching hint into the system prompt (appended to the leading system/developer message when present, otherwise a new leading system message). When omitted (or `null`), the official default `medium` is applied. Invalid values → 400.
 
 Responses API `reasoning` object (shape-validated + echoed): `effort` (same enum), `context` (`auto`|`current_turn`|`all_turns`), `summary` / `generate_summary` (`auto`|`concise`|`detailed`), `mode` (string; documented values include `standard`|`pro`). Only `effort` affects local thinking.
 

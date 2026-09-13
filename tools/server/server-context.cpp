@@ -5454,7 +5454,8 @@ void server_routes::init_routes() {
         json body_parsed = oaicompat_chat_params_parse(
             body,
             meta->chat_params,
-            files);
+            files,
+            true);
         // OpenAI Chat Completions store=true persistence
         body_parsed["__oai_chat_store"] = json_value(body, "store", false);
         if (body.contains("metadata")) {
@@ -5758,7 +5759,8 @@ void server_routes::init_routes() {
         json body_parsed = oaicompat_chat_params_parse(
             body,
             meta->chat_params,
-            files);
+            files,
+            true);
         body_parsed["__oai_resp_id"]           = resp_id;
         body_parsed["__oai_resp_input"]        = prepared_input;
         body_parsed["__oai_resp_instructions"] = instructions;
@@ -6154,7 +6156,8 @@ void server_routes::init_routes() {
         json body_parsed = oaicompat_chat_params_parse(
             body,
             meta->chat_params,
-            files);
+            files,
+            false);
         return handle_completions_impl(
             req,
             SERVER_TASK_TYPE_COMPLETION,
@@ -6172,7 +6175,8 @@ void server_routes::init_routes() {
         json body_parsed = oaicompat_chat_params_parse(
             body,
             meta->chat_params,
-            files);
+            files,
+            false);
         return handle_completions_impl(
             req,
             SERVER_TASK_TYPE_COMPLETION,
@@ -6193,7 +6197,8 @@ void server_routes::init_routes() {
         json data = oaicompat_chat_params_parse(
             body,
             meta->chat_params,
-            files);
+            files,
+            false);
         res->ok({{ "prompt", std::move(data.at("prompt")) }});
         return res;
     };
@@ -6676,7 +6681,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_count_tokens(const l
     json body_parsed = oaicompat_chat_params_parse(
             body,
             meta->chat_params,
-            files);
+            files,
+            false);
     json prompt = body_parsed.at("prompt");
     // SRV_DBG("prompt = %s\n", prompt.dump().c_str());
 
