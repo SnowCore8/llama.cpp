@@ -160,6 +160,133 @@ def run_endpoint_checks(
         f"HTTP {code} {json_preview(data)}",
     )
 
+    # Official list query extras: `after` cursor, `model` / `metadata` filters, empty shape.
+    time.sleep(1.1)  # keep LIST_C strictly after LIST_B in `created` order
+    third_code, third_data = _store_probe("LIST_C")
+    third_id = third_data.get("id") if third_code == 200 and isinstance(third_data, dict) else ""
+    if not third_id:
+        report.add(
+            "endpoint",
+            "GET /v1/chat/completions (after + limit)",
+            "FAIL",
+            f"store setup failed: {third_code}",
+        )
+    else:
+        acode, adata = client.get_json(f"/v1/chat/completions?after={first_id}&order=asc&limit=1")
+        aids = [c.get("id") for c in (adata.get("data") or [])] if isinstance(adata, dict) else []
+        a_first = adata.get("first_id") if isinstance(adata, dict) else "?"
+        a_hm = adata.get("has_more") if isinstance(adata, dict) else "?"
+        after_ok = (
+            acode == 200
+            and isinstance(adata, dict)
+            and aids == [second_id]
+            and a_first == second_id
+            and adata.get("last_id") == second_id
+            and a_hm is True
+        )
+        report.add(
+            "endpoint",
+            "GET /v1/chat/completions (after + limit)",
+            "PASS" if after_ok else "FAIL",
+            f"HTTP {acode} data={aids!r} first_id={a_first!r} has_more={a_hm!r}",
+        )
+        tcode, tdata = client.get_json(f"/v1/chat/completions?after={third_id}&order=asc&limit=100")
+        tids = [c.get("id") for c in (tdata.get("data") or [])] if isinstance(tdata, dict) else None
+        t_first = tdata.get("first_id") if isinstance(tdata, dict) else "?"
+        t_hm = tdata.get("has_more") if isinstance(tdata, dict) else "?"
+        tail_ok = (
+            tcode == 200
+            and isinstance(tdata, dict)
+            and tids == []
+            and t_hm is False
+            and not t_first
+            and not tdata.get("last_id")
+        )
+        report.add(
+            "endpoint",
+            "GET /v1/chat/completions (after tail)",
+            "PASS" if tail_ok else "FAIL",
+            f"HTTP {tcode} data={tids!r} first_id={t_first!r} has_more={t_hm!r}",
+        )
+
+    fcode, fdata = client.get_json(f"/v1/chat/completions?model={model}&limit=100")
+    fitems = fdata.get("data") if isinstance(fdata, dict) else None
+    fids = [c.get("id") for c in (fitems or [])]
+    model_ok = (
+        fcode == 200
+        and isinstance(fitems, list)
+        and first_id in fids
+        and second_id in fids
+        and all(isinstance(c, dict) and c.get("model") == model for c in fitems)
+    )
+    report.add(
+        "endpoint",
+        "GET /v1/chat/completions (model filter)",
+        "PASS" if model_ok else "FAIL",
+        f"HTTP {fcode} n={len(fids)} first={first_id in fids} second={second_id in fids}",
+    )
+
+    md_code, md_data = client.post_json(
+        "/v1/chat/completions",
+        {
+            "model": model,
+            "store": True,
+            "max_tokens": 4,
+            "temperature": 0,
+            "metadata": {"suite": "endpoint-filter", "kind": "meta"},
+            "messages": [{"role": "user", "content": "Reply with exactly: LIST_MD"}],
+            **extra,
+        },
+    )
+    md_id = md_data.get("id") if md_code == 200 and isinstance(md_data, dict) else ""
+    if not md_id:
+        report.add(
+            "endpoint",
+            "GET /v1/chat/completions (metadata filter)",
+            "FAIL",
+            f"store setup failed: {md_code}",
+        )
+    else:
+        qcode, qdata = client.get_json("/v1/chat/completions?metadata[suite]=endpoint-filter&limit=100")
+        qitems = qdata.get("data") if isinstance(qdata, dict) else None
+        qids = [c.get("id") for c in (qitems or [])]
+        echo_ok = all(
+            isinstance(c, dict) and (c.get("metadata") or {}).get("suite") == "endpoint-filter"
+            for c in (qitems or [])
+        )
+        md_ok = (
+            qcode == 200
+            and isinstance(qitems, list)
+            and bool(qids)
+            and md_id in qids
+            and echo_ok
+        )
+        report.add(
+            "endpoint",
+            "GET /v1/chat/completions (metadata filter)",
+            "PASS" if md_ok else "FAIL",
+            f"HTTP {qcode} n={len(qids)} hit={md_id in qids} echo={echo_ok}",
+        )
+
+    ecode, edata = client.get_json("/v1/chat/completions?model=no-such-model-xyz")
+    eids = [c.get("id") for c in (edata.get("data") or [])] if isinstance(edata, dict) else None
+    e_first = edata.get("first_id") if isinstance(edata, dict) else "?"
+    e_hm = edata.get("has_more") if isinstance(edata, dict) else "?"
+    empty_ok = (
+        ecode == 200
+        and isinstance(edata, dict)
+        and eids == []
+        and e_hm is False
+        and not e_first
+        and not edata.get("last_id")
+    )
+    report.add(
+        "endpoint",
+        "GET /v1/chat/completions (empty list shape)",
+        "PASS" if empty_ok else "FAIL",
+        f"HTTP {ecode} data={eids!r} first_id={e_first!r} has_more={e_hm!r}",
+    )
+
     # GET /v1/chat/completions/{id}/messages — official stored-messages contract
     mcode, mdata = client.get_json(f"/v1/chat/completions/{first_id}/messages")
     msgs = mdata.get("data") if isinstance(mdata, dict) else None

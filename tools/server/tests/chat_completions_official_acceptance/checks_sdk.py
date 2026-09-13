@@ -129,6 +129,46 @@ def run_sdk_checks(
             "not present in installed openai SDK",
         )
 
+    # Official SDK type round-trip: custom tool request + typed custom tool call response.
+    try:
+        custom_resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Use dj_play: play a-ha Take On Me."}],
+            tools=[
+                {
+                    "type": "custom",
+                    "custom": {"name": "dj_play", "format": {"type": "text"}},
+                }
+            ],
+            tool_choice={"type": "custom", "custom": {"name": "dj_play"}},
+            max_tokens=128,
+            temperature=0,
+            extra_body=extra or None,
+        )
+        msg = custom_resp.choices[0].message if custom_resp.choices else None
+        tcs = list(getattr(msg, "tool_calls", None) or [])
+        first = tcs[0] if tcs else None
+        custom = getattr(first, "custom", None) if first is not None else None
+        ok = (
+            getattr(first, "type", None) == "custom"
+            and getattr(custom, "name", None) == "dj_play"
+            and isinstance(getattr(custom, "input", None), str)
+            and bool(getattr(custom, "input", ""))
+        )
+        report.add(
+            "sdk",
+            "chat.completions.create.custom_tool",
+            "PASS" if ok else "FAIL",
+            f"type={getattr(first, 'type', None)!r} name={getattr(custom, 'name', None)!r}",
+        )
+    except Exception as e:
+        report.add(
+            "sdk",
+            "chat.completions.create.custom_tool",
+            "FAIL",
+            f"{type(e).__name__}: {e}"[:240],
+        )
+
     try:
         page = client.models.list()
         ids = [m.id for m in page.data]

@@ -91,6 +91,160 @@ def run_create_param_checks(
         f"HTTP {code} text={choice_text(data)!r}",
     )
 
+    # Official role set: `developer` (system successor) and legacy `function` results.
+    code, data = create(
+        {
+            "messages": [
+                {"role": "developer", "content": "You must reply with exactly: DEV_ROLE"},
+                {"role": "user", "content": "What must you reply with?"},
+            ]
+        }
+    )
+    dev_ok = code == 200 and "DEV_ROLE" in choice_text(data)
+    report.add(
+        "create_param",
+        "messages.developer_role",
+        "PASS" if dev_ok else "FAIL",
+        f"HTTP {code} text={choice_text(data)!r}",
+    )
+    code, data = create(
+        {
+            "functions": [
+                {
+                    "name": "legacy_fn",
+                    "description": "legacy",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ],
+            "messages": [
+                {"role": "user", "content": "Reply with exactly: FN_ROLE"},
+                {"role": "function", "name": "legacy_fn", "content": "{\"ok\": true}"},
+            ],
+        }
+    )
+    fn_ok = code == 200 and "FN_ROLE" in choice_text(data)
+    report.add(
+        "create_param",
+        "messages.function_role",
+        "PASS" if fn_ok else "FAIL",
+        f"HTTP {code} text={choice_text(data)!r}",
+    )
+
+    # Official content-type coverage: refusal replay, file parts, legacy function_call replay.
+    code, data = create(
+        {
+            "messages": [
+                {"role": "user", "content": "Reply with exactly: REF_REPLAY"},
+                {
+                    "role": "assistant",
+                    "content": [{"type": "refusal", "refusal": "I cannot help with that."}],
+                },
+                {"role": "user", "content": "Continue as instructed."},
+            ]
+        }
+    )
+    report.add(
+        "create_param",
+        "messages.refusal_replay",
+        "PASS" if code == 200 else "FAIL",
+        f"HTTP {code} text={choice_text(data)!r}",
+    )
+
+    import base64 as _b64
+
+    _file_b64 = _b64.b64encode(b"The secret passphrase is FILE_TXT.").decode()
+    code, data = create(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Read the attached file and reply with its passphrase only.",
+                        },
+                        {
+                            "type": "file",
+                            "file": {
+                                "file_data": f"data:text/plain;base64,{_file_b64}",
+                                "filename": "notes.txt",
+                            },
+                        },
+                    ],
+                }
+            ]
+        }
+    )
+    file_ok = code == 200 and "FILE_TXT" in choice_text(data)
+    report.add(
+        "create_param",
+        "messages.file_part",
+        "PASS" if file_ok else "FAIL",
+        f"HTTP {code} text={choice_text(data)!r}",
+    )
+
+    code, _ = create(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "file", "file": {"file_id": "file-abc123"}}],
+                }
+            ]
+        }
+    )
+    report.add(
+        "create_param",
+        "messages.file_part_id_rejected",
+        "PASS" if code == 400 else "FAIL",
+        f"HTTP {code} (official file_id needs the Files API; no file storage locally)",
+    )
+
+    code, _ = create(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "input_audio", "input_audio": {"id": "audio-abc123"}}],
+                }
+            ]
+        }
+    )
+    report.add(
+        "create_param",
+        "messages.input_audio_id_rejected",
+        "PASS" if code == 400 else "FAIL",
+        f"HTTP {code} (official input_audio.id needs stored audio; none locally)",
+    )
+
+    code, data = create(
+        {
+            "functions": [
+                {
+                    "name": "legacy_fn",
+                    "description": "legacy",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ],
+            "messages": [
+                {"role": "user", "content": "Call legacy_fn now."},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "function_call": {"name": "legacy_fn", "arguments": "{}"},
+                },
+                {"role": "function", "name": "legacy_fn", "content": "{}"},
+                {"role": "user", "content": "Reply with exactly: FC_REPLAY"},
+            ],
+        }
+    )
+    report.add(
+        "create_param",
+        "messages.function_call_replay",
+        "PASS" if code == 200 and "FC_REPLAY" in choice_text(data) else "FAIL",
+        f"HTTP {code} text={choice_text(data)!r}",
+    )
+
     # --- max_tokens / max_completion_tokens ---
     # OpenAI: max_tokens is optional; missing must still succeed.
     code_missing_mt, data_missing_mt = client.post_json(
@@ -215,6 +369,23 @@ def run_create_param_checks(
         f"ctrl={text_ctrl!r} stop={text_stop!r} fr={fr_stop!r}",
     )
 
+    # Official stop: string or array of strings, at most 4 sequences. Too many
+    # sequences or a wrong JSON type must be 400 (invalid_request), not 5xx.
+    code_stop_many, _ = create({"stop": ["a", "b", "c", "d", "e"]}, max_tokens=8)
+    report.add(
+        "create_param",
+        "stop.too_many_sequences_chat",
+        "PASS" if code_stop_many == 400 else "FAIL",
+        f"HTTP {code_stop_many} (official: at most 4 stop sequences)",
+    )
+    code_stop_type, _ = create({"stop": 5}, max_tokens=8)
+    report.add(
+        "create_param",
+        "stop.invalid_type_chat",
+        "PASS" if code_stop_type == 400 else "FAIL",
+        f"HTTP {code_stop_type} (official type: string | array of strings)",
+    )
+
     # --- logprobs + top_logprobs ---
     code, data = create(
         {
@@ -244,6 +415,20 @@ def run_create_param_checks(
         "top_logprobs",
         "PASS" if code == 200 and has_lp and code_bad_tlp >= 400 else "FAIL",
         f"HTTP {code} (with logprobs=true) bad_gt20={code_bad_tlp}",
+    )
+
+    # Official logprobs type is boolean; a wrong-typed value must not be silently ignored.
+    code_bad_lptype, _ = create(
+        {
+            "logprobs": "yes",
+            "messages": [{"role": "user", "content": "Reply with exactly: TLP_TYPE"}],
+        }
+    )
+    report.add(
+        "create_param",
+        "logprobs.non_boolean",
+        "PASS" if code_bad_lptype == 400 else "FAIL",
+        f"HTTP {code_bad_lptype} (official type is boolean)",
     )
 
     # --- tools + tool_choice triad ---
@@ -368,6 +553,103 @@ def run_create_param_checks(
         f"HTTP {code} n_tc={len(tool_calls(data))} text={choice_text(data)!r}",
     )
 
+    # Official nested allowed_tools: mode auto/required over a tool subset.
+    code, data = create(
+        {
+            "tools": tools_fc,
+            "tool_choice": {
+                "type": "allowed_tools",
+                "allowed_tools": {
+                    "mode": "auto",
+                    "tools": [{"type": "function", "function": {"name": "echo_tool"}}],
+                },
+            },
+            "messages": [{"role": "user", "content": "Reply with exactly: ALLOWED_AUTO"}],
+        },
+        max_tokens=64,
+    )
+    report.add(
+        "create_param",
+        "tool_choice.allowed_tools",
+        "PASS" if code == 200 and "ALLOWED_AUTO" in choice_text(data) else "FAIL",
+        f"HTTP {code} text={choice_text(data)!r}",
+    )
+
+    code_empty, _ = create(
+        {
+            "tools": tools_fc,
+            "tool_choice": {
+                "type": "allowed_tools",
+                "allowed_tools": {"mode": "auto", "tools": []},
+            },
+            "messages": [{"role": "user", "content": "x"}],
+        },
+        max_tokens=8,
+    )
+    report.add(
+        "create_param",
+        "tool_choice.allowed_tools_empty",
+        "PASS" if code_empty == 400 else "FAIL",
+        f"HTTP {code_empty} (an empty allowed set leaves nothing the model could call)",
+    )
+
+    code, data = create(
+        {
+            "tools": tools_fc,
+            "tool_choice": {
+                "type": "allowed_tools",
+                "allowed_tools": {
+                    "mode": "required",
+                    "tools": [{"type": "function", "function": {"name": "echo_tool"}}],
+                },
+            },
+            "messages": [{"role": "user", "content": "Use a tool now."}],
+        },
+        max_tokens=128,
+    )
+    tcs = tool_calls(data)
+    names = [
+        (tc.get("function") or {}).get("name")
+        for tc in tcs
+        if isinstance(tc.get("function"), dict)
+    ]
+    report.add(
+        "create_param",
+        "tool_choice.allowed_tools_required",
+        "PASS" if code == 200 and names and names[0] == "echo_tool" else "FAIL",
+        f"HTTP {code} names={names}",
+    )
+
+    # Official custom tool: free-form text input captured as a custom tool call.
+    custom_tool = {"type": "custom", "custom": {"name": "dj_play", "format": {"type": "text"}}}
+    code, data = create(
+        {
+            "tools": [custom_tool],
+            "tool_choice": {"type": "custom", "custom": {"name": "dj_play"}},
+            "messages": [
+                {"role": "user", "content": "Use dj_play: play the track a-ha Take On Me."}
+            ],
+        },
+        max_tokens=128,
+    )
+    tcs = tool_calls(data)
+    first = tcs[0] if tcs else {}
+    custom_obj = first.get("custom") if isinstance(first, dict) else None
+    custom_ok = (
+        code == 200
+        and first.get("type") == "custom"
+        and isinstance(custom_obj, dict)
+        and custom_obj.get("name") == "dj_play"
+        and isinstance(custom_obj.get("input"), str)
+        and bool(custom_obj.get("input"))
+    )
+    report.add(
+        "create_param",
+        "tools.custom_tool",
+        "PASS" if custom_ok else "FAIL",
+        f"HTTP {code} tcs={json.dumps(tcs)[:200]}",
+    )
+
     # --- reasoning_effort=none ---
     code, data = create(
         {
@@ -405,6 +687,35 @@ def run_create_param_checks(
         "reasoning_effort.low",
         "PASS" if reason_low_ok else "FAIL",
         f"HTTP {code} reasoning_content={rc!r} text={choice_text(data)!r}",
+    )
+
+    # Official completion_tokens_details: text vs reasoning split with real counts.
+    _u = data.get("usage") if isinstance(data, dict) else None
+    _ctd = _u.get("completion_tokens_details") if isinstance(_u, dict) else None
+    _ct = int(_u.get("completion_tokens") or 0) if isinstance(_u, dict) else 0
+    _ctd_fields = [
+        "accepted_prediction_tokens",
+        "audio_tokens",
+        "reasoning_tokens",
+        "rejected_prediction_tokens",
+        "text_tokens",
+    ]
+    _ctd_ok = (
+        isinstance(_ctd, dict)
+        and all(isinstance(_ctd.get(k), int) for k in _ctd_fields)
+        and _ctd.get("reasoning_tokens") > 0
+        and _ctd.get("text_tokens") >= 0
+        and _ctd.get("text_tokens") + _ctd.get("reasoning_tokens") == _ct
+        and _ctd.get("audio_tokens") == 0
+        and _ctd.get("accepted_prediction_tokens") == 0
+        and _ctd.get("rejected_prediction_tokens") == 0
+    )
+    _ctd_repr = json.dumps(_ctd)[:160] if isinstance(_ctd, dict) else repr(_ctd)
+    report.add(
+        "create_param",
+        "usage.completion_tokens_details",
+        "PASS" if _ctd_ok else "FAIL",
+        f"ctd={_ctd_repr} completion_tokens={_ct}",
     )
 
     # --- invalid reasoning_effort → 400 ---
@@ -511,6 +822,7 @@ def run_create_param_checks(
         ],
         "logit_bias": {"50256": -100},
         "metadata": {"k": "v", "run": "acceptance"},
+        "moderation": {"model": "omni-moderation-latest"},
         "modalities": ["text"],
         "n": 1,
         "prediction": {"type": "content", "content": "Reply with exactly: PRED"},
@@ -566,6 +878,21 @@ def run_create_param_checks(
                 field,
                 "PASS" if ok else "FAIL",
                 f"fast={fast_ok} echo={echo_ok} bad400={bad_ok} stream={stream_ok}",
+            )
+            continue
+        if field == "moderation":
+            # Local scope: moderation is accepted and ignored (no moderation model locally).
+            code, data = create(
+                {
+                    "moderation": {"model": "omni-moderation-latest"},
+                    "messages": [{"role": "user", "content": "Reply with exactly: MODER"}],
+                }
+            )
+            report.add(
+                "create_param",
+                field,
+                "PASS" if code == 200 and "MODER" in choice_text(data) else "FAIL",
+                f"HTTP {code} text={choice_text(data)!r} (accepted and ignored locally)",
             )
             continue
         if field == "store":
@@ -1057,8 +1384,19 @@ def run_create_param_checks(
                         return int(details.get("cached_tokens") or 0)
                     return 0
 
+                def _write2(d: dict) -> int:
+                    u = d.get("usage") if isinstance(d, dict) else None
+                    if not isinstance(u, dict):
+                        return -1
+                    details = u.get("prompt_tokens_details") or {}
+                    if isinstance(details, dict):
+                        return int(details.get("cache_write_tokens") or 0)
+                    return 0
+
                 cold_c = _cached2(d_cold if isinstance(d_cold, dict) else {})
                 warm_c = _cached2(d_warm if isinstance(d_warm, dict) else {})
+                cold_w = _write2(d_cold if isinstance(d_cold, dict) else {})
+                warm_w = _write2(d_warm if isinstance(d_warm, dict) else {})
                 ok_cache = c_cold == 200 and c_warm == 200 and cold_c == 0 and warm_c > cold_c
                 report.add(
                     "create_param",
@@ -1066,7 +1404,14 @@ def run_create_param_checks(
                     "PASS" if ok_cache else "FAIL",
                     f"cold={cold_c} warm={warm_c} http={c_cold}/{c_warm} uniq={uniq}",
                 )
-                ok = ok and ok_cache
+                write_ok = c_cold == 200 and cold_c == 0 and cold_w > 0
+                report.add(
+                    "create_param",
+                    "prompt_cache_key.cache_write_tokens",
+                    "PASS" if write_ok else "FAIL",
+                    f"cold cached={cold_c} write={cold_w}; warm cached={warm_c} write={warm_w}",
+                )
+                ok = ok and ok_cache and write_ok
             report.add(
                 "create_param",
                 field,
