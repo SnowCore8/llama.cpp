@@ -927,8 +927,9 @@ def run_ws_checks(
                 add(name, False, f"no inject.failed (types={_types_of(frames)})")
                 return
             err = _err_of(fail)
-            ok = fail.get("response_id") == rid and err.get("code") == "response_already_completed"
+            rid_ok = fail.get("response_id") == rid
             echo_ok = fail.get("input") == sent
+            ok = rid_ok and echo_ok and err.get("code") == "response_already_completed"
             add(name, ok, f"response_id={fail.get('response_id')!r} code={err.get('code')!r} input_echo={echo_ok}")
 
     def inject_schema_close(deadline: float) -> None:
