@@ -422,22 +422,40 @@ std::vector<common_chat_msg> common_chat_msgs_parse_oaicompat(const json & messa
                         throw std::invalid_argument("Missing tool call type: " + tool_call.dump());
                     }
                     const auto & type = tool_call.at("type");
-                    if (type != "function") {
-                        throw std::invalid_argument("Unsupported tool call type: " + tool_call.dump());
-                    }
-                    if (!tool_call.contains("function")) {
-                        throw std::invalid_argument("Missing tool call function: " + tool_call.dump());
-                    }
-                    const auto & fc = tool_call.at("function");
-                    if (!fc.contains("name")) {
-                        throw std::invalid_argument("Missing tool call name: " + tool_call.dump());
-                    }
-                    tc.name           = fc.at("name");
-                    const auto & args = fc.at("arguments");
-                    if (args.is_string()) {
-                        tc.arguments = args;
+                    if (type == "function") {
+                        if (!tool_call.contains("function")) {
+                            throw std::invalid_argument("Missing tool call function: " + tool_call.dump());
+                        }
+                        const auto & fc = tool_call.at("function");
+                        if (!fc.contains("name")) {
+                            throw std::invalid_argument("Missing tool call name: " + tool_call.dump());
+                        }
+                        tc.name           = fc.at("name");
+                        const auto & args = fc.at("arguments");
+                        if (args.is_string()) {
+                            tc.arguments = args;
+                        } else {
+                            tc.arguments = args.dump();
+                        }
+                    } else if (type == "custom") {
+                        // Official custom tool call. The free-form input replays wrapped in the
+                        // synthesized {"input": ...} shape: templates parse arguments as a JSON
+                        // mapping, and this matches the form the model itself generates.
+                        if (!tool_call.contains("custom") || !tool_call.at("custom").is_object()) {
+                            throw std::invalid_argument("Missing tool call custom: " + tool_call.dump());
+                        }
+                        const auto & custom = tool_call.at("custom");
+                        if (!custom.contains("name") || !custom.at("name").is_string()) {
+                            throw std::invalid_argument("Missing tool call custom name: " + tool_call.dump());
+                        }
+                        tc.name = custom.at("name");
+                        std::string input;
+                        if (custom.contains("input") && custom.at("input").is_string()) {
+                            input = custom.at("input").get<std::string>();
+                        }
+                        tc.arguments = json{{"input", input}}.dump();
                     } else {
-                        tc.arguments = args.dump();
+                        throw std::invalid_argument("Unsupported tool call type: " + tool_call.dump());
                     }
                     if (tool_call.contains("id")) {
                         tc.id = tool_call.at("id");
@@ -587,18 +605,41 @@ std::vector<common_chat_tool> common_chat_tools_parse_oaicompat(const json & too
                     throw std::invalid_argument("Missing tool type: " + tool.dump());
                 }
                 const auto & type = tool.at("type");
-                if (!type.is_string() || type != "function") {
+                if (!type.is_string()) {
                     throw std::invalid_argument("Unsupported tool type: " + tool.dump());
                 }
-                if (!tool.contains("function")) {
-                    throw std::invalid_argument("Missing tool function: " + tool.dump());
-                }
+                if (type == "function") {
+                    if (!tool.contains("function")) {
+                        throw std::invalid_argument("Missing tool function: " + tool.dump());
+                    }
 
-                const auto & function = tool.at("function");
+                    const auto & function = tool.at("function");
+                    result.push_back({
+                        /* .name = */ function.at("name"),
+                        /* .description = */ function.value("description", ""),
+                        /* .parameters = */ function.value("parameters", json::object()).dump(),
+                    });
+                    continue;
+                }
+                if (type != "custom") {
+                    throw std::invalid_argument("Unsupported tool type: " + tool.dump());
+                }
+                // Official custom tool (free-form input). The model gets a synthetic function
+                // schema: custom entries must never reach the grammar generator without it.
+                const auto & custom = tool.contains("custom") && tool.at("custom").is_object()
+                    ? tool.at("custom") : tool;
+                if (!custom.contains("name") || !custom.at("name").is_string()) {
+                    throw std::invalid_argument("Missing custom tool name: " + tool.dump());
+                }
+                static const json custom_parameters = {
+                    {"type", "object"},
+                    {"properties", json{{"input", json{{"type", "string"}}}}},
+                    {"required", json::array({"input"})},
+                };
                 result.push_back({
-                    /* .name = */ function.at("name"),
-                    /* .description = */ function.value("description", ""),
-                    /* .parameters = */ function.value("parameters", json::object()).dump(),
+                    /* .name = */ custom.at("name"),
+                    /* .description = */ custom.value("description", ""),
+                    /* .parameters = */ custom_parameters.dump(),
                 });
             }
         }

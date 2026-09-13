@@ -246,11 +246,65 @@ json server_chat_convert_responses_to_chatcmpl(const json & response_body) {
                     });
                 }
             } else if (exists_and_is_string(item, "call_id") &&
+                exists_and_is_string(item, "input") &&
+                exists_and_is_string(item, "name") &&
+                exists_and_is_string(item, "type") &&
+                item.at("type") == "custom_tool_call"
+            ) {
+                // #responses_create-input-input_item_list-item-custom_tool_call
+                json tool_call = {
+                    {"custom", json {
+                        {"input", item.at("input")},
+                        {"name",  item.at("name")},
+                    }},
+                    {"id",   item.at("call_id")},
+                    {"type", "custom"},
+                };
+
+                if (merge_prev) {
+                    auto & prev_msg = chatcmpl_messages.back();
+                    if (!exists_and_is_array(prev_msg, "tool_calls")) {
+                        prev_msg["tool_calls"] = json::array();
+                    }
+                    prev_msg["tool_calls"].push_back(tool_call);
+                } else {
+                    chatcmpl_messages.push_back(json {
+                        {"role",       "assistant"},
+                        {"tool_calls", json::array({tool_call})}
+                    });
+                }
+            } else if (exists_and_is_string(item, "call_id") &&
                 (exists_and_is_string(item, "output") || exists_and_is_array(item, "output")) &&
                 exists_and_is_string(item, "type") &&
                 item.at("type") == "function_call_output"
             ) {
                 // #responses_create-input-input_item_list-item-function_tool_call_output
+                if (item.at("output").is_string()) {
+                    chatcmpl_messages.push_back(json {
+                        {"content",      item.at("output")},
+                        {"role",         "tool"},
+                        {"tool_call_id", item.at("call_id")},
+                    });
+                } else {
+                    json chatcmpl_outputs = item.at("output");
+                    for (json & chatcmpl_output : chatcmpl_outputs) {
+                        if (!chatcmpl_output.contains("type") || chatcmpl_output.at("type") != "input_text") {
+                            throw std::invalid_argument("Output of tool call should be 'Input text'");
+                        }
+                        chatcmpl_output["type"] = "text";
+                    }
+                    chatcmpl_messages.push_back(json {
+                        {"content",      chatcmpl_outputs},
+                        {"role",         "tool"},
+                        {"tool_call_id", item.at("call_id")},
+                    });
+                }
+            } else if (exists_and_is_string(item, "call_id") &&
+                (exists_and_is_string(item, "output") || exists_and_is_array(item, "output")) &&
+                exists_and_is_string(item, "type") &&
+                item.at("type") == "custom_tool_call_output"
+            ) {
+                // #responses_create-input-input_item_list-item-custom_tool_call_output
                 if (item.at("output").is_string()) {
                     chatcmpl_messages.push_back(json {
                         {"content",      item.at("output")},
@@ -399,11 +453,19 @@ json server_chat_convert_responses_to_chatcmpl(const json & response_body) {
                 // Handled by server_openai_apply_web_search_semantics (prepare_request).
                 continue;
             }
+            if (type == "custom") {
+                // #responses_create-tools-tool-custom: flat shape, Chat Completions uses {custom:{...}}
+                resp_tool.erase("type");
+                chatcmpl_tool["type"] = "custom";
+                chatcmpl_tool["custom"] = std::move(resp_tool);
+                chatcmpl_tools.push_back(std::move(chatcmpl_tool));
+                continue;
+            }
             if (type != "function") {
                 // Do not silently drop other hosted/cloud tools (file_search, mcp, …).
                 throw std::invalid_argument(
                     "hosted Responses tool type '" + type + "' is not supported on this server "
-                    "(only type=function or local web_search). Cloud tool execution is unavailable locally.");
+                    "(only type=function, type=custom or local web_search). Cloud tool execution is unavailable locally.");
             }
             resp_tool.erase("type");
             chatcmpl_tool["type"] = "function";
@@ -829,7 +891,65 @@ json server_chat_convert_anthropic_to_oai(const json & body) {
     return oai_body;
 }
 
-json server_chat_msg_diff_to_json_oaicompat(const common_chat_msg_diff & diff) {
+// custom tool call input: the raw text; when the arguments hold JSON, unwrap a
+// JSON string or an object with a string "input" field
+std::string server_chat_custom_tool_input(const std::string & arguments) {
+    try {
+        const json parsed = json::parse(arguments);
+        if (parsed.is_string()) {
+            return parsed.get<std::string>();
+        }
+        if (parsed.is_object() && parsed.contains("input") && parsed.at("input").is_string()) {
+            return parsed.at("input").get<std::string>();
+        }
+    } catch (const common_json_error &) {
+        // not JSON: the raw text is the input
+    }
+    return arguments;
+}
+
+bool server_chat_is_custom_tool_name(const std::string & name, const std::vector<std::string> & custom_tool_names) {
+    return !name.empty() &&
+        std::find(custom_tool_names.begin(), custom_tool_names.end(), name) != custom_tool_names.end();
+}
+
+std::unordered_set<size_t> server_chat_custom_tool_call_indices(
+        const common_chat_msg & msg, const std::vector<std::string> & custom_tool_names) {
+    std::unordered_set<size_t> indices;
+    for (size_t i = 0; i < msg.tool_calls.size(); ++i) {
+        if (server_chat_is_custom_tool_name(msg.tool_calls[i].name, custom_tool_names)) {
+            indices.insert(i);
+        }
+    }
+    return indices;
+}
+
+// Rewrite the tool_calls of a serialized Chat message into the official custom shape.
+// Used by the non-stream Chat serializer; the stream path translates per-delta instead.
+void server_chat_apply_custom_tool_calls(json & message_obj, const std::vector<std::string> & custom_tool_names) {
+    if (custom_tool_names.empty() || !message_obj.contains("tool_calls") || !message_obj.at("tool_calls").is_array()) {
+        return;
+    }
+    for (json & tool_call : message_obj["tool_calls"]) {
+        if (!tool_call.is_object() || !tool_call.contains("function") || !tool_call.at("function").is_object()) {
+            continue;
+        }
+        const json & function = tool_call.at("function");
+        const std::string name = json_value(function, "name", std::string());
+        if (!server_chat_is_custom_tool_name(name, custom_tool_names)) {
+            continue;
+        }
+        tool_call["type"] = "custom";
+        tool_call["custom"] = json {
+            {"input", server_chat_custom_tool_input(json_value(function, "arguments", std::string()))},
+            {"name",  name},
+        };
+        tool_call.erase("function");
+    }
+}
+
+json server_chat_msg_diff_to_json_oaicompat(const common_chat_msg_diff & diff,
+        const std::unordered_set<size_t> & custom_tool_call_indices) {
     json delta = json::object();
     if (!diff.reasoning_content_delta.empty()) {
         delta["reasoning_content"] = diff.reasoning_content_delta;
@@ -838,13 +958,30 @@ json server_chat_msg_diff_to_json_oaicompat(const common_chat_msg_diff & diff) {
         delta["content"] = diff.content_delta;
     }
     if (diff.tool_call_index != std::string::npos) {
+        const bool is_custom = custom_tool_call_indices.count(diff.tool_call_index) > 0;
         json tool_call;
         tool_call["index"] = diff.tool_call_index;
         if (!diff.tool_call_delta.id.empty()) {
             tool_call["id"]   = diff.tool_call_delta.id;
-            tool_call["type"] = "function";
+            tool_call["type"] = is_custom ? "custom" : "function";
         }
-        if (!diff.tool_call_delta.name.empty() || !diff.tool_call_delta.arguments.empty()) {
+        bool emit = true;
+        if (is_custom) {
+            // No official Chat Completions stream shape exists for custom tools;
+            // mirror the non-stream shape with the decoded input delta as it arrives.
+            json custom = json::object();
+            if (!diff.tool_call_delta.name.empty()) {
+                custom["name"] = diff.tool_call_delta.name;
+            }
+            if (!diff.tool_call_delta.arguments.empty()) {
+                custom["input"] = diff.tool_call_delta.arguments;
+            }
+            if (custom.empty()) {
+                emit = false; // raw envelope fragments are withheld until decodable
+            } else {
+                tool_call["custom"] = custom;
+            }
+        } else if (!diff.tool_call_delta.name.empty() || !diff.tool_call_delta.arguments.empty()) {
             json function = json::object();
             if (!diff.tool_call_delta.name.empty()) {
                 function["name"] = diff.tool_call_delta.name;
@@ -854,7 +991,9 @@ json server_chat_msg_diff_to_json_oaicompat(const common_chat_msg_diff & diff) {
             }
             tool_call["function"] = function;
         }
-        delta["tool_calls"] = json::array({ tool_call });
+        if (emit) {
+            delta["tool_calls"] = json::array({ tool_call });
+        }
     }
     return delta;
 }

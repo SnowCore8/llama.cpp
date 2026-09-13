@@ -1113,10 +1113,14 @@ static bool server_web_search_denied_by_allowed_tools(const json & body) {
     if (json_value(tc, "type", std::string()) != "allowed_tools") {
         return false;
     }
-    if (!tc.contains("tools") || !tc.at("tools").is_array()) {
+    // official nested shape wraps the list in 'allowed_tools'; flat 'tools' is the local legacy shape
+    const json & allowed = tc.contains("allowed_tools") && tc.at("allowed_tools").is_object()
+        ? tc.at("allowed_tools")
+        : tc;
+    if (!allowed.contains("tools") || !allowed.at("tools").is_array()) {
         return false; // malformed shape: rejected by the tool_choice validator
     }
-    for (const auto & entry : tc.at("tools")) {
+    for (const auto & entry : allowed.at("tools")) {
         if (entry.is_object() && server_web_search_is_tool_type(json_value(entry, "type", std::string()))) {
             return false;
         }

@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <list>
 #include <map>
@@ -115,6 +116,10 @@ struct task_params {
     bool        oai_prompt_cache_expired = false; // disk TTL was dead before this request's touch
     std::vector<int32_t> oai_prompt_cache_breakpoints; // token positions to checkpoint (explicit)
 
+    // Chat/Responses custom tools: tool calls with these names serialize in the official
+    // custom shape ({"type":"custom","custom":{"input","name"}} / custom_tool_call items)
+    std::vector<std::string> oai_custom_tool_names;
+
     // Local web_search deepen (Responses emits hosted-shaped blocks)
     bool        oai_web_search_ran = false;
     std::string oai_web_search_query;
@@ -147,6 +152,12 @@ struct task_result_state {
     std::string generated_text; // append new chunks of generated text here
     std::vector<std::string> generated_tool_call_ids;
     std::unordered_set<size_t> sent_tool_call_names;
+
+    // tool call indices whose name is in the request's custom tool list
+    std::vector<std::string> oai_custom_tool_names;
+    std::unordered_set<size_t> custom_tool_call_indices;
+    // custom tool call input text already decoded+streamed, per tool call index
+    std::unordered_map<size_t, std::string> custom_input_decoded;
 
     // for OpenAI Responses and Anthropic streaming API:
     // track output item / content block state across chunks
@@ -299,6 +310,7 @@ struct server_task {
         st.oaicompat_resp_input        = params.oaicompat_resp_input;
         st.oaicompat_resp_instructions = params.oaicompat_resp_instructions;
         st.oaicompat_resp_request      = params.oaicompat_resp_request;
+        st.oai_custom_tool_names       = params.oai_custom_tool_names;
         return st;
     }
 
@@ -481,6 +493,9 @@ struct server_task_result_cmpl_partial : server_task_result {
     // Streaming state copied from task_result_state for this chunk
     bool thinking_block_started = false;
     bool text_block_started     = false;
+
+    // tool call indices that serialize in the official custom shape
+    std::unordered_set<size_t> custom_tool_call_indices;
 
     // Reasoning summary text to stream in this chunk (OpenAI Responses)
     bool        reasoning_summary_started = false;

@@ -331,6 +331,10 @@ static json server_responses_ensure_input_item_ids(json items) {
             const std::string typ = json_value(item, "type", std::string("message"));
             if (typ == "function_call" || typ == "function_call_output") {
                 item["id"] = "fc_" + random_string();
+            } else if (typ == "custom_tool_call") {
+                item["id"] = "ctc_" + random_string();
+            } else if (typ == "custom_tool_call_output") {
+                item["id"] = "ctco_" + random_string();
             } else {
                 item["id"] = "msg_" + random_string();
             }
@@ -381,6 +385,11 @@ json server_responses_output_item_to_input(const json & output_item) {
 
     if (type == "function_call") {
         // Pass through as function_call input item
+        return output_item;
+    }
+
+    if (type == "custom_tool_call" || type == "custom_tool_call_output") {
+        // Pass through as custom tool input items (converted to Chat tool calls later)
         return output_item;
     }
 

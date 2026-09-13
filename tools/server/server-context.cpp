@@ -4666,6 +4666,14 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             }
             task.params.oai_web_search_n_requests =
                 json_value(data, "__oai_web_search_n_requests", 0);
+            if (data.contains("__oai_custom_tool_names") &&
+                    data.at("__oai_custom_tool_names").is_array()) {
+                for (const auto & name : data.at("__oai_custom_tool_names")) {
+                    if (name.is_string()) {
+                        task.params.oai_custom_tool_names.push_back(name.get<std::string>());
+                    }
+                }
+            }
             if (res_type == TASK_RESPONSE_TYPE_OAI_CMPL) {
                 task.params.oaicompat_cmpl_echo = json_value(data, "echo", false);
                 const int n_val = json_value(data, "n", 1);

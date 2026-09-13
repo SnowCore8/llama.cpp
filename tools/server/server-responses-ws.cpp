@@ -427,21 +427,25 @@ static json ws_prepare_event(const json & in, const std::string & stream_id) {
     return out;
 }
 
-// True when the finished output contains a client-owned function call.
+// True when the finished output contains a client-owned function or custom tool call.
 static bool ws_has_function_call(const json & response_obj) {
     if (!response_obj.is_object() || !response_obj.contains("output") ||
             !response_obj.at("output").is_array()) {
         return false;
     }
     for (const auto & item : response_obj.at("output")) {
-        if (item.is_object() && json_value(item, "type", std::string()) == "function_call") {
+        if (!item.is_object()) {
+            continue;
+        }
+        const std::string type = json_value(item, "type", std::string());
+        if (type == "function_call" || type == "custom_tool_call") {
             return true;
         }
     }
     return false;
 }
 
-// Required input stubs for response.steer.pending, one per function call.
+// Required input stubs for response.steer.pending, one per client-owned tool call.
 static json ws_required_input(const json & response_obj) {
     json out = json::array();
     if (!response_obj.is_object() || !response_obj.contains("output") ||
@@ -449,11 +453,21 @@ static json ws_required_input(const json & response_obj) {
         return out;
     }
     for (const auto & item : response_obj.at("output")) {
-        if (item.is_object() && json_value(item, "type", std::string()) == "function_call") {
+        if (!item.is_object()) {
+            continue;
+        }
+        const std::string type = json_value(item, "type", std::string());
+        if (type == "function_call") {
             out.push_back(json {
                 {"type",    "function_call_output"},
                 {"call_id", json_value(item, "call_id", std::string())},
                 {"name",    json_value(item, "name", std::string())},
+            });
+        } else if (type == "custom_tool_call") {
+            // custom_tool_call_output carries no name
+            out.push_back(json {
+                {"type",    "custom_tool_call_output"},
+                {"call_id", json_value(item, "call_id", std::string())},
             });
         }
     }

@@ -1855,6 +1855,20 @@ static void handle_media(
     }
 }
 
+// Name of a tool entry, accepting Chat (function/custom nested) and flat Responses shapes.
+static std::string oai_tool_entry_name(const json & tool) {
+    if (!tool.is_object()) {
+        return {};
+    }
+    if (tool.contains("function") && tool.at("function").is_object()) {
+        return json_value(tool.at("function"), "name", std::string());
+    }
+    if (tool.contains("custom") && tool.at("custom").is_object()) {
+        return json_value(tool.at("custom"), "name", std::string());
+    }
+    return json_value(tool, "name", std::string());
+}
+
 // used by /chat/completions endpoint
 json oaicompat_chat_params_parse(
     json & body, /* openai api json semantics */
@@ -1937,47 +1951,51 @@ json oaicompat_chat_params_parse(
                 tool_choice = tc_type;
             } else if (tc_type == "allowed_tools") {
                 // Restrict callable tools to the listed subset (official ToolChoiceAllowed).
-                const std::string mode = json_value(tc, "mode", std::string("auto"));
+                // Official shape nests under 'allowed_tools'; the flat local shape stays supported.
+                const json & allowed = tc.contains("allowed_tools") && tc.at("allowed_tools").is_object()
+                    ? tc.at("allowed_tools") : tc;
+                const std::string mode = json_value(allowed, "mode", std::string("auto"));
                 if (mode != "auto" && mode != "required") {
                     throw std::invalid_argument("'tool_choice.mode' must be 'auto' or 'required'");
                 }
-                if (!tc.contains("tools") || !tc.at("tools").is_array()) {
+                if (!allowed.contains("tools") || !allowed.at("tools").is_array()) {
                     throw std::invalid_argument("'tool_choice.tools' must be an array");
                 }
                 std::unordered_set<std::string> allowed_names;
-                for (const auto & entry : tc.at("tools")) {
+                for (const auto & entry : allowed.at("tools")) {
                     if (!entry.is_object()) {
                         throw std::invalid_argument("'tool_choice.tools' entries must be objects");
                     }
-                    if (json_value(entry, "type", std::string()) == "function") {
-                        const std::string name = json_value(entry, "name", std::string());
+                    const std::string entry_type = json_value(entry, "type", std::string());
+                    if (entry_type == "function" || entry_type == "custom") {
+                        const std::string name = oai_tool_entry_name(entry);
                         if (!name.empty()) {
                             allowed_names.insert(name);
                         }
                     }
                 }
+                bool filtered_out = false;
                 if (has_tools) {
                     json filtered = json::array();
                     for (const auto & tool : tools) {
                         if (!tool.is_object()) {
                             continue;
                         }
-                        std::string name;
-                        if (tool.contains("function") && tool.at("function").is_object()) {
-                            name = json_value(tool.at("function"), "name", std::string());
-                        } else {
-                            name = json_value(tool, "name", std::string());
-                        }
-                        if (allowed_names.count(name)) {
+                        if (allowed_names.count(oai_tool_entry_name(tool))) {
                             filtered.push_back(tool);
                         }
                     }
+                    filtered_out = filtered.empty();
                     tools = std::move(filtered);
                     has_tools = !tools.empty();
                 }
                 if (mode == "required" && !has_tools) {
                     throw std::invalid_argument(
                         "tool_choice requires at least one allowed tool present in 'tools'");
+                }
+                if (mode == "auto" && filtered_out) {
+                    throw std::invalid_argument(
+                        "tool_choice allowed_tools with mode 'auto' matched no tools in 'tools'");
                 }
                 tool_choice = mode;
             } else if (tc_type == "function" || tc_type == "tool") {
@@ -1990,6 +2008,17 @@ json oaicompat_chat_params_parse(
                     throw std::invalid_argument("tool_choice function name is required");
                 }
                 tool_choice = "required";
+            } else if (tc_type == "custom") {
+                // Official Chat/Responses: force one custom tool by name.
+                if (tc.contains("custom") && tc.at("custom").is_object()) {
+                    forced_tool_name = json_value(tc.at("custom"), "name", std::string());
+                } else {
+                    forced_tool_name = json_value(tc, "name", std::string());
+                }
+                if (forced_tool_name.empty()) {
+                    throw std::invalid_argument("tool_choice custom name is required");
+                }
+                tool_choice = "required";
             } else {
                 throw std::invalid_argument("Invalid tool_choice.type: " + tc_type);
             }
@@ -1998,17 +2027,29 @@ json oaicompat_chat_params_parse(
         }
     }
 
+    // Chat custom tool names: serializers pick the official custom tool_call output shape
+    // by name (everything else stays function-shaped).
+    std::vector<std::string> oai_custom_tool_names;
     if (has_tools) {
         for (const auto & tool : tools) {
             if (!tool.is_object()) {
                 continue;
             }
             const std::string type = json_value(tool, "type", std::string("function"));
-            if (type != "function") {
-                throw std::invalid_argument(
-                    "Chat Completions tool type '" + type + "' is not supported on this server "
-                    "(only type=function). Cloud tool execution is unavailable locally.");
+            if (type == "function") {
+                continue;
             }
+            if (type == "custom") {
+                const std::string name = oai_tool_entry_name(tool);
+                if (name.empty()) {
+                    throw std::invalid_argument("'tools' entry of type 'custom' requires a name");
+                }
+                oai_custom_tool_names.push_back(name);
+                continue;
+            }
+            throw std::invalid_argument(
+                "Chat Completions tool type '" + type + "' is not supported on this server "
+                "(only type=function and type=custom). Cloud tool execution is unavailable locally.");
         }
     }
 
@@ -2021,13 +2062,7 @@ json oaicompat_chat_params_parse(
             if (!tool.is_object()) {
                 continue;
             }
-            std::string name;
-            if (tool.contains("function") && tool.at("function").is_object()) {
-                name = json_value(tool.at("function"), "name", std::string());
-            } else {
-                name = json_value(tool, "name", std::string());
-            }
-            if (name == forced_tool_name) {
+            if (oai_tool_entry_name(tool) == forced_tool_name) {
                 filtered.push_back(tool);
             }
         }
@@ -2127,6 +2162,28 @@ json oaicompat_chat_params_parse(
 
     for (auto & msg : messages) {
         std::string role = json_value(msg, "role", std::string());
+        if (role == "assistant" && msg.contains("function_call") && !msg.at("function_call").is_null()) {
+            // Legacy single function_call is deprecated but accepted; normalize it to tool_calls.
+            const json & fc = msg.at("function_call");
+            if (!fc.is_object()) {
+                throw std::invalid_argument("'function_call' must be an object");
+            }
+            if (msg.contains("tool_calls") && msg.at("tool_calls").is_array() && !msg.at("tool_calls").empty()) {
+                throw std::invalid_argument("Cannot set both 'function_call' and 'tool_calls'");
+            }
+            const std::string name = json_value(fc, "name", std::string());
+            if (name.empty()) {
+                throw std::invalid_argument("'function_call.name' is required");
+            }
+            msg["tool_calls"] = json::array({ json {
+                {"type", "function"},
+                {"function", json {
+                    {"name",      name},
+                    {"arguments", json_value(fc, "arguments", std::string())},
+                }},
+            }});
+            msg.erase("function_call");
+        }
         if (role != "assistant" && !msg.contains("content")) {
             throw std::invalid_argument("All non-assistant messages must contain 'content'");
         }
@@ -2147,7 +2204,8 @@ json oaicompat_chat_params_parse(
             throw std::invalid_argument("Expected 'content' to be a string or an array");
         }
 
-        for (auto & p : content) {
+        for (size_t i = 0; i < content.size(); ) {
+            json & p = content[i];
             std::string type = json_value(p, "type", std::string());
             if (type == "image_url") {
                 if (!opt.allow_image) {
@@ -2163,12 +2221,17 @@ json oaicompat_chat_params_parse(
                 p.erase("image_url");
 
             } else if (type == "input_audio") {
+                // shape check first: id requires a file store this server does not have,
+                // reject it as an invalid request regardless of audio support
+                json input_audio = json_value(p, "input_audio", json::object());
+                if (input_audio.contains("id") && !input_audio.at("id").is_null()) {
+                    throw std::invalid_argument("'input_audio.id' is not supported on this server (no file storage); pass 'input_audio.data' instead");
+                }
                 if (!opt.allow_audio) {
                     throw std::runtime_error("audio input is not supported - hint: if this is unexpected, you may need to provide the mmproj");
                 }
 
                 // note: don't need to validate "format", it's redundant
-                json input_audio = json_value(p, "input_audio", json::object());
                 std::string url  = json_value(input_audio, "data",
                                         json_value(input_audio, "url", std::string()));
                 handle_media(out_files, url, opt.media_path);
@@ -2191,9 +2254,51 @@ json oaicompat_chat_params_parse(
                 p["text"] = get_media_marker();
                 p.erase("input_video");
 
+            } else if (type == "file") {
+                // Official FileContentPart: file_data is decoded into the prompt as text,
+                // file_id would need a file store this server does not have.
+                json file = json_value(p, "file", json::object());
+                if (file.contains("file_id") && !file.at("file_id").is_null()) {
+                    throw std::invalid_argument("'file.file_id' is not supported on this server (no file storage); pass 'file.file_data' instead");
+                }
+                std::string data = json_value(file, "file_data", std::string());
+                if (data.empty()) {
+                    throw std::invalid_argument("'file' content part requires 'file.file_data'");
+                }
+                // accept both a data URI and plain base64
+                const size_t comma = data.find(',');
+                if (data.rfind("data:", 0) == 0 && comma != std::string::npos) {
+                    data = data.substr(comma + 1);
+                }
+                const raw_buffer decoded = base64_decode(data);
+                if (decoded.empty()) {
+                    throw std::invalid_argument("'file.file_data' is not valid base64");
+                }
+                p = json {
+                    {"type", "text"},
+                    {"text", std::string(decoded.begin(), decoded.end())},
+                };
+
+            } else if (type == "refusal") {
+                // Official assistant refusal part; replayed with text semantics.
+                if (!p.contains("refusal") || !p.at("refusal").is_string()) {
+                    throw std::invalid_argument("'refusal' content part requires a string 'refusal'");
+                }
+                const std::string refusal = p.at("refusal").get<std::string>();
+                p = json {
+                    {"type", "text"},
+                    {"text", refusal},
+                };
+
+            } else if (type == "moderation") {
+                // Moderation parts are not produced locally: accept and drop on replay.
+                content.erase(i);
+                continue;
+
             } else if (type != "text") {
                 throw std::invalid_argument("unsupported content[].type");
             }
+            ++i;
         }
     }
 
@@ -2428,6 +2533,11 @@ json oaicompat_chat_params_parse(
             bps.push_back({ {"role", bp.first}, {"ordinal", bp.second} });
         }
         llama_params["__oai_prompt_cache_breakpoints"] = std::move(bps);
+    }
+
+    // custom tool names are resolved by name when serializing tool calls (custom shape)
+    if (!oai_custom_tool_names.empty()) {
+        llama_params["__oai_custom_tool_names"] = oai_custom_tool_names;
     }
 
     // Reasoning budget: pass parameters through to sampling layer
