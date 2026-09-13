@@ -474,7 +474,7 @@ This endpoint is public (no API key check). `/v1/health` also works.
 **Response format**
 
 - HTTP status code 503
-  - Body: `{"error": {"code": 503, "message": "Loading model", "type": "unavailable_error"}}`
+  - Body: `{"error": {"code": null, "message": "Loading model", "param": null, "type": "service_unavailable_error"}}`
   - Explanation: the model is still being loaded.
 - HTTP status code 200
   - Body: `{"status": "ok" }`
@@ -2253,8 +2253,9 @@ Response (error, cannot start the download):
 ```json
 {
   "error": {
-    "code": 400,
+    "code": null,
     "message": "model validation failed, unable to download",
+    "param": null,
     "type": "invalid_request_error"
   }
 }
@@ -2285,9 +2286,10 @@ Example of an error:
 ```json
 {
     "error": {
-        "code": 401,
+        "code": "invalid_api_key",
         "message": "Invalid API Key",
-        "type": "authentication_error"
+        "param": null,
+        "type": "invalid_request_error"
     }
 }
 ```
@@ -2332,8 +2334,9 @@ Apart from error types supported by OAI, we also have custom types that are spec
 ```json
 {
     "error": {
-        "code": 501,
+        "code": null,
         "message": "This server does not support metrics endpoint.",
+        "param": null,
         "type": "not_supported_error"
     }
 }
@@ -2344,8 +2347,9 @@ Apart from error types supported by OAI, we also have custom types that are spec
 ```json
 {
     "error": {
-        "code": 400,
+        "code": null,
         "message": "Failed to parse grammar",
+        "param": null,
         "type": "invalid_request_error"
     }
 }
