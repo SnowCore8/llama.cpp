@@ -3,7 +3,7 @@
 - 文档日期：2026-09-14。定位：campaign「OpenAI 官方 API 全量对齐」的整合视图（背景 / 范围 / 证据 / 验收 / 历史 / 判定 / 基线 / 未决 / 风险）。
 - 权威源：契约细节与验收证据以 [OFFICIAL_API_SCOPE.md](OFFICIAL_API_SCOPE.md) 为准；差异分类汇总以 [OFFICIAL_API_DIFF.md](OFFICIAL_API_DIFF.md) 为准。本文档与两者同步维护；若源文件间措辞冲突，以 SCOPE 为准（本文相应标注存疑处）。
 - 验证口径（2026-09-14 起）：统一 V100（`CUDA_VISIBLE_DEVICES=0`）+ Qwen3.5-9B-Q4_K_M（探针与 acceptance 全量）；历史 0.8B 数字保留为历史基线（见 §7）。
-- 分支状态：v100 分支本地工作（未 push）；envelope 波与词表修正波的工作区改动尚未提交。
+- 分支状态：v100 分支本地工作（未 push）；envelope 波与词表修正波已本地提交 - 代码+单测 `6bf39f10a`、SCOPE/DIFF 登记 `68776830a`、README 示例 `137493cd0`、本文档 `91a53751d`。
 
 ## 目录
 
@@ -105,8 +105,8 @@
 | 4 | hint 漂移处置波 | 09-13 22:48 - 23:10 | hint 常量前缀破坏的 4 处 cache 断言前提修复 + `input_tokens_matches_create_usage` 两条路径对齐 + 行为漂移登记（保持断言强度、禁止恒真） | `9f8337a42`、`60f4f9bc0` | 重基线：responses 373 = 343 PASS / 5 FAIL / 1 PARTIAL / 24 SKIP、chat 143 = 137 PASS / 2 FAIL / 1 PARTIAL / 3 SKIP（drift-report §2.4）；9B 全 PASS -> 模型能力类 |
 | 5 | 文档体系重排 | 09-13 23:26 | SCOPE 主体重排（新增 Recorded deviations 节、Server changes 改名、删元叙述）；DIFF 3 处引用名最小修正；相对链接全检 | `68bd07398` | 0 断链、原始条目 -> 新位置全量对照（doc-reorg-report）；语义/数字/证据路径逐字未动 |
 | 6 | B1 未知 model 形状 | 09-13 23:10 - 23:36 | chat/embeddings 未知 model -> 404 + A 族（反引号 message、`param:null`、`code:"model_not_found"`）；responses -> 400 + B 族（`The requested model 'X' does not exist.`、`param:"model"`）；router 统一 404 + A 族 | `07ede89c8`、`82dcce5ee`、`801c7d7d6` | 3 个新验收行 PASS、0 意外状态变化（b1-fix-report §4）；B 族 wire 形状按 raw bytes 裁定（§1.1） |
-| 7 | envelope 错误体泛化 | 09-13 23:43 - 09-14 00:12 | 全端点统一四字段 envelope（`code`/`param` 空 -> null，插入序 code,message,param,type）+ HTTP 状态与 body 解耦（`error_status_from_body`）；99 处调用点；401 补 `code:"invalid_api_key"` | 未提交（工作区 7 文件，+47/-54） | 探针 12 PASS；B1 A/B 族与 router 回归 byte-equal；三套件 0 行状态差异（envelope-report §4/§5）；9B responses 子集待回填（§5.5） |
-| 8 | 词表对齐修正（401/503） | 2026-09-14 | 401 body `type` -> `invalid_request_error`（官方实拍）；503 body `type` -> `service_unavailable_error`（官方文档）；`error_status_from_body` 与 WS 转发映射同步 | 未提交（工作区；SCOPE/DIFF 登记已同步） | 实现与文档登记已落地；探针/套件验证推迟，9B 全量新基线待重跑回填（DIFF §6 注；`/tmp/envelope-report.md` §5/§8） |
+| 7 | envelope 错误体泛化 | 09-13 23:43 - 09-14 00:12 | 全端点统一四字段 envelope（`code`/`param` 空 -> null，插入序 code,message,param,type）+ HTTP 状态与 body 解耦（`error_status_from_body`）；99 处调用点；401 补 `code:"invalid_api_key"` | `6bf39f10a`（10 文件 +54/-59，含单测与 401 `code`） | 探针 12 PASS；B1 A/B 族与 router 回归 byte-equal；三套件 0 行状态差异（envelope-report §4/§5）；9B responses 子集待回填（§5.5） |
+| 8 | 词表对齐修正（401/503） | 2026-09-14 | 401 body `type` -> `invalid_request_error`（官方实拍）；503 body `type` -> `service_unavailable_error`（官方文档）；`error_status_from_body` 与 WS 转发映射同步 | `6bf39f10a`（代码）/ `68776830a`（SCOPE/DIFF 登记）/ `137493cd0`（README 示例） | 实现与文档登记已提交；探针/套件验证推迟，9B 全量新基线待重跑回填（DIFF §6 注；`/tmp/envelope-report.md` §5/§8） |
 
 ## 6. 规范判定表（2026-09-14）
 
@@ -131,7 +131,7 @@
 | 503 body `type` | `service_unavailable_error`（文档 `llms-full.txt:32238`、`llms-full.txt:76944`；官方 `code`=`server_is_overloaded`） | 由 `unavailable_error` 对齐为 `service_unavailable_error`（旧值退场） | `code` 不设（null；`server_is_overloaded` 属云端过载语义） |
 
 - 同步面：`format_error_response` 映射（`ERROR_TYPE_AUTHENTICATION` -> `invalid_request_error`、`ERROR_TYPE_UNAVAILABLE` -> `service_unavailable_error`）、`error_status_from_body`（`service_unavailable_error` -> 503；`authentication_error` 保留为可接受转发值 -> 401）、WS 转发映射（server-responses-ws.cpp）。HTTP 状态码与四字段形状不变（SCOPE 同条）。
-- 状态注：实现与文档登记已落地（工作区，未提交）；复验（探针/套件）推迟，最终数字以 `/tmp/envelope-report.md` §5/§8 为准。
+- 状态注：实现与文档登记已落地并提交（`6bf39f10a`/`68776830a`/`137493cd0`）；复验（探针/套件）推迟，最终数字以 `/tmp/envelope-report.md` §5/§8 为准。
 
 ### 6.3 ③ 无官方实证的本地词表登记（保留沿用）
 
@@ -166,7 +166,7 @@ FAIL / PARTIAL / SKIP 归因（DIFF §6）：
 - SKIP 均为环境/机型条件：hybrid 无 blob checkpoint、单模型服务器（`prompt_cache_cross_model_isolation`）、不可强注入（`response.failed`/`error` 类）、no probe value、no seed id、9B sdk `embeddings.create`（未启 embeddings）等。
 - 9B 复核目标行全部 PASS -> 漂移判定「模型能力类」（登记见 SCOPE「Recorded deviations」）。
 
-注：**envelope 波 + 词表修正波确认后的最终数字见 `/tmp/envelope-report.md`（§5/§8），以届时核验为准。** 撰写时点该报告 §5.5 标「待回填（运行中）」、§8 尚未出现（9B responses 子集与词表修正复验仍在推进）。
+注：**envelope 波 + 词表修正波确认后的最终数字见 `/tmp/envelope-report.md`（§5/§8），以届时核验为准。** 当前该报告 §5.5 标「延迟至下轮（用户要求夜间不起模型；本轮无任何套件运行）」、§8 已更新（词表对齐修正）；9B responses 子集与词表修正复验待下轮执行（见 §8.1）。
 
 ## 8. 未决与后续
 
@@ -235,7 +235,7 @@ FAIL / PARTIAL / SKIP 归因（DIFF §6）：
 
 ### 9.2 回退方式
 
-- 各波为独立切片：已提交波次按提交 revert（hash 见 §5 波次表）；envelope 波与词表修正波尚未提交，可直接丢弃工作区改动回退。
+- 各波为独立切片：按提交 revert（hash 见 §5 波次表）；envelope 波与词表修正波为 `6bf39f10a`（代码）/ `68776830a`（登记）/ `137493cd0`（README）/ `91a53751d`（本文档），可独立回退。
 - 回退判定：以 report JSON 行级 status 对照基线（§7），任何回退后重跑套件核对 0 意外变化。
 
 ## 10. 维护约定
