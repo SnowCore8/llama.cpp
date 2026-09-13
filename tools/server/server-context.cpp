@@ -6549,38 +6549,46 @@ std::unique_ptr<server_res_generator> server_routes::handle_embeddings_impl(cons
         return res;
     }
 
-    const json body = json::parse(req.body);
-
-    // for the shape of input/content, see tokenize_input_prompts()
-    json prompt;
-    if (body.count("input") != 0) {
-        prompt = body.at("input");
-    } else if (body.contains("content")) {
-        res_type = TASK_RESPONSE_TYPE_NONE; // "content" field is not OAI compatible
-        prompt = body.at("content");
-    } else {
-        res->error(format_error_response("\"input\" or \"content\" must be provided", ERROR_TYPE_INVALID_REQUEST));
-        return res;
-    }
-
+    json body;
     bool use_base64 = false;
-    if (body.count("encoding_format") != 0) {
-        const std::string & format = body.at("encoding_format");
-        if (format == "base64") {
-            use_base64 = true;
-        } else if (format != "float") {
-            res->error(format_error_response("The format to return the embeddings in. Can be either float or base64", ERROR_TYPE_INVALID_REQUEST));
-            return res;
-        }
-    }
+    std::vector<server_tokens> tokenized_prompts;
+    try {
+        body = json::parse(req.body);
 
-    auto tokenized_prompts = tokenize_input_prompts(ctx_server.vocab, ctx_server.mctx, prompt, true, true, ctx_server.init_opt);
-    for (const auto & tokens : tokenized_prompts) {
-        // this check is necessary for models that do not add BOS token to the input
-        if (tokens.empty()) {
-            res->error(format_error_response("Input content cannot be empty", ERROR_TYPE_INVALID_REQUEST));
+        // for the shape of input/content, see tokenize_input_prompts()
+        json prompt;
+        if (body.count("input") != 0) {
+            prompt = body.at("input");
+        } else if (body.contains("content")) {
+            res_type = TASK_RESPONSE_TYPE_NONE; // "content" field is not OAI compatible
+            prompt = body.at("content");
+        } else {
+            res->error(format_error_response("\"input\" or \"content\" must be provided", ERROR_TYPE_INVALID_REQUEST));
             return res;
         }
+
+        if (body.count("encoding_format") != 0) {
+            const std::string & format = body.at("encoding_format");
+            if (format == "base64") {
+                use_base64 = true;
+            } else if (format != "float") {
+                res->error(format_error_response("The format to return the embeddings in. Can be either float or base64", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+        }
+
+        tokenized_prompts = tokenize_input_prompts(ctx_server.vocab, ctx_server.mctx, prompt, true, true, ctx_server.init_opt);
+        for (const auto & tokens : tokenized_prompts) {
+            // this check is necessary for models that do not add BOS token to the input
+            if (tokens.empty()) {
+                res->error(format_error_response("Input content cannot be empty", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+        }
+    } catch (const std::exception & e) {
+        // malformed request body or invalid input/encoding_format: 400, not 500
+        res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+        return res;
     }
 
     int embd_normalize = params.embd_normalize;

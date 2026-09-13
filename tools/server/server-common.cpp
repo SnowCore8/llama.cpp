@@ -2673,8 +2673,7 @@ json format_embeddings_response_oaicompat(
             embedding_obj = {
                 {"embedding", base64::encode(data_ptr, data_size)},
                 {"index", i++},
-                {"object", "embedding"},
-                {"encoding_format", "base64"}
+                {"object", "embedding"}
             };
         } else {
             embedding_obj = {
