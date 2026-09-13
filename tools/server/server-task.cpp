@@ -452,8 +452,16 @@ json server_task_result_cmpl_final::to_json_non_oaicompat() {
 
 json server_task_result_cmpl_final::usage_json_oaicompat() {
     const int32_t n_write = std::max(0, n_prompt_tokens - n_prompt_tokens_cache);
+    const int32_t n_reasoning = std::max(0, n_reasoning_tokens);
     return json {
         {"completion_tokens", n_decoded},
+        {"completion_tokens_details", json {
+            {"accepted_prediction_tokens", 0},
+            {"audio_tokens",                0},
+            {"reasoning_tokens",            n_reasoning},
+            {"rejected_prediction_tokens",  0},
+            {"text_tokens",                 n_decoded - n_reasoning},
+        }},
         {"prompt_tokens",     n_prompt_tokens},
         {"total_tokens",      n_decoded + n_prompt_tokens},
         {"prompt_tokens_details", json {
@@ -879,7 +887,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
                 {"cached_tokens", n_prompt_tokens_cache},
                 {"cache_write_tokens", std::max(0, n_prompt_tokens - n_prompt_tokens_cache)},
             }},
-            {"output_tokens_details", json { {"reasoning_tokens", 0} }},
+            {"output_tokens_details", json { {"reasoning_tokens", std::max(0, n_reasoning_tokens)} }},
         }},
     };
     if (resp_incomplete) {
@@ -1115,7 +1123,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
                 {"cached_tokens", n_prompt_tokens_cache},
                 {"cache_write_tokens", std::max(0, n_prompt_tokens - n_prompt_tokens_cache)},
             }},
-            {"output_tokens_details", json { {"reasoning_tokens", 0} }},
+            {"output_tokens_details", json { {"reasoning_tokens", std::max(0, n_reasoning_tokens)} }},
         }}
     };
     if (resp_incomplete) {

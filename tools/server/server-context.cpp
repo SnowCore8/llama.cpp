@@ -2299,6 +2299,7 @@ private:
 
         res->truncated             = slot.truncated;
         res->n_decoded             = slot.stats.n_gen;
+        res->n_reasoning_tokens    = common_sampler_reasoning_budget_count(slot.smpl.get());
         res->n_prompt_tokens       = slot.task->n_tokens();
         res->n_prompt_tokens_cache = slot.stats.n_prompt_cached;
         res->n_tokens_cached       = slot.prompt.n_tokens();

@@ -396,6 +396,7 @@ struct server_task_result_cmpl_final : server_task_result {
 
     bool truncated;
     int32_t n_decoded;
+    int32_t n_reasoning_tokens = -1; // -1 = unavailable, >= 0 = counted by the reasoning budget sampler
     int32_t n_prompt_tokens;
     int32_t n_prompt_tokens_cache;
     int32_t n_tokens_cached;
