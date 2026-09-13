@@ -4,7 +4,7 @@
 
 **权威来源是 [OFFICIAL_API_SCOPE.md](OFFICIAL_API_SCOPE.md)**：全部契约细节、依据与验收证据以该文档为准；本文件只做分类汇总，scope 更新时同步本表。
 
-验收基线：2026-09-13，v100 分支本地提交（未 push）：全量验收起于 tip `551ee1755`，缺省对齐改动后经新构建（8091）全量复验。验收结果见 §6。
+验收基线：2026-09-13，v100 分支本地提交（未 push）：全量验收起于 tip `551ee1755`，缺省对齐改动后经新构建（8091）全量复验；同日 hint 漂移处置波（gating 提交 `730ae34be` + 套件断言修复）后再次重基线，新结果与差异明细见 §6。
 
 ## 1. 未实现 / 显式拒绝（Unable / intentionally non-goal）
 
@@ -81,15 +81,17 @@
 
 | Suite | 模型 | 结果 | 证据 |
 |---|---|---|---|
-| Responses 全量 | Qwen3.5-0.8B-F16（V100，夹具服务器） | **373 = 350 PASS / 0 FAIL / 23 SKIP** | `/tmp/oai-defs-resp.json`（缺省对齐后复验） |
-| Chat 全量 | Qwen3.5-0.8B-F16 | 142 = 139 PASS / 2 FAIL / 1 SKIP | `/tmp/oai-defs-chat.json`（缺省对齐后复验） |
-| Responses 子集（6 组,模型行为类复核） | Qwen3.5-9B-Q4_K_M | **244 = 236 PASS / 0 FAIL / 8 SKIP** | `/tmp/w9b-review.json` |
-| Chat 全量（模型行为类复核） | Qwen3.5-9B-Q4_K_M | **142 = 141 PASS / 0 FAIL / 1 SKIP** | `/tmp/w9b-chat.json` |
+| Responses 全量 | Qwen3.5-0.8B-F16（V100，夹具服务器） | **373 = 343 PASS / 5 FAIL / 1 PARTIAL / 24 SKIP** | `/tmp/drift/resp-full-final.json`（hint 漂移处置后重基线） |
+| Chat 全量 | Qwen3.5-0.8B-F16 | **143 = 137 PASS / 2 FAIL / 1 PARTIAL / 3 SKIP** | `/tmp/drift/chat-full-final.json`（同上） |
+| Responses 子集（7 组，工具调用行复核） | Qwen3.5-9B-Q4_K_M | **263 = 254 PASS / 0 FAIL / 9 SKIP** | `/tmp/drift/resp-9b.json` |
+| Chat 全量（工具调用行复核） | Qwen3.5-9B-Q4_K_M | **142 = 141 PASS / 0 FAIL / 1 SKIP** | `/tmp/drift/chat-9b.json` |
 
-- 0.8B chat 的 2 个 FAIL 均为**模型行为类**（9B 复核 PASS）：`tool_choice_required_emits_tool_call`（0.8B 拖 content 到 length）、`presence_penalty`（0.8B 无重复前提不成立）。
-- SKIP 均为环境/机型条件：hybrid 模型无 checkpoint（`prompt_cache_single_text_append`）、单模型服务器（`prompt_cache_cross_model_isolation`）、不可强注入（`response.failed`/`error` 类）、no probe value、no seed id 等。
+- 0.8B Responses 的 5 FAIL 中 3 为 hint 确定性登记（`max_tool_calls_with_forced_tool` / `parallel_tool_calls_false_single` / `max_tool_calls_cap_completes`）、2 为 flaky（`previous_response_id.reasoning_replay` / `max_tool_calls`）；1 PARTIAL = `forced_function_tool_call`（hint 确定性）；`function_call_output_continue` 为级联 SKIP。9B 复核全部 PASS → 模型能力类，登记见 SCOPE「记录（未修）」。
+- 0.8B Chat 的 2 个 FAIL：`delta.tool_calls.forced`（hint 确定性登记；fallback 行，9B 主探针成功故不生成）、`tool_choice_required_emits_tool_call`（基线既有 FAIL；9B 复核 PASS）。
+- SKIP 均为环境/机型条件：hybrid 模型无 blob checkpoint（`prompt_cache_single_text_append`，判据相对化后按设计 SKIP）、单模型服务器（`prompt_cache_cross_model_isolation`）、不可强注入（`response.failed`/`error` 类）、no probe value、no seed id、9B sdk `embeddings.create`（未启 embeddings）等。
 - 9B 复核服务器须带 `LLAMA_WEB_SEARCH_FIXTURE`（与 0.8B 验收配置一致），否则 `web_search` 类行走真实外网、结果不可复现。
-- 2026-09-13 缺省对齐后复验（新构建 8091）：Responses 373 / Chat 142 与基线逐行 status 一致、0 新增 FAIL；上表前两行（0.8B 全量）证据为复验报告，基线证据保留在 `/tmp/full-verify-resp4.json`、`/tmp/chat-full2.json`。
+- 2026-09-13 缺省对齐后复验（新构建 8091）：Responses 373 / Chat 142 与当时基线逐行 status 一致、0 新增 FAIL（历史记录）；基线证据保留在 `/tmp/full-verify-resp4.json`、`/tmp/chat-full2.json`。
+- 2026-09-13 hint 漂移处置后重基线（gating 提交 `730ae34be` + 套件断言修复）：4 处 cache 断言前提修复与 `input_tokens_matches_create_usage` 对齐（SCOPE「Suite-only fixes」）、行为漂移登记（SCOPE「记录（未修）」）；逐行差异（旧基线 / A 环境 / after 三路对拍）与断言改动 diff 见 `/tmp/drift-report.md`；旧全量证据 `/tmp/oai-defs-resp.json`、`/tmp/oai-defs-chat.json`，A 环境证据 `/tmp/a-effort/report-resp.json`、`/tmp/a-effort/report-chat-env.json`。
 
 ## 维护约定
 

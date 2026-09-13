@@ -85,6 +85,8 @@ Inference create/stream/parse, create-param catalogs, tools/`tool_choice`, reaso
 
 另两条记录（未修）：SSE `error` / `response.failed` 在本地不可达——错误发生在流开始前时按非流式 HTTP 错误体返回，SSE `error`+`response.failed` 只在流已开始后 reader 出错时产生，默认配置无可控注入点（验收对应行保持 SKIP；`pre_created_error_is_plain_json` 断言非流式错误体形状）；Embeddings `encoding_format` 非 string 的 400 message 透传 nlohmann 异常原文（`[json.exception.type_error.302] ...`），未做官方措辞级映射（官方 message 为自由文本）。
 
+**hint 缺省引入的行为漂移（2026-09-13 验收登记，未修）**：缺省 medium hint 给每条请求加 20-token 常量 system 前缀，0.8B 工具调用类验收行出现如下漂移，套件保持真实状态、未回弱断言（9B 复核判定见 OFFICIAL_API_DIFF §6）。**hint 确定性类**（0.8B 模型行为差异；9B 复核全部 PASS → 模型能力类）— Chat `forced_function_tool_call`（PASS→PARTIAL）、`delta.tool_calls.forced`（新增 fallback 行 FAIL，基线无此行：仅当强制流式未产出 tool_calls 增量时生成；9B 主探针成功故不生成）、`tool_message_continue` / `delta.tool_calls`（级联 SKIP）；Responses `forced_function_tool_call`（PASS→PARTIAL）、`function_call_output_continue`（级联 SKIP）、`max_tool_calls_with_forced_tool` / `parallel_tool_calls_false_single` / `max_tool_calls_cap_completes`（PASS→FAIL）。**flaky 类**（跨运行不稳定）— Responses `previous_response_id.reasoning_replay`、`max_tool_calls`（多轮 FAIL）、`responses.create.custom_tool`（PASS/FAIL 双峰）、`input.assistant_phase_previous`（单次 FAIL 后未复现）（各次运行状态矩阵见重基线报告 `/tmp/drift-report.md` §3）。**改善类**（纯重基线）— Chat `presence_penalty` FAIL→PASS。cache 前提破坏类（Chat/Responses `prompt_cache_options_implicit_warms`、Responses `prompt_cache_append_reuse` / `prompt_cache_single_text_append`）已按「Suite-only fixes」处置，不属登记项。
+
 ## Server changes for this acceptance pass (risk)
 
 | Change | Risk | Side effects | Rationale |
@@ -141,6 +143,8 @@ When the rows above stay green, the “消解最小化实现” campaign for in-
 - Chat stream `delta.reasoning_content` forced via `reasoning_effort=low`
 - Responses/Chat `verbosity` / `prediction` / Completions `echo`/`best_of`(logprob 排名) / `suffix` FIM 已正向行为
 - Responses `prompt.id` 本地模板展开；`prompt_cache_*` 本地调度/亲和语义
+- 缺省 verbosity hint 为常量 20-token 前缀，破坏 4 处 cache 断言的 cold==0 前提（2026-09-13 hint 漂移处置）：Chat/Responses `prompt_cache_options_implicit_warms` 与 Responses `prompt_cache_append_reuse` 加唯一 system 前缀使 cold 真为 0（warm 复用不受影响）；`prompt_cache_single_text_append` 判据相对化（复用 ≥ `inputs//4` 才算 growth；hybrid 恢复 SKIP、dense 仍 PASS）；`prompt_cache_hit_monitor` 为聚合行，随 blocked_by 两行修复自愈——断言强度未降、无恒真分支
+- `input_tokens_matches_create_usage`（Chat/Responses）：count_tokens 路径不注入缺省 hint、create 路径注入，两探针显式 `verbosity:"medium"` 对齐同一路径（配对实测 65/65、63/63）
 
 ## Local contracts (not cloud)
 
