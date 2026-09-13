@@ -1998,7 +1998,7 @@ static void test_convert_responses_to_chatcmpl() {
         assert_equals(100, result.at("max_tokens").get<int>());
     }
 
-    // Test mixed Responses tools: convert only function tools
+    // Test mixed Responses tools: convert only function tools (local web_search is skipped here)
     {
         json input = json::parse(R"({
             "input": "Hello",
@@ -2020,17 +2020,6 @@ static void test_convert_responses_to_chatcmpl() {
                         },
                         "required": ["location"]
                     }
-                },
-                {
-                    "type": "image_generation"
-                },
-                {
-                    "type": "mcp",
-                    "server_label": "test-server"
-                },
-                {
-                    "type": "namespace",
-                    "name": "browser"
                 }
             ]
         })");
@@ -2047,7 +2036,7 @@ static void test_convert_responses_to_chatcmpl() {
         assert_equals(true, tool.at("function").at("strict").get<bool>());
     }
 
-    // Test non-function Responses tools are ignored
+    // Test local web_search only: skipped in conversion (semantics applied in prepare_request)
     {
         json input = json::parse(R"({
             "input": "Hello",
@@ -2055,17 +2044,6 @@ static void test_convert_responses_to_chatcmpl() {
             "tools": [
                 {
                     "type": "web_search"
-                },
-                {
-                    "type": "image_generation"
-                },
-                {
-                    "type": "mcp",
-                    "server_label": "test-server"
-                },
-                {
-                    "type": "namespace",
-                    "name": "browser"
                 }
             ]
         })");
@@ -2073,6 +2051,25 @@ static void test_convert_responses_to_chatcmpl() {
         json result = server_chat_convert_responses_to_chatcmpl(input);
 
         assert_equals(false, result.contains("tools"));
+    }
+
+    // Test hosted Responses tools are rejected (no local execution)
+    {
+        for (const char * hosted_type : { "image_generation", "mcp", "namespace" }) {
+            json input = {
+                {"input", "Hello"},
+                {"model", "test-model"},
+            };
+            input["tools"] = json::array({ json { {"type", hosted_type} } });
+
+            bool threw = false;
+            try {
+                server_chat_convert_responses_to_chatcmpl(input);
+            } catch (const std::invalid_argument &) {
+                threw = true;
+            }
+            assert_equals(true, threw);
+        }
     }
 }
 
