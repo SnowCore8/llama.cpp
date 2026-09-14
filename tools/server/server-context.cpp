@@ -6764,6 +6764,12 @@ std::unique_ptr<server_res_generator> server_routes::handle_embeddings_impl(cons
         }
 
         if (body.count("encoding_format") != 0) {
+            // official schema allows only the strings "float" / "base64"; a non-string value
+            // is rejected with the same clean message instead of a raw nlohmann type_error
+            if (!body.at("encoding_format").is_string()) {
+                res->error(format_error_response("The format to return the embeddings in. Can be either float or base64", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
             const std::string & format = body.at("encoding_format");
             if (format == "base64") {
                 use_base64 = true;
