@@ -68,19 +68,19 @@
 | 14 | router 模式未知 model（本地扩展） | 无 router 概念 | proxy 层统一 404 + A 族（chat/responses/embeddings） | 与单模型 responses 的 400 + B 族分层不同 |
 | 15 | WS `/v1/responses` 未知 model | WS error 事件（本地信封） | 400 + `model_not_found`（B 族 message） | 套件未覆盖，未实测断言 |
 | 16 | legacy `/v1/completions` `echo=true` + `logprobs>0`（非流式；2026-09-14 已提交 `47bf58b08`；探针已验证、三套件已跑） | 官方文档从未规定语义（负结果）；实拍/社区证据见 `/tmp/oai-probe/web-b2/report.md`（官方文档/实拍，非本地验证） | 分片前置 prompt 行、第 0 行 `token_logprobs`/`top_logprobs` 双 `null`、`text_offset` 原点 = 完整 text 开头；代价：该类请求禁用 prompt 前缀复用与后端采样；`n_outputs_max` 抬高（上界 `n_batch*n_vocab*4` 约 2.0 GB、常驻增量 +1812 MiB 实测，见 SCOPE「Recorded deviations」） | 本地限制；`n_outputs_max` 为已接受代价（accepted cost，已随 `47bf58b08` 入库；用户裁定无条件抬高保持）；探针 36/36 PASS（V100+9B，`/tmp/oai-probe/b2a-verify/`），三套件 504 PASS / 24 SKIP / 0 FAIL（`/tmp/acc-baseline-9b/`） |
-| 17 | legacy `/v1/completions` `echo=true` + `logprobs>0` 流式（SSE，B2b） | 官方实拍分块 `text_offset` 递增（`web-b2` S8） | **未对齐（pending）**：分块 `text_offset` 每块从 0 重新开始、首块不带 prompt 行、echo=true 分块 `text` 不带 prompt 前缀 | 待做（B2a 验证通过后再做）；与 context shift / checkpoint / KV 组合未验证 |
 | 18 | MTP 下生成行 `top_logprobs` 退化（预存，非本波引入；未修） | 生成行 `top_logprobs` 与 prompt 行同形（全词表 top-N） | `--spec-type draft-mtp` 时被接受的草稿 token 所在生成行只有 1 个键；prompt 行不受影响（始终 5..6 键） | 独立实例（无 `--spec-type`）实测每行恰 5 键；MTP 日志 `draft acceptance = 1.00000 (5 accepted / 5 generated)` 对应 1 键生成行（`/tmp/oai-probe/b2a-verify/server3.log`、`server-nospec.log`）；`echo=false` 亦复现，本波未触碰生成行路径 |
 | 19 | `/v1/completions` `best_of > n_parallel` 无校验且请求挂起（预存，非本波引入；未修，待裁定） | `best_of` 无并发上限声明 | `--parallel 1` 上 `best_of=2` 无限挂起（>300 s、无错误）；Chat `n` 有守卫 -> 400 `Field 'n': Value must be between 1 <= value <= 1, but got 2`；router 多槽配置下正常 | 预存缺陷（B2a 路径要求 `echo=true`，该请求不可达）；已登记、未修、待裁定是否另案修 |
 
 ### 4.1 已对齐（原登记偏差已消化 + 本轮合规修正，2026-09-14）
 
-本轮已提交（`47bf58b08` + `84f929fce` + `7137fab81`；本文档随本次提交）；acceptance 三套件已跑全绿（504 PASS / 24 SKIP / 0 FAIL，证据 `/tmp/acc-baseline-9b/`），非流式 `/v1/completions` echo+logprobs 与 `logprobs` 夹取已由探针验证（36/36）：
+本轮已提交（`47bf58b08` + `84f929fce` + `7137fab81`；本文档随本次提交）；acceptance 三套件已跑全绿（504 PASS / 24 SKIP / 0 FAIL，证据 `/tmp/acc-baseline-9b/`），非流式 `/v1/completions` echo+logprobs 与 `logprobs` 夹取已由探针验证（36/36）。**B2b 流式对偶（原 #17）已实现并验证、随本轮提交**（代码切片 `65b93d9ad`）：三套件 505 PASS / 24 SKIP / 0 FAIL（证据 `/tmp/acc-b2b-262144/`）。
 
 | 原 # | 项 | 官方依据 | 本地现状 |
 |---|---|---|---|
 | 4 | `response.created` / `response.in_progress` 骨架 `usage` 键 | 官方 Response 对象字节始终带 `usage` 键（完成前为 null） | 缺省补 `"usage": null`（`server_responses_enrich_response`）；登记项移出 §4 |
 | 5 | compact `service_tier` 枚举 | 官方 compact 文档 5 值（`auto`/`default`/`flex`/`fast`/`priority`） | compact 仅接受 5 值，`scale`/`ultrafast` -> 400；create/chat 仍 7 值（`server_openai_validate_compact_service_tier`）；登记项移出 §4 |
 | 新 | Completions `logprobs` 上限 | 文档 "The maximum value for `logprobs` is 5."（`/tmp/oai-probe/web-b2/report.md` S1/S3）；实拍 `logprobs=20` 每行恰 5 键（同报告 S8） | 由「`>5` -> 400」改为「`>5` 夹到 5，HTTP 200」（合规修正）；负数/非整数仍 400（`'logprobs' must be a non-negative integer`）；探针实测 `logprobs=10` -> 200 且每行 <=6 键（`/tmp/oai-probe/b2a-verify/c3-clamp.json`） |
+| 17 | legacy Completions `echo=true` + `logprobs>0` 流式（SSE，B2b，2026-09-14；已提交 `65b93d9ad`） | 官方文档「streamed 与 non-streamed response object 形状相同」+「data-only SSE as they become available」（`openai-docs/api/reference/resources/completions/methods/create.md`）；实拍分块 `text_offset` 递增（`web-b2` S8） | 已对齐：首块 `text` = prompt + 首个生成 token、首块并进 prompt 行（第 0 行 `token_logprobs`/`top_logprobs` 双 `null`）、`text_offset` 跨块从完整 text 开头累计（echo=true 首块从 0、echo=false 从 prompt 的 UTF-8 字节数起）、末事件不再重复 prompt。实现方对照（vLLM `completion/serving.py` / SGLang `serving_completions.py`）：两家均首块并进 + offset 跨块累加 + prompt 行只发一次，与本实现同向；唯一差异是两家 offset 单位为字符、本地为 UTF-8 字节（B2a 已记录）。契约与运行期证据见 SCOPE「OpenAI Completions」 |
 
 ## 5. 本地超集与扩展（Supersets / local-only surfaces）
 
@@ -114,6 +114,7 @@
 - 2026-09-13 hint 漂移处置后重基线（gating 提交 `730ae34be` + 套件断言修复）：4 处 cache 断言前提修复与 `input_tokens_matches_create_usage` 对齐（SCOPE「Suite-only fixes」）、行为漂移登记（SCOPE「Recorded deviations」）；逐行差异（旧基线 / A 环境 / after 三路对拍）与断言改动 diff 见 `/tmp/drift-report.md`；旧全量证据 `/tmp/oai-defs-resp.json`、`/tmp/oai-defs-chat.json`，A 环境证据 `/tmp/a-effort/report-resp.json`、`/tmp/a-effort/report-chat-env.json`。
 - 2026-09-13 未知 model 形状对齐后重基线（提交 `07ede89c8`）：三端点新增行各 PASS（chat 404 A 族 / responses 400 B 族 / embeddings 404 A 族）；B 族 wire 形状按原始响应 bytes 核定为 **error 包裹 4 字段**（SDK 异常输出的“扁平”形是其拆包后的 `.body` 视角）；两套件相对上一基线仅新增行差异、0 意外状态变化；证据 `/tmp/b1-{chat,responses,responses-emb}.json`，报告 `/tmp/b1-fix-report.md`。
 - 2026-09-14 本轮（**已提交**：`47bf58b08` + `84f929fce` + `7137fab81`；本文档随本次提交）：legacy Completions `echo=true` + `logprobs>0` 非流式 prompt 位置行、Completions `logprobs` 夹取 5、Responses 骨架 `usage: null`、compact `service_tier` 5 值；套件行改动（`checks_completions.py` echo/clamp/scenario、`checks_sdk.py` custom_tool `temperature=0`）。**探针已跑（36/36 PASS）**：`/tmp/oai-probe/verify_b2a_echo_logprobs.py` 对非流式 `/v1/completions` echo+logprobs（V100 + Qwen3.5-9B-Q4_K_M，证据 `/tmp/oai-probe/b2a-verify/`）；**acceptance 三套件已跑全绿**（504 PASS / 24 SKIP / 0 FAIL，HEAD `7137fab81`，证据 `/tmp/acc-baseline-9b/`），本轮改动已并入基线并跑通；历史 0.8B 基线数字仍不改写。
+- 2026-09-14 B2b 流式对偶（`echo=true` + `logprobs>0` 的 SSE；已提交 `65b93d9ad`，本文档随本次提交）：新增套件行 `completions_echo_logprobs_stream_chunks`。**ctx=262144 全量三套件 529 = 505 PASS / 24 SKIP / 0 FAIL**（responses 377 = 355/22、chat 143 = 142/1、local_durability 9 = 8/1），与同口径 B2b 前快照（`/tmp/acc-ctx262144-verify/`）逐行 **0 状态变化**、仅 +1 新行（suite+name 去重键 519 -> 520）；新行 3 连跑稳定（`same_text=True`，V100 + Qwen3.5-9B-Q4_K_M）。证据 `/tmp/acc-b2b-262144/`。
 
 ## 维护约定
 
