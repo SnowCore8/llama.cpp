@@ -102,6 +102,7 @@ def run_sdk_checks(
             tools=[{"type": "custom", "name": "dj_play", "format": {"type": "text"}}],
             tool_choice={"type": "custom", "name": "dj_play"},
             max_output_tokens=128,
+            temperature=0,
             extra_body=extra_body,
         )
         tool_items = [
