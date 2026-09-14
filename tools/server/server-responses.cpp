@@ -1788,6 +1788,11 @@ void server_responses_maybe_obfuscate_event(json & event_data, const json & requ
     if (!event_data.is_object()) {
         return;
     }
+    // Official pads delta events only; other event types carry no obfuscation field.
+    const std::string type = json_value(event_data, "type", std::string());
+    if (type.size() < 6 || type.compare(type.size() - 6, 6, ".delta") != 0) {
+        return;
+    }
     event_data["obfuscation"] = random_string();
 }
 
