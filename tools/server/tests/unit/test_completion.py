@@ -547,6 +547,9 @@ def test_n_probs_post_backend_sampling():
             "post_sampling_probs": True,
             "seed": 4242,
             "backend_sampling": backend_sampling,
+            # pin top_p: the server default is 1.0 (official), and without truncation the
+            # two paths can draw different tokens for the same seed
+            "top_p": 0.95,
         })
         assert res.status_code == 200
 
