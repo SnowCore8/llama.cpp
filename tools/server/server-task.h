@@ -39,7 +39,6 @@ enum task_response_type {
     TASK_RESPONSE_TYPE_OAI_RESP,
     TASK_RESPONSE_TYPE_OAI_ASR, // transcriptions API
     TASK_RESPONSE_TYPE_OAI_EMBD,
-    TASK_RESPONSE_TYPE_ANTHROPIC,
 };
 
 enum stop_type {
@@ -94,10 +93,6 @@ struct task_params {
     json        oaicompat_resp_instructions = nullptr;
     json        oaicompat_resp_request      = nullptr; // original/prepared Responses request body
     bool        oaicompat_steer_hold        = false; // WebSocket steering: request has tools, steering waits for the terminal
-
-    // Anthropic Messages: thinking.display == "omitted" hides thinking text but keeps the
-    // thinking block, its (empty) signature and the signature_delta
-    bool anthropic_thinking_display_omitted = false;
 
     // OpenAI Chat Completions: echo/store request fields (persisted when store=true)
     bool oaicompat_chat_store    = false;
@@ -163,7 +158,7 @@ struct task_result_state {
     // custom tool call input text already decoded+streamed, per tool call index
     std::unordered_map<size_t, std::string> custom_input_decoded;
 
-    // for OpenAI Responses and Anthropic streaming API:
+    // for OpenAI Responses streaming API:
     // track output item / content block state across chunks
     bool thinking_block_started = false;
     bool text_block_started = false;
@@ -479,10 +474,6 @@ struct server_task_result_cmpl_final : server_task_result {
     json to_json_oaicompat_resp_stream();
 
     json to_json_oaicompat_asr();
-
-    json to_json_anthropic();
-
-    json to_json_anthropic_stream();
 };
 
 struct server_task_result_cmpl_partial : server_task_result {
@@ -538,9 +529,6 @@ struct server_task_result_cmpl_partial : server_task_result {
     std::string oai_resp_message_id;
     json oaicompat_resp_request = nullptr;
 
-    // for Anthropic API: track if any reasoning content has been generated
-    bool anthropic_has_reasoning = false;
-
     virtual bool is_stop() override {
         return false; // in stream mode, partial responses are not considered stop
     }
@@ -558,8 +546,6 @@ struct server_task_result_cmpl_partial : server_task_result {
     json to_json_oaicompat_resp();
 
     json to_json_oaicompat_asr();
-
-    json to_json_anthropic();
 };
 
 struct server_task_result_embd : server_task_result {

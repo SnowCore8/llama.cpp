@@ -100,57 +100,6 @@ int error_status_from_body(const json & error_data, int fallback) {
     return it == status_by_type.end() ? fallback : it->second;
 }
 
-// map a local error type onto the official Anthropic vocabulary and its HTTP status; local-only
-// types fold into invalid_request_error
-static std::pair<const char *, int> anthropic_error_from_local_type(const std::string & local_type) {
-    if (local_type == "invalid_request_error" || local_type == "exceed_context_size_error" ||
-            local_type == "not_supported_error") {
-        return {"invalid_request_error", 400};
-    }
-    if (local_type == "authentication_error") {
-        return {"authentication_error", 401};
-    }
-    if (local_type == "permission_error") {
-        return {"permission_error", 403};
-    }
-    if (local_type == "not_found_error") {
-        return {"not_found_error", 404};
-    }
-    if (local_type == "service_unavailable_error") {
-        // local capacity/loading error is the closest match to the official 529 overloaded
-        return {"overloaded_error", 529};
-    }
-    return {"api_error", 500};
-}
-
-json format_anthropic_error(const std::string & official_type, const std::string & message) {
-    return json {
-        {"type", "error"},
-        {"error", {
-            {"type",    official_type},
-            {"message", message},
-        }},
-        // no per-request id exists locally
-        {"request_id", nullptr},
-    };
-}
-
-int anthropic_error_status_from_body(const json & local_error_body) {
-    return anthropic_error_from_local_type(
-            json_value(local_error_body, "type", std::string())).second;
-}
-
-json format_anthropic_error_response(const json & local_error_body) {
-    return format_anthropic_error(
-            anthropic_error_from_local_type(json_value(local_error_body, "type", std::string())).first,
-            json_value(local_error_body, "message", std::string()));
-}
-
-bool is_anthropic_api_path(const std::string & path) {
-    static const std::string prefix = "/v1/messages";
-    return path == prefix || path.rfind(prefix + "/", 0) == 0;
-}
-
 json format_oai_model_not_found(const std::string & model_name) {
     return json {{"error", format_error_response(
         string_format("The model `%s` does not exist or you do not have access to it.", model_name.c_str()),
@@ -476,10 +425,7 @@ void server_openai_apply_prompt_cache_semantics(json & body) {
                          !body.at("prompt_cache_key").get<std::string>().empty();
     const bool has_ret = body.contains("prompt_cache_retention") && !body.at("prompt_cache_retention").is_null();
     const bool has_opts = body.contains("prompt_cache_options") && body.at("prompt_cache_options").is_object();
-    // Internal TTL channel: the Anthropic layer writes cache_control.ttl here, so 5m/1h stay
-    // usable without widening the official prompt_cache_options.ttl enum.
-    const bool has_local_ttl = body.contains("__prompt_cache_ttl") && body.at("__prompt_cache_ttl").is_string();
-    if (!has_key && !has_ret && !has_opts && !has_local_ttl) {
+    if (!has_key && !has_ret && !has_opts) {
         return;
     }
 
@@ -510,21 +456,6 @@ void server_openai_apply_prompt_cache_semantics(json & body) {
         }
         ttl = 30 * 60;
     }
-    if (has_local_ttl) {
-        // Internal channel (Anthropic cache_control.ttl). It feeds the same local cache TTL
-        // as prompt_cache_options.ttl, but keeps the local 5m/1h values off the wire.
-        const std::string local_ttl = body.at("__prompt_cache_ttl").get<std::string>();
-        if (local_ttl == "5m") {
-            ttl = 5 * 60;
-        } else if (local_ttl == "30m") {
-            ttl = 30 * 60;
-        } else if (local_ttl == "1h") {
-            ttl = 60 * 60;
-        } else {
-            throw std::invalid_argument("'__prompt_cache_ttl' must be one of: 5m, 30m, 1h");
-        }
-    }
-
     if (!key.empty()) {
         // Check disk TTL *before* touch — otherwise every request refreshes expires_at
         // and server_prompt_cache_key_alive() can never observe expiry mid-process.
@@ -2089,7 +2020,6 @@ json oaicompat_chat_params_parse(
     // OpenAI Chat Completions: tool_choice string or
     // {"type":"function","function":{"name":"..."}}.
     // Responses: {"type":"function","name":"..."}.
-    // Anthropic convert: {"type":"function","function":{"name":"..."}} from type=tool.
     // Named force must restrict tools to that name (behavior == method), not only "required".
     std::string tool_choice = "auto";
     std::string forced_tool_name;
@@ -3086,29 +3016,6 @@ std::string format_oai_resp_sse(const json & data) {
         }
     } else {
         send_single(data);
-    }
-
-    return ss.str();
-}
-
-std::string format_anthropic_sse(const json & data) {
-    std::ostringstream ss;
-
-    auto send_event = [&ss](const json & event_obj) {
-        if (event_obj.contains("event") && event_obj.contains("data")) {
-            ss << "event: " << event_obj.at("event").get<std::string>() << "\n";
-            ss << "data: " << safe_json_to_str(event_obj.at("data")) << "\n\n";
-        } else {
-            ss << "data: " << safe_json_to_str(event_obj) << "\n\n";
-        }
-    };
-
-    if (data.is_array()) {
-        for (const auto & event : data) {
-            send_event(event);
-        }
-    } else {
-        send_event(data);
     }
 
     return ss.str();

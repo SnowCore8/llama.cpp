@@ -166,8 +166,6 @@ struct server_routes {
     server_http_context::handler_t get_conversation_item_oai;
     server_http_context::handler_t delete_conversation_item_oai;
     server_http_context::handler_t post_transcriptions_oai;
-    server_http_context::handler_t post_anthropic_messages;
-    server_http_context::handler_t post_anthropic_count_tokens;
     server_http_context::handler_t post_apply_template;
     server_http_context::handler_t get_models;
     server_http_context::handler_t get_model;  // retrieve by id

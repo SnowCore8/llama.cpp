@@ -4568,13 +4568,7 @@ struct server_res_generator : server_res_spipe {
         status = 200;
         data = safe_json_to_str(response_data);
     }
-    void error(const json & error_data, bool anthropic = false) {
-        if (anthropic) {
-            // Anthropic routes use the official envelope and type vocabulary
-            status = anthropic_error_status_from_body(error_data);
-            data = safe_json_to_str(format_anthropic_error_response(error_data));
-            return;
-        }
+    void error(const json & error_data) {
         status = error_status_from_body(error_data);
         data = safe_json_to_str({{ "error", error_data }});
     }
@@ -4698,11 +4692,6 @@ static task_params surface_task_params(
                 }
             }
         }
-    }
-    if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
-        // thinking.display=omitted suppresses thinking text in the response body
-        params.anthropic_thinking_display_omitted =
-            json_value(data, "anthropic_thinking_display", std::string()) == "omitted";
     }
     if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT) {
         params.oaicompat_chat_store = json_value(data, "__oai_chat_store", false);
@@ -4861,8 +4850,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
 
         rd.post_tasks(std::move(tasks));
     } catch (const std::exception & e) {
-        res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST),
-                res_type == TASK_RESPONSE_TYPE_ANTHROPIC);
+        res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
         return res;
     }
 
@@ -4874,7 +4862,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         if (all_results.is_terminated) {
             return res; // connection is closed
         } else if (all_results.error) {
-            res->error(all_results.error->to_json(), res_type == TASK_RESPONSE_TYPE_ANTHROPIC);
+            res->error(all_results.error->to_json());
             return res;
         } else {
             json arr = json::array();
@@ -4962,7 +4950,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         }
 
         if (first_result->is_error()) {
-            res->error(first_result->to_json(), res_type == TASK_RESPONSE_TYPE_ANTHROPIC);
+            res->error(first_result->to_json());
             return res;
         }
 
@@ -4976,8 +4964,6 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         json first_result_json = first_result->to_json();
         if (first_result_json == nullptr) {
             res->data = ""; // simply send HTTP headers and status code
-        } else if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
-            res->data = format_anthropic_sse(first_result_json);
         } else if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
             res->data = format_oai_resp_sse(first_result_json);
         } else {
@@ -4993,16 +4979,6 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         res->set_next([res_this = res.get(), res_type, sse_ping_interval,
                        oai_stream_resp_id, oai_stream_request, oai_stream_model](std::string & output) -> bool {
             auto format_error = [&](task_response_type res_type, const json & res_json) {
-                if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
-                    // official error frame shape: {"type":"error","error":{...}}
-                    return format_anthropic_sse({
-                        {"event", "error"},
-                        {"data", {
-                            {"type", "error"},
-                            {"error", res_json},
-                        }},
-                    });
-                }
                 if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
                     const std::string message = json_value(res_json, "message", std::string("error"));
                     // Map llama error types onto Responses ResponseError.code literals.
@@ -5044,7 +5020,6 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                     switch (res_type) {
                         case TASK_RESPONSE_TYPE_NONE:
                         case TASK_RESPONSE_TYPE_OAI_RESP:
-                        case TASK_RESPONSE_TYPE_ANTHROPIC:
                             output = "";
                             break;
 
@@ -5094,9 +5069,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                         || dynamic_cast<server_task_result_cmpl_final*>(result.get()) != nullptr
                     );
                     json res_json = result->to_json();
-                    if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
-                        output = format_anthropic_sse(res_json);
-                    } else if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
+                    if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
                         output = format_oai_resp_sse(res_json);
                     } else {
                         output = format_oai_sse(res_json);
@@ -6361,33 +6334,6 @@ void server_routes::init_routes() {
             TASK_RESPONSE_TYPE_OAI_ASR);
     };
 
-    this->post_anthropic_messages = [this](const server_http_req & req) {
-        auto res = create_response();
-        std::vector<raw_buffer> files;
-        json body = server_chat_convert_anthropic_to_oai(json::parse(req.body));
-        SRV_DBG("%s\n", "Request converted: Anthropic -> OpenAI Chat Completions");
-        SRV_DBG("converted request: %s\n", body.dump().c_str());
-        json body_parsed = oaicompat_chat_params_parse(
-            body,
-            meta->chat_params,
-            files,
-            false);
-        // carry the thinking display flag through to the Anthropic serializers
-        if (body.contains("anthropic_thinking_display")) {
-            body_parsed["anthropic_thinking_display"] = body.at("anthropic_thinking_display");
-        }
-        return handle_completions_impl(
-            req,
-            SERVER_TASK_TYPE_COMPLETION,
-            body_parsed,
-            files,
-            TASK_RESPONSE_TYPE_ANTHROPIC);
-    };
-
-    this->post_anthropic_count_tokens = [this](const server_http_req & req) {
-        return handle_count_tokens(ctx_server.vocab, ctx_server.mctx, ctx_server.init_opt, req, TASK_RESPONSE_TYPE_ANTHROPIC);
-    };
-
     // same with handle_chat_completions, but without inference part
     this->post_apply_template = [this](const server_http_req & req) {
         auto res = create_response();
@@ -6881,10 +6827,6 @@ std::unique_ptr<server_res_generator> server_routes::handle_count_tokens(const l
             {
                 is_oai = true;
                 body = server_chat_convert_responses_to_chatcmpl(body);
-            } break;
-        case TASK_RESPONSE_TYPE_ANTHROPIC:
-            {
-                body = server_chat_convert_anthropic_to_oai(body, true);
             } break;
         default:
             res->error(format_error_response("invalid res_type", ERROR_TYPE_INVALID_REQUEST));

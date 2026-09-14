@@ -98,17 +98,6 @@ json format_error_response(const std::string & message, const enum error_type ty
 // HTTP status code for an error body, from its "type"; keep in sync with format_error_response
 int error_status_from_body(const json & error_data, int fallback = 500);
 
-// Anthropic Messages error envelope: {"type":"error","error":{type,message},"request_id"}. The inner
-// type is the official Anthropic vocabulary, so the local type is mapped onto it (see the .cpp)
-json format_anthropic_error(const std::string & official_type, const std::string & message);
-json format_anthropic_error_response(const json & local_error_body);
-
-// HTTP status for the Anthropic envelope of a local error body; local 503 (capacity) -> 529
-int anthropic_error_status_from_body(const json & local_error_body);
-
-// true for the Anthropic API routes (/v1/messages and its sub-paths), which answer with the envelope above
-bool is_anthropic_api_path(const std::string & path);
-
 // official OpenAI error body for an unknown model name (HTTP 404, code "model_not_found")
 json format_oai_model_not_found(const std::string & model_name);
 
@@ -594,9 +583,6 @@ std::string tokens_to_output_formatted_string(const llama_context * ctx, const l
 std::string format_oai_sse(const json & data);
 
 std::string format_oai_resp_sse(const json & data);
-
-// format Anthropic-style SSE with event types
-std::string format_anthropic_sse(const json & data);
 
 bool is_valid_utf8(const std::string & str);
 

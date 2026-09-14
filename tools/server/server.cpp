@@ -80,14 +80,8 @@ static server_http_context::handler_t ex_wrapper(server_http_context::handler_t 
         res->status = 500;
         try {
             json error_data = format_error_response(message, error);
-            if (is_anthropic_api_path(req.path)) {
-                // Anthropic routes: official envelope + type vocabulary (503 capacity -> 529)
-                res->status = anthropic_error_status_from_body(error_data);
-                res->data = safe_json_to_str(format_anthropic_error_response(error_data));
-            } else {
-                res->status = error_status_from_body(error_data);
-                res->data = safe_json_to_str({{ "error", error_data }});
-            }
+            res->status = error_status_from_body(error_data);
+            res->data = safe_json_to_str({{ "error", error_data }});
             SRV_WRN("got exception: %s\n", res->data.c_str());
         } catch (const std::exception & e) {
             SRV_ERR("got another exception: %s | while handling exception: %s\n", e.what(), message.c_str());
@@ -249,8 +243,6 @@ int llama_server(common_params & params, int argc, char ** argv) {
         routes.post_responses_oai           = models_routes->proxy_post;
         routes.post_responses_compact_oai   = models_routes->proxy_post;
         routes.post_transcriptions_oai      = models_routes->proxy_post;
-        routes.post_anthropic_messages      = models_routes->proxy_post;
-        routes.post_anthropic_count_tokens  = models_routes->proxy_post;
         routes.post_infill                  = models_routes->proxy_post;
         routes.post_embeddings              = models_routes->proxy_post;
         routes.post_embeddings_oai          = models_routes->proxy_post;
@@ -339,7 +331,6 @@ int llama_server(common_params & params, int argc, char ** argv) {
 
     ctx_http.post("/v1/audio/transcriptions",  ex_wrapper(routes.post_transcriptions_oai));
     ctx_http.post("/audio/transcriptions",     ex_wrapper(routes.post_transcriptions_oai));
-    ctx_http.post("/v1/messages",              ex_wrapper(routes.post_anthropic_messages)); // anthropic messages API
     ctx_http.post("/infill",                   ex_wrapper(routes.post_infill));
     ctx_http.post("/embedding",                ex_wrapper(routes.post_embeddings)); // legacy
     ctx_http.post("/embeddings",               ex_wrapper(routes.post_embeddings));
@@ -354,7 +345,6 @@ int llama_server(common_params & params, int argc, char ** argv) {
     // token counting
     ctx_http.post("/responses/input_tokens",           ex_wrapper(routes.post_responses_tok_oai));
     ctx_http.post("/v1/responses/input_tokens",        ex_wrapper(routes.post_responses_tok_oai));
-    ctx_http.post("/v1/messages/count_tokens",         ex_wrapper(routes.post_anthropic_count_tokens)); // anthropic token counting
     // LoRA adapters hotswap
     ctx_http.get ("/lora-adapters",            ex_wrapper(routes.get_lora_adapters));
     ctx_http.post("/lora-adapters",            ex_wrapper(routes.post_lora_adapters));
