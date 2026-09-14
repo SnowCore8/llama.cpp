@@ -534,7 +534,7 @@ KV 拆分后，144 个块平铺到**整个工作空间**：块分属不同 head�
 
 ### 13.4 产物与工具小记
 
-- `fa-logs/nsys-wterm-9b-d0.nsys-rep`（原始轨迹；二进制剖析产物内含进程环境变量，故不入库、仅本地保留，见本目录 `.gitignore`）/ `-stats.txt` / `-kern.csv`、`fa-logs/9b-nsys-wterm-20260912.log`、脚本 `9b-nsys-wterm.sh`。
+- `fa-logs/nsys-wterm-9b-d0.nsys-rep`（原始轨迹；二进制剖析产物内含进程环境变量，故不入库，本地副本已删除，见本目录 `.gitignore`）/ `-stats.txt` / `-kern.csv`、`fa-logs/9b-nsys-wterm-20260912.log`、脚本 `9b-nsys-wterm.sh`。
 - `fa-logs/9b-ncu-wterm-20260912.log`（delta-net + volta_256x128）、`fa-logs/ncu-wterm-kernel2-9b.log`、脚本 `9b-ncu-wterm.sh`。
 - 工具小记：ncu `-k` 的 `regex:` 匹配**简名**——`regex:cutlass::Kernel2` 匹配不到（报 "No kernels were profiled" + 内核列表），改用 `regex:Kernel2` 命中；`--cache-control none` 避免 replay 前的缓存刷新失真。
 - 本行无代码改动（`git status --short` 为空，HEAD `19a667d32`）。

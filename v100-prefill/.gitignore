@@ -6,5 +6,5 @@
 fa-libs/
 
 # 原始 nsys 轨迹（二进制剖析产物）：内含被剖析进程的环境变量，曾把 API key 一并捕获，
-# 因此不入库、仅本地保留；可读结论在 fa-logs/*-kern.csv 与 *-stats.txt。
+# 因此不入库（本地副本已删除）；可读结论在 fa-logs/*-kern.csv 与 *-stats.txt。
 fa-logs/*.nsys-rep
