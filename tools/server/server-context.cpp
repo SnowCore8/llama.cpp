@@ -4588,6 +4588,188 @@ void server_context::set_state_callback(server_state_callback_t callback) {
 // server_routes
 //
 
+// surface request -> engine params; the surface-private data keys are still read here on
+// purpose, so this stays behaviour-preserving while the per-surface payload is lifted out
+static task_params surface_task_params(
+        const llama_vocab * vocab,
+        const common_params & params_base,
+        const std::vector<llama_logit_bias> & logit_bias_eog,
+        const json & data,
+        const common_chat_msg_delimiters & delimiters,
+        const server_tokens & tokens,
+        task_response_type res_type,
+        const std::string & completion_id,
+        const std::string & model_name) {
+    task_params params = server_schema::eval_llama_cmpl_schema(vocab, params_base, logit_bias_eog, data);
+
+    params.message_spans = tokens.find_message_spans(delimiters);
+
+    // explicit prompt cache breakpoints: map {role, ordinal} to the token position
+    // just past the end of that message span (the checkpoint boundary)
+    if (data.contains("__oai_prompt_cache_breakpoints") &&
+            data.at("__oai_prompt_cache_breakpoints").is_array()) {
+        for (const auto & bp : data.at("__oai_prompt_cache_breakpoints")) {
+            if (!bp.is_object()) {
+                continue;
+            }
+            const std::string role_str = json_value(bp, "role", std::string());
+            const int32_t ordinal = json_value(bp, "ordinal", 0);
+            const std::string anchor_str = json_value(bp, "anchor", std::string());
+
+            // tools anchor: the checkpoint sits at the start of the first message
+            // span, i.e. right after the tools section (not at a message end)
+            if (role_str == "tools" || anchor_str == "tools") {
+                if (params.message_spans.spans.empty()) {
+                    SRV_WRN("%s\n", "prompt_cache_breakpoint: tools anchor has no message spans, skipping");
+                    continue;
+                }
+                const size_t start = params.message_spans.spans.front().pos;
+                if (start > (size_t) INT32_MAX) {
+                    SRV_WRN("prompt_cache_breakpoint: message start %" PRIu64 " out of range, skipping\n", (uint64_t) start);
+                    continue;
+                }
+                const int32_t pos = (int32_t) start;
+                if (std::find(params.oai_prompt_cache_breakpoints.begin(),
+                            params.oai_prompt_cache_breakpoints.end(), pos) ==
+                        params.oai_prompt_cache_breakpoints.end()) {
+                    params.oai_prompt_cache_breakpoints.push_back(pos);
+                }
+                continue;
+            }
+
+            const common_chat_role role = common_chat_role_from_string(role_str);
+
+            if (role == COMMON_CHAT_ROLE_UNKNOWN) {
+                SRV_WRN("prompt_cache_breakpoint: role '%s' has no delimiters, skipping\n", role_str.c_str());
+                continue;
+            }
+            // count spans of this role in order; the ordinal is 1-based
+            int32_t seen = 0;
+            bool found = false;
+            for (const auto & span : params.message_spans.spans) {
+                if (span.role != role || ++seen != ordinal) {
+                    continue;
+                }
+                const size_t end = span.pos + span.len;
+                if (end > (size_t) INT32_MAX) {
+                    SRV_WRN("prompt_cache_breakpoint: message end %" PRIu64 " out of range, skipping\n", (uint64_t) end);
+                    break;
+                }
+                const int32_t pos = (int32_t) end;
+                if (std::find(params.oai_prompt_cache_breakpoints.begin(),
+                            params.oai_prompt_cache_breakpoints.end(), pos) ==
+                        params.oai_prompt_cache_breakpoints.end()) {
+                    params.oai_prompt_cache_breakpoints.push_back(pos);
+                }
+                found = true;
+                break;
+            }
+            if (!found) {
+                SRV_WRN("prompt_cache_breakpoint: %s message #%d not found in prompt, skipping\n",
+                        role_str.c_str(), ordinal);
+            }
+        }
+    }
+
+    // OAI-compat
+    params.res_type          = res_type;
+    params.oaicompat_cmpl_id = completion_id;
+    params.oaicompat_model   = model_name;
+
+    if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
+        params.oaicompat_resp_id = json_value(data, "__oai_resp_id", std::string());
+        if (data.contains("__oai_resp_input")) {
+            params.oaicompat_resp_input = data.at("__oai_resp_input");
+        }
+        if (data.contains("__oai_resp_instructions")) {
+            params.oaicompat_resp_instructions = data.at("__oai_resp_instructions");
+        }
+        if (data.contains("__oai_resp_request")) {
+            params.oaicompat_resp_request = data.at("__oai_resp_request");
+            // a response with tools may stop for client-owned tool output, so a
+            // steer must wait for the terminal instead of interrupting generation
+            const json & resp_req = params.oaicompat_resp_request;
+            if (resp_req.is_object() && resp_req.contains("tools") && resp_req.at("tools").is_array()) {
+                for (const auto & tool : resp_req.at("tools")) {
+                    if (tool.is_object()) {
+                        params.oaicompat_steer_hold = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
+        // thinking.display=omitted suppresses thinking text in the response body
+        params.anthropic_thinking_display_omitted =
+            json_value(data, "anthropic_thinking_display", std::string()) == "omitted";
+    }
+    if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT) {
+        params.oaicompat_chat_store = json_value(data, "__oai_chat_store", false);
+        if (data.contains("__oai_chat_metadata")) {
+            params.oaicompat_chat_metadata = data.at("__oai_chat_metadata");
+        }
+        params.oaicompat_chat_user =
+            json_value(data, "__oai_chat_user", std::string());
+        params.oaicompat_chat_safety_identifier =
+            json_value(data, "__oai_chat_safety_identifier", std::string());
+        params.oaicompat_chat_service_tier =
+            json_value(data, "__oai_chat_service_tier", std::string());
+    }
+    if (res_type == TASK_RESPONSE_TYPE_OAI_CMPL) {
+        // Completions may include request `user` for client correlation.
+        params.oaicompat_chat_user = json_value(data, "user", std::string());
+    }
+    // Shared OpenAI deepen flags (Chat / Completions / Responses via chat convert).
+    params.oai_prompt_cache_key =
+        json_value(data, "__oai_prompt_cache_key", std::string());
+    params.oai_prompt_cache_key_explicit =
+        json_value(data, "__oai_prompt_cache_key_explicit", false);
+    params.oai_prompt_cache_key_implicit =
+        json_value(data, "__oai_prompt_cache_key_implicit", false);
+    params.oai_prompt_cache_ttl =
+        json_value(data, "__oai_prompt_cache_ttl", 0);
+    params.oai_prompt_cache_expired =
+        json_value(data, "__oai_prompt_cache_expired", false);
+    params.oai_web_search_ran =
+        json_value(data, "__oai_web_search", false);
+    params.oai_web_search_query =
+        json_value(data, "__oai_web_search_query", std::string());
+    if (data.contains("__oai_web_search_results")) {
+        params.oai_web_search_results = data.at("__oai_web_search_results");
+    }
+    params.oai_web_search_n_requests =
+        json_value(data, "__oai_web_search_n_requests", 0);
+    if (data.contains("__oai_custom_tool_names") &&
+            data.at("__oai_custom_tool_names").is_array()) {
+        for (const auto & name : data.at("__oai_custom_tool_names")) {
+            if (name.is_string()) {
+                params.oai_custom_tool_names.push_back(name.get<std::string>());
+            }
+        }
+    }
+    if (res_type == TASK_RESPONSE_TYPE_OAI_CMPL) {
+        params.oaicompat_cmpl_echo = json_value(data, "echo", false);
+        const int n_val = json_value(data, "n", 1);
+        const int best_of = json_value(data, "best_of", n_val);
+        if (best_of > n_val) {
+            params.n_cmpl = best_of;
+            params.oaicompat_cmpl_return_n = n_val;
+            params.oaicompat_cmpl_rank_by_logprob = true;
+            const bool user_logprobs =
+                json_value(data, "logprobs", 0) > 0 ||
+                (data.contains("logprobs") && data.at("logprobs").is_boolean() &&
+                 data.at("logprobs").get<bool>());
+            if (params.sampling.n_probs < 1) {
+                params.sampling.n_probs = 1;
+                params.oaicompat_cmpl_hide_rank_logprobs = !user_logprobs;
+            }
+        }
+    }
+
+    return params;
+}
+
 std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             const server_http_req & req,
             server_task_type type,
@@ -4653,179 +4835,18 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             task.id = rd.get_new_id();
 
             task.tokens = std::move(inputs[i]);
-            task.params = server_schema::eval_llama_cmpl_schema(
+            task.params = surface_task_params(
                     ctx_server.vocab,
                     params,
                     meta->logit_bias_eog,
-                    data);
-
-            task.params.message_spans = task.tokens.find_message_spans(delimiters);
-
-            // explicit prompt cache breakpoints: map {role, ordinal} to the token position
-            // just past the end of that message span (the checkpoint boundary)
-            if (data.contains("__oai_prompt_cache_breakpoints") &&
-                    data.at("__oai_prompt_cache_breakpoints").is_array()) {
-                for (const auto & bp : data.at("__oai_prompt_cache_breakpoints")) {
-                    if (!bp.is_object()) {
-                        continue;
-                    }
-                    const std::string role_str = json_value(bp, "role", std::string());
-                    const int32_t ordinal = json_value(bp, "ordinal", 0);
-                    const std::string anchor_str = json_value(bp, "anchor", std::string());
-
-                    // tools anchor: the checkpoint sits at the start of the first message
-                    // span, i.e. right after the tools section (not at a message end)
-                    if (role_str == "tools" || anchor_str == "tools") {
-                        if (task.params.message_spans.spans.empty()) {
-                            SRV_WRN("%s\n", "prompt_cache_breakpoint: tools anchor has no message spans, skipping");
-                            continue;
-                        }
-                        const size_t start = task.params.message_spans.spans.front().pos;
-                        if (start > (size_t) INT32_MAX) {
-                            SRV_WRN("prompt_cache_breakpoint: message start %" PRIu64 " out of range, skipping\n", (uint64_t) start);
-                            continue;
-                        }
-                        const int32_t pos = (int32_t) start;
-                        if (std::find(task.params.oai_prompt_cache_breakpoints.begin(),
-                                    task.params.oai_prompt_cache_breakpoints.end(), pos) ==
-                                task.params.oai_prompt_cache_breakpoints.end()) {
-                            task.params.oai_prompt_cache_breakpoints.push_back(pos);
-                        }
-                        continue;
-                    }
-
-                    const common_chat_role role = common_chat_role_from_string(role_str);
-
-                    if (role == COMMON_CHAT_ROLE_UNKNOWN) {
-                        SRV_WRN("prompt_cache_breakpoint: role '%s' has no delimiters, skipping\n", role_str.c_str());
-                        continue;
-                    }
-                    // count spans of this role in order; the ordinal is 1-based
-                    int32_t seen = 0;
-                    bool found = false;
-                    for (const auto & span : task.params.message_spans.spans) {
-                        if (span.role != role || ++seen != ordinal) {
-                            continue;
-                        }
-                        const size_t end = span.pos + span.len;
-                        if (end > (size_t) INT32_MAX) {
-                            SRV_WRN("prompt_cache_breakpoint: message end %" PRIu64 " out of range, skipping\n", (uint64_t) end);
-                            break;
-                        }
-                        const int32_t pos = (int32_t) end;
-                        if (std::find(task.params.oai_prompt_cache_breakpoints.begin(),
-                                    task.params.oai_prompt_cache_breakpoints.end(), pos) ==
-                                task.params.oai_prompt_cache_breakpoints.end()) {
-                            task.params.oai_prompt_cache_breakpoints.push_back(pos);
-                        }
-                        found = true;
-                        break;
-                    }
-                    if (!found) {
-                        SRV_WRN("prompt_cache_breakpoint: %s message #%d not found in prompt, skipping\n",
-                                role_str.c_str(), ordinal);
-                    }
-                }
-            }
-
+                    data,
+                    delimiters,
+                    task.tokens,
+                    res_type,
+                    completion_id,
+                    meta->model_name);
             task.id_slot = json_value(data, "id_slot", -1);
             sse_ping_interval = task.params.sse_ping_interval;
-
-            // OAI-compat
-            task.params.res_type          = res_type;
-            task.params.oaicompat_cmpl_id = completion_id;
-            task.params.oaicompat_model   = meta->model_name;
-
-            if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
-                task.params.oaicompat_resp_id = json_value(data, "__oai_resp_id", std::string());
-                if (data.contains("__oai_resp_input")) {
-                    task.params.oaicompat_resp_input = data.at("__oai_resp_input");
-                }
-                if (data.contains("__oai_resp_instructions")) {
-                    task.params.oaicompat_resp_instructions = data.at("__oai_resp_instructions");
-                }
-                if (data.contains("__oai_resp_request")) {
-                    task.params.oaicompat_resp_request = data.at("__oai_resp_request");
-                    // a response with tools may stop for client-owned tool output, so a
-                    // steer must wait for the terminal instead of interrupting generation
-                    const json & resp_req = task.params.oaicompat_resp_request;
-                    if (resp_req.is_object() && resp_req.contains("tools") && resp_req.at("tools").is_array()) {
-                        for (const auto & tool : resp_req.at("tools")) {
-                            if (tool.is_object()) {
-                                task.params.oaicompat_steer_hold = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
-                // thinking.display=omitted suppresses thinking text in the response body
-                task.params.anthropic_thinking_display_omitted =
-                    json_value(data, "anthropic_thinking_display", std::string()) == "omitted";
-            }
-            if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT) {
-                task.params.oaicompat_chat_store = json_value(data, "__oai_chat_store", false);
-                if (data.contains("__oai_chat_metadata")) {
-                    task.params.oaicompat_chat_metadata = data.at("__oai_chat_metadata");
-                }
-                task.params.oaicompat_chat_user =
-                    json_value(data, "__oai_chat_user", std::string());
-                task.params.oaicompat_chat_safety_identifier =
-                    json_value(data, "__oai_chat_safety_identifier", std::string());
-                task.params.oaicompat_chat_service_tier =
-                    json_value(data, "__oai_chat_service_tier", std::string());
-            }
-            if (res_type == TASK_RESPONSE_TYPE_OAI_CMPL) {
-                // Completions may include request `user` for client correlation.
-                task.params.oaicompat_chat_user = json_value(data, "user", std::string());
-            }
-            // Shared OpenAI deepen flags (Chat / Completions / Responses via chat convert).
-            task.params.oai_prompt_cache_key =
-                json_value(data, "__oai_prompt_cache_key", std::string());
-            task.params.oai_prompt_cache_key_explicit =
-                json_value(data, "__oai_prompt_cache_key_explicit", false);
-            task.params.oai_prompt_cache_key_implicit =
-                json_value(data, "__oai_prompt_cache_key_implicit", false);
-            task.params.oai_prompt_cache_ttl =
-                json_value(data, "__oai_prompt_cache_ttl", 0);
-            task.params.oai_prompt_cache_expired =
-                json_value(data, "__oai_prompt_cache_expired", false);
-            task.params.oai_web_search_ran =
-                json_value(data, "__oai_web_search", false);
-            task.params.oai_web_search_query =
-                json_value(data, "__oai_web_search_query", std::string());
-            if (data.contains("__oai_web_search_results")) {
-                task.params.oai_web_search_results = data.at("__oai_web_search_results");
-            }
-            task.params.oai_web_search_n_requests =
-                json_value(data, "__oai_web_search_n_requests", 0);
-            if (data.contains("__oai_custom_tool_names") &&
-                    data.at("__oai_custom_tool_names").is_array()) {
-                for (const auto & name : data.at("__oai_custom_tool_names")) {
-                    if (name.is_string()) {
-                        task.params.oai_custom_tool_names.push_back(name.get<std::string>());
-                    }
-                }
-            }
-            if (res_type == TASK_RESPONSE_TYPE_OAI_CMPL) {
-                task.params.oaicompat_cmpl_echo = json_value(data, "echo", false);
-                const int n_val = json_value(data, "n", 1);
-                const int best_of = json_value(data, "best_of", n_val);
-                if (best_of > n_val) {
-                    task.params.n_cmpl = best_of;
-                    task.params.oaicompat_cmpl_return_n = n_val;
-                    task.params.oaicompat_cmpl_rank_by_logprob = true;
-                    const bool user_logprobs =
-                        json_value(data, "logprobs", 0) > 0 ||
-                        (data.contains("logprobs") && data.at("logprobs").is_boolean() &&
-                         data.at("logprobs").get<bool>());
-                    if (task.params.sampling.n_probs < 1) {
-                        task.params.sampling.n_probs = 1;
-                        task.params.oaicompat_cmpl_hide_rank_logprobs = !user_logprobs;
-                    }
-                }
-            }
 
             // prepare child tasks
             if (task.params.n_cmpl > 1) {
