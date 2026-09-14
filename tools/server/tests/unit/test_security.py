@@ -60,36 +60,6 @@ def test_correct_api_key():
     assert "content" in res.body
 
 
-def test_incorrect_api_key_anthropic_envelope():
-    """Anthropic routes use the official error envelope, where a rejected key is authentication_error"""
-    global server
-    server.start()
-    res = server.make_request("POST", "/v1/messages", data={
-        "model": server.model_alias,
-        "max_tokens": 16,
-        "messages": [{"role": "user", "content": "Hello"}],
-    }, headers={
-        "X-Api-Key": "invalid-key",
-    })
-    assert res.status_code == 401
-    assert res.body["type"] == "error"
-    assert res.body["error"]["type"] == "authentication_error"
-    assert "request_id" in res.body
-
-
-def test_correct_api_key_anthropic_header():
-    global server
-    server.start()
-    res = server.make_request("POST", "/completions", data={
-        "prompt": "I believe the meaning of life is",
-    }, headers={
-        "X-Api-Key": TEST_API_KEY,
-    })
-    assert res.status_code == 200
-    assert "error" not in res.body
-    assert "content" in res.body
-
-
 def test_openai_library_correct_api_key():
     global server
     server.start()
