@@ -1,0 +1,61 @@
+# Fork-only CI: the upstream workflows trigger on master and some of their jobs
+# need self-hosted runners that do not exist in a fork. This one runs on v100
+# with GitHub-hosted runners only, so it always produces a real result.
+
+name: CI (fork v100)
+
+on:
+  workflow_dispatch: # allows manual triggering
+  push:
+    branches:
+      - v100
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LLAMA_ARG_LOG_COLORS: 1
+  LLAMA_ARG_LOG_PREFIX: 1
+  LLAMA_ARG_LOG_TIMESTAMPS: 1
+  LLAMA_ARG_LOG_VERBOSITY: 10
+
+jobs:
+  cpu-server-unit-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install \
+            build-essential \
+            xxd \
+            git \
+            cmake \
+            curl \
+            wget \
+            libssl-dev
+
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Build
+        run: |
+          cmake -B build \
+            -DGGML_SCHED_NO_REALLOC=ON
+          cmake --build build --config Release -j $(nproc) --target llama-server
+
+      - name: Python setup
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          pip-install: -r tools/server/tests/requirements.txt
+
+      - name: Server unit tests
+        run: |
+          cd tools/server/tests
+          pytest unit/ --durations=30 -v -n auto --dist=worksteal -m "not slow"
