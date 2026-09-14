@@ -272,6 +272,15 @@ struct server_task {
         }
     }
 
+    // legacy /v1/completions echo + logprobs: also report prompt positions, so the prompt
+    // must be decoded with logits at every position
+    bool need_prompt_logprobs() const {
+        return params.res_type == TASK_RESPONSE_TYPE_OAI_CMPL &&
+            params.oaicompat_cmpl_echo &&
+            params.sampling.n_probs > 0 &&
+            !params.oaicompat_cmpl_hide_rank_logprobs; // rank-only logprobs are hidden, no prompt rows needed
+    }
+
     // utility function
     static std::unordered_set<int> get_list_id(const std::vector<server_task> & tasks) {
         std::unordered_set<int> ids(tasks.size());
@@ -376,8 +385,12 @@ struct completion_token_output {
     static json probs_vector_to_json(const std::vector<completion_token_output> & probs, bool post_sampling_probs);
 
     // OpenAI Completions (legacy) logprobs shape: tokens/token_logprobs/top_logprobs/text_offset
+    // prompt_probs: optional per-prompt-token rows (echo=true), prepended; row 0 has no logprobs
+    // offset_base: byte offset of the first row in the full text
     static json probs_vector_to_json_oaicompat_completions(
-        const std::vector<completion_token_output> & probs);
+        const std::vector<completion_token_output> & probs,
+        const std::vector<completion_token_output> * prompt_probs = nullptr,
+        size_t offset_base = 0);
 
     static float logarithm(float x);
 
@@ -406,6 +419,7 @@ struct server_task_result_cmpl_final : server_task_result {
 
     bool post_sampling_probs;
     std::vector<completion_token_output> probs_output;
+    std::vector<completion_token_output> prompt_probs_output; // echo=true: prompt-position rows
     std::vector<std::string>  response_fields;
 
     task_params generation_params;

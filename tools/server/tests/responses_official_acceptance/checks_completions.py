@@ -746,6 +746,10 @@ def run_completions_checks(
                     tlps = lp.get("token_logprobs")
                     tops = lp.get("top_logprobs")
                     offs = lp.get("text_offset")
+                    offs0 = offs[0] if offs else None
+                    # echo=false: the offsets still start at the beginning of the full text,
+                    # so the first generated token sits past the prompt
+                    offs0_ok = isinstance(offs0, int) and offs0 >= len(body_lp["prompt"].encode("utf-8"))
                     ok = (
                         shape_ok_lp
                         and isinstance(toks, list)
@@ -754,11 +758,14 @@ def run_completions_checks(
                         and isinstance(offs, list)
                         and len(toks) > 0
                         and len(toks) == len(tlps) == len(tops) == len(offs)
+                        and offs0_ok
                         and "content" not in lp
                     )
-                    detail_lp = f"keys={sorted(lp.keys())} n={len(toks)}"
+                    detail_lp = f"keys={sorted(lp.keys())} n={len(toks)} offs0={offs0}"
                     break
-            code_bad_lp, _ = client.post_json(
+            # Official clamps logprobs above 5 instead of rejecting it: expect 200 with at
+            # most logprobs+1 (= 6) candidates per position.
+            code_big_lp, data_big_lp = client.post_json(
                 "/v1/completions",
                 {
                     "model": model,
@@ -767,12 +774,28 @@ def run_completions_checks(
                     "logprobs": 10,
                 },
             )
-            ok = ok and code_bad_lp >= 400
+            clamp_ok = False
+            if code_big_lp == 200 and isinstance(data_big_lp, dict):
+                for ch in data_big_lp.get("choices") or []:
+                    lp_big = ch.get("logprobs") if isinstance(ch, dict) else None
+                    if not isinstance(lp_big, dict):
+                        continue
+                    tops_big = lp_big.get("top_logprobs")
+                    # A clamped request must never expose more than logprobs+1 (= 6) candidates.
+                    # A row with a single key is a local artifact of MTP draft acceptance
+                    # (--spec-type draft-mtp), so it does not count against the clamp.
+                    clamp_ok = (
+                        isinstance(tops_big, list)
+                        and len(tops_big) > 0
+                        and all(isinstance(t, dict) and 1 <= len(t) <= 6 for t in tops_big)
+                    )
+                    break
+            ok = ok and clamp_ok
             report.add(
                 "create_param",
                 field,
                 "PASS" if ok else "FAIL",
-                f"HTTP {code_lp} {detail_lp} bad_gt5={code_bad_lp}"[:200],
+                f"HTTP {code_lp} {detail_lp} clamp={code_big_lp}"[:200],
             )
             continue
         elif field == "user":
@@ -886,6 +909,57 @@ def run_completions_checks(
         "completions_echo_true",
         "PASS" if code_echo == 200 and echo_text.startswith(echo_prompt) else "FAIL",
         f"HTTP {code_echo} text={echo_text!r}",
+    )
+    # Official Completions echo=true + logprobs: the prompt positions come back as leading
+    # rows, with no logprobs on the first one.
+    code_elp, data_elp = client.post_json(
+        "/v1/completions",
+        {
+            "model": model,
+            "prompt": echo_prompt,
+            "max_tokens": 8,
+            "temperature": 0,
+            "echo": True,
+            "logprobs": 5,
+            **extra,
+        },
+    )
+    elp_ok = False
+    detail_elp = "missing"
+    if code_elp == 200 and isinstance(data_elp, dict):
+        ch_elp = (data_elp.get("choices") or [{}])[0]
+        lp = ch_elp.get("logprobs") if isinstance(ch_elp, dict) else None
+        if isinstance(lp, dict):
+            toks = lp.get("tokens") or []
+            tlps = lp.get("token_logprobs") or []
+            tops = lp.get("top_logprobs") or []
+            offs = lp.get("text_offset") or []
+            same_len = len(toks) > 0 and len(toks) == len(tlps) == len(tops) == len(offs)
+            offsets_ok = same_len and all(
+                offs[i + 1] - offs[i] == len(str(toks[i]).encode("utf-8"))
+                for i in range(len(offs) - 1)
+            )
+            n_prompt_rows = min((data_elp.get("usage") or {}).get("prompt_tokens") or 0, len(toks))
+            # prompt rows come from the full-vocab softmax, so they always carry logprobs candidates
+            prompt_rows_ok = all(
+                isinstance(tops[i], dict) and 5 <= len(tops[i]) <= 6
+                for i in range(1, n_prompt_rows)
+            )
+            elp_ok = (
+                same_len
+                and offsets_ok
+                and offs[0] == 0                            # echo=true starts at the prompt
+                and tlps[0] is None and tops[0] is None      # first prompt token has no logits
+                and any(v is not None for v in tlps[1:])     # the other prompt rows are real
+                and all(isinstance(t, dict) for t in tops[1:])
+                and prompt_rows_ok
+            )
+            detail_elp = f"n={len(toks)} prompt_rows={n_prompt_rows} offs0={offs[0]} lp0={tlps[0]}"
+    report.add(
+        "scenario",
+        "completions_echo_logprobs_prompt_rows",
+        "PASS" if elp_ok else "FAIL",
+        f"HTTP {code_elp} {detail_elp}"[:200],
     )
     code_suf, data_suf = client.post_json(
         "/v1/completions",

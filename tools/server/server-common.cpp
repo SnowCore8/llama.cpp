@@ -691,14 +691,11 @@ void server_openai_validate_completions_create(const json & body) {
     if (body.contains("seed") && !body.at("seed").is_null() && !body.at("seed").is_number_integer()) {
         throw std::invalid_argument("'seed' must be an integer");
     }
-    // Official Completions: logprobs is integer 0..5 (null/omitted = disabled).
+    // Official Completions: logprobs is a non-negative integer (null/omitted = disabled);
+    // values above 5 are clamped to 5 by the official API instead of being rejected.
     if (body.contains("logprobs") && !body.at("logprobs").is_null()) {
-        if (!body.at("logprobs").is_number_integer()) {
-            throw std::invalid_argument("'logprobs' must be an integer between 0 and 5");
-        }
-        const int lp = body.at("logprobs").get<int>();
-        if (lp < 0 || lp > 5) {
-            throw std::invalid_argument("'logprobs' must be an integer between 0 and 5");
+        if (!body.at("logprobs").is_number_integer() || body.at("logprobs").get<int>() < 0) {
+            throw std::invalid_argument("'logprobs' must be a non-negative integer");
         }
     }
     // Official Completions: stop is a string or an array of up to 4 strings.

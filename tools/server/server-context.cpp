@@ -318,6 +318,9 @@ struct server_slot {
 
     std::vector<completion_token_output> generated_token_probs;
 
+    // legacy /v1/completions echo + logprobs: one row per prompt token (row 0 stays empty)
+    std::vector<completion_token_output> prompt_token_probs;
+
     bool has_next_token = true;
     bool has_new_line   = false;
     bool truncated      = false;
@@ -421,6 +424,7 @@ struct server_slot {
         }
         generated_tokens.clear();
         generated_token_probs.clear();
+        prompt_token_probs.clear();
         json_schema = json();
 
         task_prev = std::move(task);
@@ -468,6 +472,12 @@ struct server_slot {
     bool need_embd() const {
         GGML_ASSERT(task);
         return task->need_embd();
+    }
+
+    // the prompt must be decoded with logits at every position (prompt-position logprobs)
+    bool need_prompt_logprobs() const {
+        GGML_ASSERT(task);
+        return task->need_prompt_logprobs();
     }
 
     // if the context does not have a memory module then all embeddings have to be computed within a single ubatch
@@ -775,6 +785,7 @@ struct server_slot {
         other.stats = stats;
 
         other.prompt = prompt.clone();
+        other.prompt_token_probs = prompt_token_probs;
         other.init_sampler();
     }
 };
@@ -1057,7 +1068,10 @@ private:
 
         params_base = params;
         const auto output_limits = server_output_limits(params_base);
-        params_base.n_outputs_max = output_limits.total;
+        // legacy /v1/completions echo + logprobs makes every prompt token an output, so the
+        // context must allow one output per batch token
+        // note: this grows the reserved prompt graph by n_vocab * n_ubatch * 4 bytes
+        params_base.n_outputs_max = std::max({ output_limits.total, params_base.n_batch, params_base.n_parallel });
         params_base.n_outputs_max_per_seq = output_limits.per_seq;
 
         const bool has_mmproj = !params.mmproj.path.empty();
@@ -1799,7 +1813,9 @@ private:
 
                 ret->prompt_save(*prompt_cache);
 
-                if (!ret->prompt_load(*prompt_cache, task.tokens, { task.params.oai_prompt_cache_key, task.params.oai_prompt_cache_key_explicit })) {
+                // prompt-position logprobs need every prompt token decoded, so do not restore a cached prefix
+                if (!task.need_prompt_logprobs() &&
+                        !ret->prompt_load(*prompt_cache, task.tokens, { task.params.oai_prompt_cache_key, task.params.oai_prompt_cache_key_explicit })) {
                     ret->prompt_clear();
                 }
 
@@ -1950,6 +1966,10 @@ private:
 
             // TODO: getting pre sampling logits is not yet supported with backend sampling
             use_backend_sampling &= !need_pre_sample_logits;
+
+            // prompt-position logprobs need logits at every prompt position, which backend
+            // sampling rejects (one output per sequence there)
+            use_backend_sampling &= !task.need_prompt_logprobs();
 
             // TODO: tmp until backend sampling is fully implemented
             if (use_backend_sampling) {
@@ -2203,6 +2223,29 @@ private:
         }
     }
 
+    // prompt position p holds the logits that predict prompt token p+1, so row p+1 takes
+    // its logprobs from position p and the last prompt position is skipped
+    void extract_prompt_logprobs(const llama_batch & batch_view) {
+        for (int32_t i = 0; i < batch_view.n_tokens; i++) {
+            if (batch_view.logits[i] == 0) {
+                continue;
+            }
+
+            server_slot & slot = slots[batch_view.seq_id[i][0]];
+
+            if (!slot.need_prompt_logprobs()) {
+                continue;
+            }
+
+            const llama_pos pos = batch_view.pos[i];
+            if (pos < 0 || (size_t) pos + 1 >= slot.prompt_token_probs.size()) {
+                continue;
+            }
+
+            populate_token_probs(slot, slot.prompt_token_probs[pos + 1], false, params_base.special, i);
+        }
+    }
+
     void send_error(const server_task & task, const std::string & error, const enum error_type type = ERROR_TYPE_SERVER) {
         send_error(task.id, error, type);
     }
@@ -2330,6 +2373,7 @@ private:
                         slot.generated_token_probs.end());
             }
         }
+        res->prompt_probs_output = slot.prompt_token_probs;
 
         res->generation_params = slot.task->params; // copy the parameters
 
@@ -3090,6 +3134,9 @@ private:
 
                     // on successful decode, restore the original batch size
                     n_batch = llama_n_batch(ctx_tgt);
+
+                    // prompt-position logprobs: read them now, the next decode overwrites the logits
+                    extract_prompt_logprobs(batch_view);
                 } else {
                     // try again with the updated n_batch
                     continue;
@@ -3343,6 +3390,10 @@ private:
                     // used to determine the number of tokens added to the batch for the current slot
                     const auto n_tokens_prev = batch.size();
 
+                    // prompt-position logprobs need the logits of every prompt token,
+                    // so this request cannot reuse a cached prefix (full re-process)
+                    const bool need_prompt_logits = slot.need_prompt_logprobs();
+
                     // TODO: maybe move branch to outside of this loop in the future
                     if (slot.state == SLOT_STATE_STARTED) {
                         slot.stats.update_prompt_start();
@@ -3419,7 +3470,7 @@ private:
                                 return;
                             }
 
-                            if (slot.task->params.cache_prompt) {
+                            if (slot.task->params.cache_prompt && !need_prompt_logits) {
                                 // reuse any previously computed tokens that are common with the new prompt
                                 n_past = slot.prompt.tokens.get_common_prefix(input_tokens);
 
@@ -3618,6 +3669,20 @@ private:
 
                         slot.prompt.tokens.keep_first(n_past);
 
+                        // prompt-position logprobs: one row per prompt token, text pieces taken
+                        // with the same helper as the generated tokens
+                        if (need_prompt_logits) {
+                            slot.prompt_token_probs.resize(slot.task->tokens.size());
+                            for (size_t i = 0; i < slot.task->tokens.size(); i++) {
+                                auto & row = slot.prompt_token_probs[i];
+                                row.tok  = slot.task->tokens[i];
+                                row.prob = 0.0f;
+                                if (row.tok != LLAMA_TOKEN_NULL) {
+                                    row.text_to_send = common_token_to_piece(ctx_tgt, row.tok, params_base.special);
+                                }
+                            }
+                        }
+
                         // this is to signal the client that the request has started processing
                         if (slot.task->params.stream) {
                             if (slot.task->params.return_progress) {
@@ -3744,10 +3809,11 @@ private:
                         // embedding requires all tokens in the batch to be output;
                         // MTP also wants logits at every prompt position so the
                         // streaming hook can mirror t_h_nextn into ctx_dft.
+                        // prompt-position logprobs need the same.
                         add_ok &= batch.add(slot.id,
                             cur_tok,
                             /* pos       = */ slot.prompt.tokens.pos_next(),
-                            /* output    = */ slot.need_embd(),
+                            /* output    = */ slot.need_embd() || need_prompt_logits,
                             /* is_prompt = */ true);
                         slot.prompt.tokens.push_back(cur_tok);
 
@@ -5420,6 +5486,11 @@ void server_routes::init_routes() {
         }
         try {
             server_openai_validate_completions_create(body);
+            // official Completions clamps logprobs to 5; a larger value is not an error
+            if (body.contains("logprobs") && body.at("logprobs").is_number_integer() &&
+                    body.at("logprobs").get<int>() > 5) {
+                body["logprobs"] = 5;
+            }
             server_openai_apply_prompt_cache_semantics(body);
             body = server_openai_completions_apply_suffix(
                 ctx_server.vocab,

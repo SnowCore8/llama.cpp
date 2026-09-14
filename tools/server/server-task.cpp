@@ -356,16 +356,27 @@ json completion_token_output::probs_vector_to_json(const std::vector<completion_
 }
 
 json completion_token_output::probs_vector_to_json_oaicompat_completions(
-        const std::vector<completion_token_output> & probs) {
+        const std::vector<completion_token_output> & probs,
+        const std::vector<completion_token_output> * prompt_probs,
+        size_t offset_base) {
     json tokens = json::array();
     json token_logprobs = json::array();
     json top_logprobs = json::array();
     json text_offset = json::array();
-    size_t offset = 0;
-    for (const auto & p : probs) {
+    size_t offset = offset_base;
+
+    auto append = [&](const completion_token_output & p, bool null_row) {
         std::string txt(p.text_to_send);
         txt.resize(validate_utf8(txt));
         tokens.push_back(txt);
+        text_offset.push_back((int) offset);
+        offset += txt.size();
+        if (null_row) {
+            // no logits for this position: first prompt token, or a prompt row never decoded
+            token_logprobs.push_back(nullptr);
+            top_logprobs.push_back(nullptr);
+            return;
+        }
         // Completions API always uses log-space probabilities.
         token_logprobs.push_back(logarithm(p.prob));
         json top_map = json::object();
@@ -378,8 +389,17 @@ json completion_token_output::probs_vector_to_json_oaicompat_completions(
             top_map[txt] = logarithm(p.prob);
         }
         top_logprobs.push_back(std::move(top_map));
-        text_offset.push_back((int) offset);
-        offset += txt.size();
+    };
+
+    if (prompt_probs != nullptr) {
+        for (size_t i = 0; i < prompt_probs->size(); i++) {
+            const auto & row = (*prompt_probs)[i];
+            // a row left without candidates was never decoded, so it has no logprobs
+            append(row, i == 0 || row.probs.empty());
+        }
+    }
+    for (const auto & p : probs) {
+        append(p, false);
     }
     return json{
         {"tokens",         std::move(tokens)},
@@ -474,8 +494,13 @@ json server_task_result_cmpl_final::usage_json_oaicompat() {
 json server_task_result_cmpl_final::to_json_oaicompat() {
     std::time_t t = std::time(0);
     json logprobs = json(nullptr); // OAI default to null
-    if (!stream && probs_output.size() > 0) {
-        logprobs = completion_token_output::probs_vector_to_json_oaicompat_completions(probs_output);
+    if (!stream && (probs_output.size() > 0 || prompt_probs_output.size() > 0)) {
+        const std::vector<completion_token_output> * prompt_probs =
+            prompt_probs_output.empty() ? nullptr : &prompt_probs_output;
+        // offsets count from the start of the full text: the prompt is part of it even when not echoed
+        const size_t offset_base = generation_params.oaicompat_cmpl_echo ? 0 : prompt.size();
+        logprobs = completion_token_output::probs_vector_to_json_oaicompat_completions(
+                probs_output, prompt_probs, offset_base);
     }
     json finish_reason = "length";
     if (stop == STOP_TYPE_WORD || stop == STOP_TYPE_EOS) {
