@@ -166,6 +166,7 @@
 | Responses 全量 | 历史基线（0.8B 口径） | 375 = 344 PASS / 5 FAIL / 1 PARTIAL / 25 SKIP | `/tmp/b1-responses.json` |
 | Chat 全量 | 历史基线（0.8B 口径） | 144 = 138 PASS / 2 FAIL / 1 PARTIAL / 3 SKIP | `/tmp/b1-chat.json` |
 | Responses embeddings 组（`--embeddings --pooling mean` 实例） | 历史基线（0.8B 口径） | 13 = 12 PASS / 1 SKIP | `/tmp/b1-responses-emb.json` |
+| Responses embeddings+sdk 组（`--embeddings --pooling mean` 实例，8094） | 统一口径（V100 + Qwen3.5-9B-Q4_K_M） | **已完成**：30 = 29 PASS / 0 FAIL / 1 SKIP（exit=0）；12 个 embeddings 行 11 PASS（唯一 SKIP = `embeddings.dimensions`，按设计记录不断言）+ sdk 17 行全 PASS，其中 `embeddings.create` 由 SKIP 转 PASS（`dim=4096`） | `/tmp/env-emb-8094/resp-emb-sdk.json` |
 | Responses 子集（7 组，工具调用行复核） | 9B 复核 | 263 = 254 PASS / 0 FAIL / 9 SKIP | `/tmp/drift/resp-9b.json` |
 | Chat 全量（工具调用行复核） | 9B 复核 | 142 = 141 PASS / 0 FAIL / 1 SKIP | `/tmp/drift/chat-9b.json` |
 | 统一口径全量重基线（V100 + Qwen3.5-9B-Q4_K_M） | 2026-09-14 口径切换 | **已完成**：504 PASS / 24 SKIP / 0 FAIL（responses 354/22、chat 142/1、local_durability 8/1），HEAD `7137fab81` | `/tmp/acc-baseline-9b/` |
@@ -180,7 +181,7 @@ FAIL / PARTIAL / SKIP 归因（DIFF §6）：
 
 - 0.8B responses 5 FAIL：3 hint 确定性登记（`max_tool_calls_with_forced_tool` / `parallel_tool_calls_false_single` / `max_tool_calls_cap_completes`）+ 2 flaky（`previous_response_id.reasoning_replay` / `max_tool_calls`）；1 PARTIAL = `forced_function_tool_call`（hint 确定性）。
 - 0.8B chat 2 FAIL：`delta.tool_calls.forced`（hint 确定性登记；fallback 行，9B 主探针成功故不生成）、`tool_choice_required_emits_tool_call`（基线既有 FAIL；9B 复核 PASS）。
-- SKIP 均为环境/机型条件：hybrid 无 blob checkpoint、单模型服务器（`prompt_cache_cross_model_isolation`）、不可强注入（`response.failed`/`error` 类）、no probe value、no seed id、9B sdk `embeddings.create`（未启 embeddings）等。
+- SKIP 均为环境/机型条件：hybrid 无 blob checkpoint、单模型服务器（`prompt_cache_cross_model_isolation`）、不可强注入（`response.failed`/`error` 类）、no probe value、no seed id 等（原「9B sdk `embeddings.create` 未启 embeddings 而 SKIP」已由 9B embeddings 实例（8094，`--only embeddings,sdk` 30 = 29 PASS / 0 FAIL / 1 SKIP）关闭）。
 - 9B 复核目标行全部 PASS -> 漂移判定「模型能力类」（登记见 SCOPE「Recorded deviations」）。
 - 本轮 2 行 cache 偶发 FAIL（`prompt_cache_ttl_expiry_clears_kv` + 连带 `prompt_cache_hit_monitor`）：预存断言前提问题（残差 20 = 注入 hint 常量前缀，槽位 L1 残留竞态），非本切片引入；同二进制单跑 `--only prompt_cache` 全绿（25 = 23 PASS / 2 SKIP / 0 FAIL，`expired_cached=0`，`/tmp/best-of-slots/ttl-rerun1.json`）-> **已修**（§5 #12：探针加唯一首条 system 消息，断言强度不变；修复后 responses lane 378 = 356/22/0、全量三套件 530 = 506/24/0）。
 
@@ -207,10 +208,11 @@ FAIL / PARTIAL / SKIP 归因（DIFF §6）：
 7. B2b 流式对偶新增行 `completions_echo_logprobs_stream_chunks` 已随本轮实现并跑通（代码 `65b93d9ad`；ctx=262144 全量 505 PASS / 24 SKIP / 0 FAIL，证据 `/tmp/acc-b2b-262144/`；新行 3 连跑稳定）。
 8. Completions `best_of` 上限新增行 `completions_best_of_gt_slots_rejected` 已随本轮实现并跑通（代码 `6cc674611`；ctx=262144 全量 530 = 506 PASS / 24 SKIP / 0 FAIL，证据 `/tmp/best-of-slots/reports-ttlfix/`；`best_of`/`n` 探针 4/21/129 槽三实例全 PASS）。
 9. `prompt_cache_ttl_expiry_clears_kv` 偶发 - **已完成**（§5 #12，纯套件修复）：探针加唯一首条 system 消息，断言强度不变；修复后整条 responses lane 378 = 356 PASS / 22 SKIP / 0 FAIL（`/tmp/best-of-slots/ttl-fix-run1.json`）、全量三套件 530 = 506/24/0（`/tmp/best-of-slots/reports-ttlfix/`），该行及连带 `prompt_cache_hit_monitor` 由 FAIL 转 PASS。
+10. embeddings live SDK 回归（§8.2 #3）- **已完成（2026-09-14）**：`--embeddings --pooling mean` 实例（9B、8094）上 `--only embeddings,sdk` = **30 = 29 PASS / 0 FAIL / 1 SKIP**（exit=0）；12 个 embeddings 行 11 PASS（`dim=4096`；唯一 SKIP = `embeddings.dimensions`，官方仅 text-embedding-3+ 支持、本地接受但忽略，按设计记录不断言）+ sdk 17 行全 PASS，其中 `embeddings.create` 由 SKIP 转 PASS。证据 `/tmp/env-emb-8094/resp-emb-sdk.json`。
 
 来源：DIFF §6 注（「9B 全量新基线待重跑回填」）+ 2026-09-14 用户口径指令 + 本轮 §5 #9 / §5 #10 / §5 #11 / §5 #12 / §5 #13。
 
-**本轮已跑运行期探针**（`/tmp/oai-probe/verify_b2a_echo_logprobs.py`，非流式 `/v1/completions` echo+logprobs 36/36 PASS；V100 + Qwen3.5-9B-Q4_K_M，证据 `/tmp/oai-probe/b2a-verify/`）；**acceptance 三套件已跑全绿**（504 PASS / 24 SKIP / 0 FAIL，HEAD `7137fab81`，证据 `/tmp/acc-baseline-9b/`），本轮已提交并并入基线。**B2b 流式切片**同样全绿：ctx=262144 全量 529 = 505 PASS / 24 SKIP / 0 FAIL（证据 `/tmp/acc-b2b-262144/`）。**词表修正波复验（§5 #13）**：401/503/exceed 探针 17 PASS / 0 FAIL（`/tmp/env-503-aux/`）；同期 9B 全量已更新为 ctx=262144 三套件 530 = 506 PASS / 24 SKIP / 0 FAIL（`/tmp/best-of-slots/reports-ttlfix/`）。
+**本轮已跑运行期探针**（`/tmp/oai-probe/verify_b2a_echo_logprobs.py`，非流式 `/v1/completions` echo+logprobs 36/36 PASS；V100 + Qwen3.5-9B-Q4_K_M，证据 `/tmp/oai-probe/b2a-verify/`）；**acceptance 三套件已跑全绿**（504 PASS / 24 SKIP / 0 FAIL，HEAD `7137fab81`，证据 `/tmp/acc-baseline-9b/`），本轮已提交并并入基线。**B2b 流式切片**同样全绿：ctx=262144 全量 529 = 505 PASS / 24 SKIP / 0 FAIL（证据 `/tmp/acc-b2b-262144/`）。**词表修正波复验（§5 #13）**：401/503/exceed 探针 17 PASS / 0 FAIL（`/tmp/env-503-aux/`）；同期 9B 全量已更新为 ctx=262144 三套件 530 = 506 PASS / 24 SKIP / 0 FAIL（`/tmp/best-of-slots/reports-ttlfix/`）。**embeddings live SDK 回归（§8.1 #10）**：9B embeddings 实例（8094）`--only embeddings,sdk` 30 = 29 PASS / 0 FAIL / 1 SKIP（`/tmp/env-emb-8094/`）。
 
 ### 8.2 功能未决项
 
@@ -218,7 +220,7 @@ FAIL / PARTIAL / SKIP 归因（DIFF §6）：
 |---|----|------|------|
 | 1 | B2：legacy Completions `echo=true` + `logprobs` 组合完整语义 | **非流式（B2a）已实现并提交**（`47bf58b08`；探针 36/36 + 三套件全绿）：分片前置 prompt 行、第 0 行 `token_logprobs`/`top_logprobs` 双 `null`、行 p+1 取自位置 p 的 logits、`text_offset` 原点 = 完整 text 开头（单位沿用 UTF-8 字节）、`logprobs>5` 夹到 5；**流式（B2b）已实现并验证**（B2b 切片，已提交 `65b93d9ad`；首块并进 prompt 文本与 prompt 行、`text_offset` 跨块累计、末事件不重复 prompt；三套件全绿 + 新行 3 连跑稳定） | `/tmp/oai-probe/web-b2/report.md`（官方文档/实拍）、实现方 vLLM/SGLang 源码对照、b-audit/report.md B2；本轮改动见 §5 #9 / §5 #10 |
 | 2 | SDK `responses.create.custom_tool` 行 temperature 硬化 | **已处理**（已提交 `7137fab81`；套件已验证）：该调用补 `temperature=0`（按先例 `58d28395b`，forced-tool 检查 pin temperature 0）；该行曾 flaky（PASS/FAIL 双峰），本次运行时复验 PASS | drift-report §3；checks_sdk.py |
-| 3 | embeddings live 实测 | sdk `embeddings.create` 在未启 `--embeddings` 时 SKIP（9B 全量即如此）；需在 embeddings 实例上补 live SDK 回归 | DIFF §6 SKIP 说明 |
+| 3 | embeddings live 实测 | **已完成（2026-09-14）**：sdk `embeddings.create` 在未启 `--embeddings` 的实例上 SKIP（9B 全量即如此）；已在 `--embeddings --pooling mean` 实例（9B、8094）上跑 `--only embeddings,sdk` = 30 = 29 PASS / 0 FAIL / 1 SKIP（exit=0），`embeddings.create` 转 PASS（`dim=4096`）；唯一 SKIP = `embeddings.dimensions`（官方仅 text-embedding-3+ 支持，本地接受但忽略，按设计记录不断言） | DIFF §6 注 / §7.1；证据 `/tmp/env-emb-8094/resp-emb-sdk.json` |
 | 4 | `/v1/messages` 显式 verbosity/reasoning_effort | anthropic 转换器不透传顶层字段（pre-A 既有）；缺省注入已按 gating 限定 OpenAI 端点；若要支持显式值需扩转换器 | gating-report §6.2 |
 
 ### 8.3 SCOPE「Recorded deviations」登记项（2026-09-14 时点；编号稳定，原 #5/#6/#21/#25 已对齐）

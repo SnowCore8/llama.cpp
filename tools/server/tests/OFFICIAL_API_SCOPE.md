@@ -267,7 +267,7 @@ When the rows above stay green, the “消解最小化实现” campaign for in-
 | `best_of` | - | - | 缺省 = `n`（`1`）ok | - |
 | `echo` | - | - | `false`（无 prompt 前缀）ok | - |
 | `suffix` | - | - | 不施加 ok | - |
-| `encoding_format` | - | - | - | 代码缺省 `float`（`server-context.cpp:6570`；本服务器未启 `--embeddings`，501 与套件同 SKIP）ok |
+| `encoding_format` | - | - | - | 代码缺省 `float`（`server-context.cpp:6570`）ok；未启 `--embeddings` 的实例 -> 501（套件同 SKIP），`--embeddings --pooling mean` 实例实测返回 4096 维向量并 PASS（2026-09-14，`/tmp/env-emb-8094/`） |
 
 - 采样侧其余本地缺省（官方无对应字段）：`min_p=0.05`、`top_k=40`、`repeat_penalty=1.0`、repeat window 64、`dynatemp=0`、`mirostat=0`、`dry=0`、`xtc=0`（`/props.default_generation_settings`）。
 - 省略任一 `max_*` 且 thinking 打开、未设预算时，本地自动给 8192 reasoning 预算（`server-common.cpp`），thinking 输出上限实测 8192 tokens（chat 总 8201 / responses 总 8198 completion tokens）。
