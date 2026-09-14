@@ -120,6 +120,8 @@ Here is an example trace of an API request for text completion:
 - As the response is stateless, `server_res_generator` calls `response->update()` to update the response with the current state.
 - `server_res_generator` then calls `response->to_json()` and passes the response to the HTTP layer.
 
+The three chat-shaped surfaces (Chat Completions, Responses, Anthropic Messages) all funnel into the same engine entry `handle_completions_impl`. The plan to keep the engine in one copy while giving each surface its own full surface-layer logic is in [tests/API_SURFACE_SPLIT.md](tests/API_SURFACE_SPLIT.md).
+
 ### Resumable streaming (SSE replay buffer)
 
 By default a streaming generation is bound to its HTTP socket: when the socket drops (refresh, tab close, mobile background, transient network) the generation aborts and the live stream is lost. This feature keeps the generation running server side and lets a client reattach.

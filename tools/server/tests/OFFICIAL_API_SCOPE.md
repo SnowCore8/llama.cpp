@@ -4,7 +4,7 @@ SDK pin (tests venv): `openai==3.11.0` (latest at run time).
 
 **验收口径（2026-09-14 起）：** V100 + Qwen3.5-9B-Q4_K_M（探针与 acceptance 全量统一）；历史 0.8B 数字保留为历史记录（见 [OFFICIAL_API_DIFF.md](OFFICIAL_API_DIFF.md) §6）。
 
-差异分类汇总（本 fork vs OpenAI 公开文档）见 [OFFICIAL_API_DIFF.md](OFFICIAL_API_DIFF.md)；本文档为契约、依据与验收证据的权威源，两文件同步维护。
+差异分类汇总（本 fork vs OpenAI 公开文档）见 [OFFICIAL_API_DIFF.md](OFFICIAL_API_DIFF.md)；本文档为契约、依据与验收证据的权威源，两文件同步维护。面层拆分（内核单份 + 面层独立完整逻辑）的设计稿见 [API_SURFACE_SPLIT.md](API_SURFACE_SPLIT.md)；该设计尚未落地，落地时本文档 Anthropic 段的口径随其 S8 改写。
 
 **对齐目标：** Responses、OpenAI Completions（`/v1/completions`）均按**官方公开 API 形状**对齐（标准 3：可本地观测的行为加深；云端专用能力合法值接受或形状校验，非法 → 400）。
 
