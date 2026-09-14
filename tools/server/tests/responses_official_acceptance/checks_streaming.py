@@ -553,7 +553,16 @@ def run_streaming_checks(
 
     # --- pre-flight rejection: a prompt that exceeds the context is rejected before
     #     response.created, so the client gets a plain JSON error, not SSE frames ---
-    huge = "test " * 60000
+    # pad size follows /props.n_ctx, so the row holds on any ctx instead of failing for a config reason
+    n_ctx = 32768
+    pcode, props = client.get_json("/props")
+    if pcode == 200 and isinstance(props, dict):
+        dgs = props.get("default_generation_settings") or {}
+        if isinstance(dgs, dict) and dgs.get("n_ctx"):
+            n_ctx = int(dgs["n_ctx"])
+        elif props.get("n_ctx"):
+            n_ctx = int(props["n_ctx"])
+    huge = "test " * max(60000, int(n_ctx * 1.5) + 512)
     xcode, xheaders, xraw = client.request(
         "POST",
         "/v1/responses",
