@@ -50,13 +50,13 @@
 
 ## 4. 记录未修偏差（Recorded deviations，审计接受）
 
+注：编号稳定优先（跨文件引用依赖，如 PRD §3.2 的「DIFF §4 #12/#13」）；已消化项 #4/#5 的编号保留、不复用，见 §4.1。
+
 | # | 项 | 官方 | 本地 | 说明 |
 |---|---|---|---|---|
 | 1 | Responses SSE `obfuscation` | 稳定版仅 `response.shell_call_command.delta` 定义该字段 | 对所有 SSE 事件 data 对象注入，默认开（`stream_options.include_obfuscation=false` 关闭） | 本地偏离，声明接受 |
 | 2 | `response.reasoning_text.delta`/`.done`、`response.refusal.delta`/`.done` | 官方定义 | 不发射（reasoning 只暴露 summary） | 声明接受 |
 | 3 | `prompt_cache_options.ttl` | 仅 `30m` | 超集：另接受 `5m`/`1h`（`24h` 仅属于 `prompt_cache_retention`） | openai SDK 3.11.0 该字段为 `Literal["30m"]`，严格校验的 SDK 解析此类响应会失败 |
-| 4 | `response.created` 事件 | 官方示例含 `usage: null`（schema 标 optional） | 不带 `usage` 键 | 兼容风险低 |
-| 5 | compact `service_tier` 校验 | 官方 compact 文档 5 值 | 复用 create 校验的 7 值（+`fast`/`ultrafast`） | 宽松超集 |
 | 6 | Chat `n` 上限 | 无声明上限 | `n` 超过 `n_parallel` → 400 | 本地容量上限 |
 | 7 | Chat `logprobs`+`tools`+`stream` | 官方未禁止 | 组合 → 400 | 本地限制 |
 | 8 | Completions `best_of` | 文档措辞 "must be greater than `n`" | 接受 `best_of == n` | 宽松 |
@@ -67,6 +67,20 @@
 | 13 | `GET /v1/models/{未知}` | 无错误形状定义（OpenAPI 只声明 200） | 404 + 四字段错误体（`code:null`）+ `The model 'x' does not exist` | 无实拍可依，保留现状 |
 | 14 | router 模式未知 model（本地扩展） | 无 router 概念 | proxy 层统一 404 + A 族（chat/responses/embeddings） | 与单模型 responses 的 400 + B 族分层不同 |
 | 15 | WS `/v1/responses` 未知 model | WS error 事件（本地信封） | 400 + `model_not_found`（B 族 message） | 套件未覆盖，未实测断言 |
+| 16 | legacy `/v1/completions` `echo=true` + `logprobs>0`（非流式；2026-09-14 已提交 `47bf58b08`；探针已验证、三套件已跑） | 官方文档从未规定语义（负结果）；实拍/社区证据见 `/tmp/oai-probe/web-b2/report.md`（官方文档/实拍，非本地验证） | 分片前置 prompt 行、第 0 行 `token_logprobs`/`top_logprobs` 双 `null`、`text_offset` 原点 = 完整 text 开头；代价：该类请求禁用 prompt 前缀复用与后端采样；`n_outputs_max` 抬高（上界 `n_batch*n_vocab*4` 约 2.0 GB、常驻增量 +1812 MiB 实测，见 SCOPE「Recorded deviations」） | 本地限制；`n_outputs_max` 为已接受代价（accepted cost，已随 `47bf58b08` 入库；用户裁定无条件抬高保持）；探针 36/36 PASS（V100+9B，`/tmp/oai-probe/b2a-verify/`），三套件 504 PASS / 24 SKIP / 0 FAIL（`/tmp/acc-baseline-9b/`） |
+| 17 | legacy `/v1/completions` `echo=true` + `logprobs>0` 流式（SSE，B2b） | 官方实拍分块 `text_offset` 递增（`web-b2` S8） | **未对齐（pending）**：分块 `text_offset` 每块从 0 重新开始、首块不带 prompt 行、echo=true 分块 `text` 不带 prompt 前缀 | 待做（B2a 验证通过后再做）；与 context shift / checkpoint / KV 组合未验证 |
+| 18 | MTP 下生成行 `top_logprobs` 退化（预存，非本波引入；未修） | 生成行 `top_logprobs` 与 prompt 行同形（全词表 top-N） | `--spec-type draft-mtp` 时被接受的草稿 token 所在生成行只有 1 个键；prompt 行不受影响（始终 5..6 键） | 独立实例（无 `--spec-type`）实测每行恰 5 键；MTP 日志 `draft acceptance = 1.00000 (5 accepted / 5 generated)` 对应 1 键生成行（`/tmp/oai-probe/b2a-verify/server3.log`、`server-nospec.log`）；`echo=false` 亦复现，本波未触碰生成行路径 |
+| 19 | `/v1/completions` `best_of > n_parallel` 无校验且请求挂起（预存，非本波引入；未修，待裁定） | `best_of` 无并发上限声明 | `--parallel 1` 上 `best_of=2` 无限挂起（>300 s、无错误）；Chat `n` 有守卫 -> 400 `Field 'n': Value must be between 1 <= value <= 1, but got 2`；router 多槽配置下正常 | 预存缺陷（B2a 路径要求 `echo=true`，该请求不可达）；已登记、未修、待裁定是否另案修 |
+
+### 4.1 已对齐（原登记偏差已消化 + 本轮合规修正，2026-09-14）
+
+本轮已提交（`47bf58b08` + `84f929fce` + `7137fab81`；本文档随本次提交）；acceptance 三套件已跑全绿（504 PASS / 24 SKIP / 0 FAIL，证据 `/tmp/acc-baseline-9b/`），非流式 `/v1/completions` echo+logprobs 与 `logprobs` 夹取已由探针验证（36/36）：
+
+| 原 # | 项 | 官方依据 | 本地现状 |
+|---|---|---|---|
+| 4 | `response.created` / `response.in_progress` 骨架 `usage` 键 | 官方 Response 对象字节始终带 `usage` 键（完成前为 null） | 缺省补 `"usage": null`（`server_responses_enrich_response`）；登记项移出 §4 |
+| 5 | compact `service_tier` 枚举 | 官方 compact 文档 5 值（`auto`/`default`/`flex`/`fast`/`priority`） | compact 仅接受 5 值，`scale`/`ultrafast` -> 400；create/chat 仍 7 值（`server_openai_validate_compact_service_tier`）；登记项移出 §4 |
+| 新 | Completions `logprobs` 上限 | 文档 "The maximum value for `logprobs` is 5."（`/tmp/oai-probe/web-b2/report.md` S1/S3）；实拍 `logprobs=20` 每行恰 5 键（同报告 S8） | 由「`>5` -> 400」改为「`>5` 夹到 5，HTTP 200」（合规修正）；负数/非整数仍 400（`'logprobs' must be a non-negative integer`）；探针实测 `logprobs=10` -> 200 且每行 <=6 键（`/tmp/oai-probe/b2a-verify/c3-clamp.json`） |
 
 ## 5. 本地超集与扩展（Supersets / local-only surfaces）
 
@@ -99,9 +113,10 @@
 - 2026-09-13 缺省对齐后复验（新构建 8091）：Responses 373 / Chat 142 与当时基线逐行 status 一致、0 新增 FAIL（历史记录）；基线证据保留在 `/tmp/full-verify-resp4.json`、`/tmp/chat-full2.json`。
 - 2026-09-13 hint 漂移处置后重基线（gating 提交 `730ae34be` + 套件断言修复）：4 处 cache 断言前提修复与 `input_tokens_matches_create_usage` 对齐（SCOPE「Suite-only fixes」）、行为漂移登记（SCOPE「Recorded deviations」）；逐行差异（旧基线 / A 环境 / after 三路对拍）与断言改动 diff 见 `/tmp/drift-report.md`；旧全量证据 `/tmp/oai-defs-resp.json`、`/tmp/oai-defs-chat.json`，A 环境证据 `/tmp/a-effort/report-resp.json`、`/tmp/a-effort/report-chat-env.json`。
 - 2026-09-13 未知 model 形状对齐后重基线（提交 `07ede89c8`）：三端点新增行各 PASS（chat 404 A 族 / responses 400 B 族 / embeddings 404 A 族）；B 族 wire 形状按原始响应 bytes 核定为 **error 包裹 4 字段**（SDK 异常输出的“扁平”形是其拆包后的 `.body` 视角）；两套件相对上一基线仅新增行差异、0 意外状态变化；证据 `/tmp/b1-{chat,responses,responses-emb}.json`，报告 `/tmp/b1-fix-report.md`。
+- 2026-09-14 本轮（**已提交**：`47bf58b08` + `84f929fce` + `7137fab81`；本文档随本次提交）：legacy Completions `echo=true` + `logprobs>0` 非流式 prompt 位置行、Completions `logprobs` 夹取 5、Responses 骨架 `usage: null`、compact `service_tier` 5 值；套件行改动（`checks_completions.py` echo/clamp/scenario、`checks_sdk.py` custom_tool `temperature=0`）。**探针已跑（36/36 PASS）**：`/tmp/oai-probe/verify_b2a_echo_logprobs.py` 对非流式 `/v1/completions` echo+logprobs（V100 + Qwen3.5-9B-Q4_K_M，证据 `/tmp/oai-probe/b2a-verify/`）；**acceptance 三套件已跑全绿**（504 PASS / 24 SKIP / 0 FAIL，HEAD `7137fab81`，证据 `/tmp/acc-baseline-9b/`），本轮改动已并入基线并跑通；历史 0.8B 基线数字仍不改写。
 
 ## 维护约定
 
 - 本文件随 [OFFICIAL_API_SCOPE.md](OFFICIAL_API_SCOPE.md) 同步：新增/消化任一偏差时，同时更新对应分类表与「验收现状」。
-- 分类归属：未实现 → §1；接受不生效 → §2；官方未定义/有意偏离的语义 → §3；已记录接受的偏差 → §4；本地新增面 → §5。
+- 分类归属：未实现 -> §1；接受不生效 -> §2；官方未定义/有意偏离的语义 -> §3；已记录接受的偏差 -> §4；已消化/合规修正 -> §4.1（编号保留、不复用）；本地新增面 -> §5。
 - 引用数字以套件 report JSON 与 scope 文档为准，勿凭记忆改写。

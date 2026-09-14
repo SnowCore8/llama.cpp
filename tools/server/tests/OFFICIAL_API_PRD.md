@@ -4,6 +4,7 @@
 - 权威源：契约细节与验收证据以 [OFFICIAL_API_SCOPE.md](OFFICIAL_API_SCOPE.md) 为准；差异分类汇总以 [OFFICIAL_API_DIFF.md](OFFICIAL_API_DIFF.md) 为准。本文档与两者同步维护；若源文件间措辞冲突，以 SCOPE 为准（本文相应标注存疑处）。
 - 验证口径（2026-09-14 起）：统一 V100（`CUDA_VISIBLE_DEVICES=0`）+ Qwen3.5-9B-Q4_K_M（探针与 acceptance 全量）；历史 0.8B 数字保留为历史基线（见 §7）。
 - 分支状态：v100 分支本地工作（未 push）；envelope 波与词表修正波已本地提交 - 代码+单测 `6bf39f10a`、SCOPE/DIFF 登记 `68776830a`、README 示例 `137493cd0`、本文档 `91a53751d`。
+- 本轮（B2a 非流式 Completions `echo`+`logprobs` + 三处小对齐）**已提交**（`47bf58b08` + `84f929fce` + `7137fab81`；本文档随本次提交；HEAD = `7137fab81`），且 acceptance 三套件**已跑全绿**（504 PASS / 24 SKIP / 0 FAIL，证据 `/tmp/acc-baseline-9b/`）；运行期探针 36/36 PASS，见 §5 #9 / §8.1。
 
 ## 目录
 
@@ -76,8 +77,8 @@
 
 | 套件（package） | 覆盖（Normative surface） | 说明 |
 |-----------------|---------------------------|------|
-| `responses_official_acceptance` | Responses + Conversations + Completions + Models + durable Responses store + WS（lanes/steer/inject/warmup）+ live SDK | 主套件（全量 375 行） |
-| `chat_completions_official_acceptance` | Chat Completions（+ `input_tokens`）+ Models + durable Chat store + live SDK | 主套件（全量 144 行） |
+| `responses_official_acceptance` | Responses + Conversations + Completions + Models + durable Responses store + WS（lanes/steer/inject/warmup）+ live SDK | 主套件（2026-09-14 口径 376 行；历史 0.8B 口径 375 行） |
+| `chat_completions_official_acceptance` | Chat Completions（+ `input_tokens`）+ Models + durable Chat store + live SDK | 主套件（2026-09-14 口径 143 行；历史 0.8B 口径 144 行） |
 | `local_durability_acceptance` | 重启恢复矩阵、`GET /v1/tools`、`/props.slot_save_path`、compact expand | 最后运行（可能重启服务器） |
 | `official_api_acceptance` | meta-runner：顺序跑三套件；`--report-dir` 输出 `responses.json` / `chat_completions.json` / `local_durability.json` / `summary.json` | `python -m official_api_acceptance ...` |
 
@@ -107,6 +108,7 @@
 | 6 | B1 未知 model 形状 | 09-13 23:10 - 23:36 | chat/embeddings 未知 model -> 404 + A 族（反引号 message、`param:null`、`code:"model_not_found"`）；responses -> 400 + B 族（`The requested model 'X' does not exist.`、`param:"model"`）；router 统一 404 + A 族 | `07ede89c8`、`82dcce5ee`、`801c7d7d6` | 3 个新验收行 PASS、0 意外状态变化（b1-fix-report §4）；B 族 wire 形状按 raw bytes 裁定（§1.1） |
 | 7 | envelope 错误体泛化 | 09-13 23:43 - 09-14 00:12 | 全端点统一四字段 envelope（`code`/`param` 空 -> null，插入序 code,message,param,type）+ HTTP 状态与 body 解耦（`error_status_from_body`）；99 处调用点；401 补 `code:"invalid_api_key"` | `6bf39f10a`（10 文件 +54/-59，含单测与 401 `code`） | 探针 12 PASS；B1 A/B 族与 router 回归 byte-equal；三套件 0 行状态差异（envelope-report §4/§5）；9B responses 子集待回填（§5.5） |
 | 8 | 词表对齐修正（401/503） | 2026-09-14 | 401 body `type` -> `invalid_request_error`（官方实拍）；503 body `type` -> `service_unavailable_error`（官方文档）；`error_status_from_body` 与 WS 转发映射同步 | `6bf39f10a`（代码）/ `68776830a`（SCOPE/DIFF 登记）/ `137493cd0`（README 示例） | 实现与文档登记已提交；探针/套件验证推迟，9B 全量新基线待重跑回填（DIFF §6 注；`/tmp/envelope-report.md` §5/§8） |
+| 9 | B2a：非流式 Completions `echo`+`logprobs` + 三处小对齐 | 2026-09-14（深夜；用户要求不起模型） | legacy `/v1/completions` `echo=true` + `logprobs>0` 非流式前置 prompt 位置行（第 0 行 `token_logprobs`/`top_logprobs` 双 `null`、`text_offset` 原点 = 完整 text 开头、单位沿用 UTF-8 字节）；Completions `logprobs>5` 夹到 5（HTTP 200，原为 400）；Responses 骨架补 `"usage": null`；compact `service_tier` 收窄 5 值；套件行更新（`checks_completions.py` echo/clamp/scenario、`checks_sdk.py` custom_tool `temperature=0`） | **已提交**（`47bf58b08` + `84f929fce` + `7137fab81`；文档随本次提交） | **探针 36/36 + acceptance 三套件全绿**：`/tmp/oai-probe/verify_b2a_echo_logprobs.py` 对非流式 `/v1/completions` echo+logprobs 36/36 PASS（V100 + Qwen3.5-9B-Q4_K_M，证据 `/tmp/oai-probe/b2a-verify/`）；acceptance 三套件 504 PASS / 24 SKIP / 0 FAIL（responses 354/22、chat 142/1、local_durability 8/1；HEAD `7137fab81`，证据 `/tmp/acc-baseline-9b/`；与历史 9B 证据共同行 0 状态变化）。`n_outputs_max` 抬高代价改正为上界 `n_batch x n_vocab x 4` 约 2.0 GB（`n_vocab = 248320` / `n_batch = 2048`）、实测常驻增量 +1812 MiB；契约登记见 SCOPE「OpenAI Completions」+「Recorded deviations」，差异登记见 DIFF §4 #16/#17/#18/#19 + §4.1；本轮改动已并入基线并跑通 |
 
 ## 6. 规范判定表（2026-09-14）
 
@@ -122,6 +124,9 @@
 | `invalid_api_key`（401 `code`） | 实拍：`/tmp/oai-probe/first-attempt-401-models.json` | 401 body `code` 对齐；`type` 处置见 §6.2 |
 | `previous_response_not_found` | 文档：`llms-full.txt:32248`；WS mode errors 段 | responses / WS / HTTP 统一该 `code` + `param:"previous_response_id"`（envelope-report §3.2） |
 | `model_not_found` | 语料 0 命中；原始件 `/tmp/oai-probe/web-b1`（raw bytes，如 #1278979） | chat/embeddings 404 + A 族；responses 400 + B 族（error 包裹 4 字段）；router 404 + A 族（B1 波；SCOPE） |
+| Completions `logprobs` 上限 | 文档 "The maximum value for `logprobs` is 5."（`/tmp/oai-probe/web-b2/report.md` S1/S3）；实拍 `logprobs=20` 每行恰 5 键（同报告 S8） | 由「`>5` -> 400」改为「`>5` 夹到 5（HTTP 200）」；负数/非整数仍 400 `'logprobs' must be a non-negative integer`（**已提交 `47bf58b08`；探针 `logprobs=10` -> 200 且每行 <=6 键，验收行 `clamp=200` PASS**） |
+| Responses 骨架 `usage` 键 | 官方 Response 对象字节始终带 `usage` 键（完成前为 null） | `response.created`/`response.in_progress` 缺省补 `"usage": null`（**已提交 `84f929fce`；acceptance 三套件全绿**） |
+| Responses compact `service_tier` | 官方 compact 文档 5 值（`auto`/`default`/`flex`/`fast`/`priority`） | compact 仅接受 5 值，`scale`/`ultrafast` -> 400；create/chat 仍 7 值枚举（**已提交 `84f929fce`；acceptance 三套件全绿**） |
 
 ### 6.2 ② 已处置妥协（词表对齐修正波）
 
@@ -157,7 +162,10 @@
 | Responses embeddings 组（`--embeddings --pooling mean` 实例） | 历史基线（0.8B 口径） | 13 = 12 PASS / 1 SKIP | `/tmp/b1-responses-emb.json` |
 | Responses 子集（7 组，工具调用行复核） | 9B 复核 | 263 = 254 PASS / 0 FAIL / 9 SKIP | `/tmp/drift/resp-9b.json` |
 | Chat 全量（工具调用行复核） | 9B 复核 | 142 = 141 PASS / 0 FAIL / 1 SKIP | `/tmp/drift/chat-9b.json` |
-| 统一口径全量重基线（V100 + Qwen3.5-9B-Q4_K_M） | 2026-09-14 口径切换 | **待执行，完成后更新**（范围见 §8.1） | - |
+| 统一口径全量重基线（V100 + Qwen3.5-9B-Q4_K_M） | 2026-09-14 口径切换 | **已完成**：504 PASS / 24 SKIP / 0 FAIL（responses 354/22、chat 142/1、local_durability 8/1），HEAD `7137fab81` | `/tmp/acc-baseline-9b/` |
+| 同口径全量复核，仅 ctx 改 262144（生产口径；探针修复 `dbb7ac3e6` 后） | 2026-09-14 修复后复核 | **已完成**：504 PASS / 24 SKIP / 0 FAIL，与上行逐行状态 **0 变化**（521 个去重键，两侧键集相同） | `/tmp/acc-ctx262144-verify/` |
+
+**套件口径**（2026-09-14 全量重基线的运行配置）：单模型 llama-server（**不是 router**）+ `--ctx-size 32768` + `--openai-files-path` 与套件侧 `LLAMA_OPENAI_FILES_PATH` 指向同一空目录 + `LLAMA_WEB_SEARCH_FIXTURE=tools/server/tests/fixtures/web_search_fixture.json` + `--parallel -1`（多槽）。router 口径多 2 行 FAIL 属于**非缺陷**：`POST /v1/responses (unknown model)`（router 分层 404 A 族 vs 套件期望的单模型 400 B 族）；`GET /v1/responses/{id}?stream=true`（router 子进程 store 取不回）。ctx 口径曾经多 1 行 FAIL、**已修**（`dbb7ac3e6`）：`pre_created_error_is_plain_json` 原来硬编码 `huge = "test " * 60000`（约 6 万 token），只假定 ctx 远小于约 6 万 token；ctx 大于该值时载荷不超预算，请求被正常受理（HTTP 200 + SSE），该行以**配置原因**FAIL，不是产品行为差异。现在载荷按 `/props.n_ctx` 取 `max(60000, int(n_ctx * 1.5) + 512)`，与其余 ctx 相关行（`n_ctx//5` 自适应）口径一致。定位依据（同一代码同一请求、只差 ctx）：旧行为 ctx=262144 -> `FAIL HTTP 200 ct='text/event-stream'`、ctx=32768 -> `PASS HTTP 400 ... msg='input exceeds context token budget (32248 tokens); set truncation=auto to drop oldest item'`（32248 = 32768 - 512 - 8，与历史 0.8B 报告 `/tmp/b1-responses.json`、`/tmp/full-verify-resp.json` 的 detail 逐字节相同）；修后 ctx=262144 -> `PASS HTTP 400 ... msg='input exceeds context token budget (261624 tokens)'`（261624 = 262144 - 512 - 8）。
 
 FAIL / PARTIAL / SKIP 归因（DIFF §6）：
 
@@ -167,6 +175,8 @@ FAIL / PARTIAL / SKIP 归因（DIFF §6）：
 - 9B 复核目标行全部 PASS -> 漂移判定「模型能力类」（登记见 SCOPE「Recorded deviations」）。
 
 注：**envelope 波 + 词表修正波确认后的最终数字见 `/tmp/envelope-report.md`（§5/§8），以届时核验为准。** 当前该报告 §5.5 标「延迟至下轮（用户要求夜间不起模型；本轮无任何套件运行）」、§8 已更新（词表对齐修正）；9B responses 子集与词表修正复验待下轮执行（见 §8.1）。
+
+注：本轮 B2a 已提交（`47bf58b08` + `84f929fce` + `7137fab81`）且 acceptance 三套件**已跑全绿**（504 PASS / 24 SKIP / 0 FAIL，证据 `/tmp/acc-baseline-9b/`，见 §5 #9 / §8.1）：§7.1 表中「统一口径全量重基线」已并入基线并跑通；本轮新增/更新的套件行已纳入该次运行；历史 0.8B 基线数字不改写。
 
 ## 8. 未决与后续
 
@@ -178,20 +188,23 @@ FAIL / PARTIAL / SKIP 归因（DIFF §6）：
 2. chat 全量；
 3. embeddings 组（`--embeddings --pooling mean` 实例）；
 4. 401 / 503 / exceed 探针（错误体四字段 + 新词表 + 状态码）；
-5. B1 四路径回归（chat 404 A / responses 400 B / embeddings 404 A / router 404 A）。
+5. B1 四路径回归（chat 404 A / responses 400 B / embeddings 404 A / router 404 A）；
+6. 本轮 B2a 新增/更新的套件行（`checks_completions.py` echo/clamp/scenario、`checks_sdk.py` custom_tool `temperature=0`）；本轮已提交（`47bf58b08` + `84f929fce` + `7137fab81`）并已并入基线并跑通（B2b 流式对齐待 B2a 验证通过后再做）。
 
-来源：DIFF §6 注（「9B 全量新基线待重跑回填」）+ 2026-09-14 用户口径指令。
+来源：DIFF §6 注（「9B 全量新基线待重跑回填」）+ 2026-09-14 用户口径指令 + 本轮 §5 #9。
+
+**本轮已跑运行期探针**（`/tmp/oai-probe/verify_b2a_echo_logprobs.py`，非流式 `/v1/completions` echo+logprobs 36/36 PASS；V100 + Qwen3.5-9B-Q4_K_M，证据 `/tmp/oai-probe/b2a-verify/`）；**acceptance 三套件已跑全绿**（504 PASS / 24 SKIP / 0 FAIL，HEAD `7137fab81`，证据 `/tmp/acc-baseline-9b/`），本轮已提交并并入基线。
 
 ### 8.2 功能未决项
 
 | # | 项 | 现状 | 依据 |
 |---|----|------|------|
-| 1 | B2：legacy Completions `echo=true` + `logprobs` 组合完整语义 | 官方文档从未规定（负结果）；社区证据为推断；本地决策保持 UTF-8 字节 `text_offset`；修复草案（前置 prompt 行、首 token `null`、offset 原点）未实现，待外证实拍钉死语义 | notes-b2-shape.md、b-audit/report.md B2 |
-| 2 | SDK `responses.create.custom_tool` 行 temperature 硬化 | 该行 flaky（PASS/FAIL 双峰登记）；现状该调用未带 temperature；建议按先例 `58d28395b`（forced-tool 检查 pin temperature 0）处理 | drift-report §3；checks_sdk.py |
+| 1 | B2：legacy Completions `echo=true` + `logprobs` 组合完整语义 | **非流式（B2a）已实现**（已提交 `47bf58b08`；探针 36/36 + 三套件全绿）：分片前置 prompt 行、第 0 行 `token_logprobs`/`top_logprobs` 双 `null`、行 p+1 取自位置 p 的 logits、`text_offset` 原点 = 完整 text 开头（单位沿用 UTF-8 字节）、`logprobs>5` 夹到 5；**流式（B2b）待做**（分块 offset 原点 / 首块 prompt 行 / echo 分块 prompt 前缀未对齐），待 B2a 验证通过后再做 | `/tmp/oai-probe/web-b2/report.md`（官方文档/实拍）、b-audit/report.md B2；本轮改动见 §5 #9 |
+| 2 | SDK `responses.create.custom_tool` 行 temperature 硬化 | **已处理**（已提交 `7137fab81`；套件已验证）：该调用补 `temperature=0`（按先例 `58d28395b`，forced-tool 检查 pin temperature 0）；该行曾 flaky（PASS/FAIL 双峰），本次运行时复验 PASS | drift-report §3；checks_sdk.py |
 | 3 | embeddings live 实测 | sdk `embeddings.create` 在未启 `--embeddings` 时 SKIP（9B 全量即如此）；需在 embeddings 实例上补 live SDK 回归 | DIFF §6 SKIP 说明 |
 | 4 | `/v1/messages` 显式 verbosity/reasoning_effort | anthropic 转换器不透传顶层字段（pre-A 既有）；缺省注入已按 gating 限定 OpenAI 端点；若要支持显式值需扩转换器 | gating-report §6.2 |
 
-### 8.3 SCOPE「Recorded deviations」登记项（18 条，2026-09-14 时点）
+### 8.3 SCOPE「Recorded deviations」登记项（2026-09-14 时点；编号稳定，原 #5/#6 已对齐）
 
 标题清单（细节与处置以 SCOPE 为准）：
 
@@ -199,8 +212,8 @@ FAIL / PARTIAL / SKIP 归因（DIFF §6）：
 2. Responses SSE `obfuscation` 本地偏离；
 3. `response.reasoning_text.*` / `response.refusal.*` 不发射；
 4. `prompt_cache_options.ttl` 超集（openai SDK 3.11.0 `Literal["30m"]` 严格校验代价）；
-5. `response.created` 不带 `usage` 键；
-6. compact `service_tier` 复用 create 校验（7 值 vs 官方 compact 文档 5 值）；
+5. `response.created` 不带 `usage` 键 - **已对齐**（骨架缺省补 `usage: null`；移出 SCOPE「Recorded deviations」，见 DIFF §4.1）；
+6. compact `service_tier` 复用 create 校验（7 值 vs 官方 compact 文档 5 值）- **已对齐**（compact 收窄 5 值，`scale`/`ultrafast` -> 400；见 DIFF §4.1）；
 7. Chat `n` 超过 `n_parallel` -> 400；
 8. Chat `logprobs` + `tools` + `stream` 组合 -> 400；
 9. Completions 接受 `best_of == n`；
@@ -212,7 +225,14 @@ FAIL / PARTIAL / SKIP 归因（DIFF §6）：
 15. WS `/v1/responses` 未知 model（未实测断言）；
 16. hint 缺省引入的行为漂移（2026-09-13 验收登记，未修）；
 17. 错误 `type` 词表对齐（2026-09-14；见本文 §6.2）；
-18. 本地错误 `type` 词表登记（2026-09-14；见本文 §6.3）。
+18. 本地错误 `type` 词表登记（2026-09-14；见本文 §6.3）；
+19. legacy Completions `echo=true` + `logprobs>0`（非流式）禁用 prompt 前缀复用（2026-09-14；已提交 `47bf58b08`）；
+20. legacy Completions `echo=true` + `logprobs>0`（非流式）禁用后端采样（同上）；
+21. legacy Completions `echo=true` + `logprobs>0` 的 SSE/流式尚未对齐（B2b 待做；与 context shift / checkpoint / KV 组合未验证）；
+22. legacy Completions `echo=true` + `logprobs>0`（非流式）的未解码行返回 `null`（同上）；
+23. `params_base.n_outputs_max` 抬高：已接受的已知代价（accepted cost），所有请求常驻增量实测 +1812 MiB（上界 `n_batch x n_vocab x 4` 约 2.0 GB，`n_vocab`=248320 / `n_batch`=2048）；
+24. MTP 下生成行 `top_logprobs` 退化（`--spec-type draft-mtp`；预存、非本波引入、未修）；
+25. `/v1/completions` `best_of > n_parallel` 无校验且请求挂起（预存、非本波引入、未修、待裁定）；
 
 ### 8.4 其它已登记（波报告未决点）
 
@@ -232,6 +252,9 @@ FAIL / PARTIAL / SKIP 归因（DIFF §6）：
 | 401 `type` 由 `authentication_error` 变 `invalid_request_error`；503 由 `unavailable_error` 变 `service_unavailable_error` | 词表修正波 | 按键值字符串匹配旧词表的客户端 | 对齐官方实拍/文档；单点修改可独立回退 |
 | 未知 model 校验引入（chat/embeddings/responses/router） | B1 波 | 回显任意 model 名的客户端现在收到 404/400 | 与官方一致；A/B 族 body 逐字节固定 |
 | 缺省 hint 注入（常量 20-token system 前缀） | 二轮缺省对齐 | prompt 前缀变化；0.8B 工具调用类验收行漂移（已登记）；`/v1/messages` 等不受影响（gating） | 漂移判定模型能力类；套件保持真实状态、未弱化断言 |
+| Completions `echo=true`+`logprobs>0` 新语义 + `logprobs>5` 夹取 + Responses 骨架 `usage: null` + compact `service_tier` 收窄 | 本轮（B2a；已提交 `47bf58b08` + `84f929fce` + `7137fab81`） | 依赖 `logprobs>5 -> 400` 的客户端现在收 200（夹到 5）；该类请求失去 prompt 前缀复用/后端采样（延迟上升）；未完成 Responses 对象新增 `usage: null` 键；`n_outputs_max` 抬高带来常驻内存（实测 +1812 MiB，上界 `n_batch x n_vocab x 4` 约 2.0 GB；已随 `47bf58b08` 入库，用户裁定无条件抬高保持） | 与官方一致；本轮为独立提交切片，已并入基线并跑通，可整体回退 |
+| MTP 下生成行 `top_logprobs` 退化为 1 键 | 预存（非本轮引入） | `--spec-type draft-mtp` 时被接受草稿 token 的生成行只带自身分值；prompt 行不受影响 | 用户裁定先不修；默认关闭 MTP（`/root/llama_gguf/models.ini` 两段 `spec-type = draft-mtp` 已注释）；与本轮切片无关 |
+| Completions `best_of > n_parallel` 无校验且请求挂起 | 预存（非本轮引入） | `--parallel 1` 上 `best_of=2` 无限挂起（无错误、无响应）；Chat `n` 有守卫故正常 400 | 预存、未修、待裁定；本轮切片不改变该路径 |
 
 ### 9.2 回退方式
 
