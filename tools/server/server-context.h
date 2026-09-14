@@ -214,6 +214,8 @@ private:
     json           cached_models  = nullptr;
     json           cached_props   = nullptr;
     server_metrics cached_metrics;
+    // level-2 prompt cache snapshot, taken together with cached_metrics
+    server_prompt_cache_stats cached_prompt_cache;
     // set when a scrape during sleep already reported the throughput buckets
     bool           should_reset_buckets = false;
     // call right before sleep to update the cached responses

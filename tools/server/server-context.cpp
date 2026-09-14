@@ -928,6 +928,10 @@ public:
         return metrics;
     }
 
+    server_prompt_cache_stats get_prompt_cache_stats() const {
+        return prompt_cache ? prompt_cache->stats() : server_prompt_cache_stats {};
+    }
+
     void reset_metrics_bucket() {
         metrics.reset_bucket();
     }
@@ -5221,6 +5225,7 @@ void server_routes::init_routes() {
             res->headers["Process-Start-Time-Unix"] = std::to_string(cached_metrics.t_start);
             server_task_result_metrics tmp;
             tmp.metrics = cached_metrics;
+            tmp.prompt_cache = cached_prompt_cache;
             res->content_type = "text/plain; version=0.0.4";
             res->status = 200;
             res->data = tmp.to_metrics();
@@ -6854,6 +6859,7 @@ void server_routes::update_cached_responses(bool is_sleeping) {
         cached_models  = get_res_models(*meta);
         cached_props   = get_res_props(*meta, params, true);
         cached_metrics = ctx_server.get_metrics();
+        cached_prompt_cache = ctx_server.get_prompt_cache_stats();
 
         should_reset_buckets = false;
 
