@@ -1251,9 +1251,13 @@ json server_task_result_cmpl_final::to_json_anthropic() {
         {"stop_reason", stop_reason},
         {"stop_sequence", stopping_word.empty() ? nullptr : json(stopping_word)},
         {"usage", {
+            {"cache_creation_input_tokens", 0},
             {"cache_read_input_tokens", n_prompt_tokens_cache},
             {"input_tokens", n_prompt_tokens - n_prompt_tokens_cache},
-            {"output_tokens", n_decoded}
+            {"output_tokens", n_decoded},
+            {"output_tokens_details", {
+                {"thinking_tokens", std::max(0, n_reasoning_tokens)}
+            }}
         }}
     };
 
@@ -1291,7 +1295,8 @@ json server_task_result_cmpl_final::to_json_anthropic_stream() {
                         {"index", thinking_block_index},
                         {"content_block", {
                             {"type", "thinking"},
-                            {"thinking", ""}
+                            {"thinking", ""},
+                            {"signature", ""}
                         }}
                     }}
                 });
@@ -1930,6 +1935,7 @@ json server_task_result_cmpl_partial::to_json_anthropic() {
                     {"stop_reason", nullptr},
                     {"stop_sequence", nullptr},
                     {"usage", {
+                        {"cache_creation_input_tokens", 0},
                         {"cache_read_input_tokens", n_prompt_tokens_cache},
                         {"input_tokens", n_prompt_tokens - n_prompt_tokens_cache},
                         {"output_tokens", 0}
@@ -1960,7 +1966,8 @@ json server_task_result_cmpl_partial::to_json_anthropic() {
                         {"index", thinking_block_index},
                         {"content_block", {
                             {"type", "thinking"},
-                            {"thinking", ""}
+                            {"thinking", ""},
+                            {"signature", ""}
                         }}
                     }}
                 });

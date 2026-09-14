@@ -1810,7 +1810,15 @@ See [Anthropic Messages API documentation](https://docs.anthropic.com/en/api/mes
 
 `tools`: Array of tool definitions (requires `--jinja`)
 
-`tool_choice`: Tool selection mode (`{"type": "auto"}`, `{"type": "any"}`, or `{"type": "tool", "name": "..."}`)
+`tool_choice`: Tool selection mode (`{"type": "auto"}`, `{"type": "any"}`, `{"type": "tool", "name": "..."}`, or `{"type": "none"}`); `disable_parallel_tool_use` maps to `parallel_tool_calls=false`
+
+`output_config`: `effort` (`low`/`medium`/`high`/`xhigh`/`max`) maps to the local reasoning effort; `format` with `{"type": "json_schema", "schema": {...}}` constrains the response to that schema
+
+`thinking`: `{"type": "enabled", "budget_tokens": N}` sets the local thinking budget; `{"type": "disabled"}` turns thinking off
+
+`cache_control`: `{"type": "ephemeral", "ttl": "5m"|"1h"}` on a system block or on a `text`/`image` content block maps to a local prompt-cache breakpoint; the top-level field marks the last cacheable block (Anthropic automatic caching)
+
+The response `usage` reports `cache_creation_input_tokens` (always `0`) and `output_tokens_details.thinking_tokens` next to the other Anthropic counters.
 
 *Examples:*
 

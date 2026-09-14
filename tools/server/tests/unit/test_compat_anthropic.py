@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import pytest
 import base64
+import json
 import requests
 
 from utils import *
@@ -64,6 +65,8 @@ def test_anthropic_messages_basic():
     assert "cache_read_input_tokens" in res.body["usage"], "Missing usage.cache_read_input_tokens"
     assert "input_tokens" in res.body["usage"], "Missing usage.input_tokens"
     assert "output_tokens" in res.body["usage"], "Missing usage.output_tokens"
+    assert res.body["usage"]["cache_creation_input_tokens"] == 0, "Missing usage.cache_creation_input_tokens"
+    assert "thinking_tokens" in res.body["usage"]["output_tokens_details"], "Missing usage.output_tokens_details.thinking_tokens"
     assert isinstance(res.body["usage"]["cache_read_input_tokens"], int), "cache_read_input_tokens should be integer"
     assert isinstance(res.body["usage"]["input_tokens"], int), "input_tokens should be integer"
     assert isinstance(res.body["usage"]["output_tokens"], int), "output_tokens should be integer"
@@ -830,7 +833,7 @@ def test_anthropic_vs_openai_different_response_format():
 
     # Make OpenAI request
     openai_res = server.make_request("POST", "/v1/chat/completions", data={
-        "model": "test",
+        "model": server.model_alias,
         "max_tokens": 50,
         "messages": [
             {"role": "user", "content": "Hello"}
@@ -839,7 +842,7 @@ def test_anthropic_vs_openai_different_response_format():
 
     # Make Anthropic request
     anthropic_res = server.make_request("POST", "/v1/messages", data={
-        "model": "test",
+        "model": server.model_alias,
         "max_tokens": 50,
         "messages": [
             {"role": "user", "content": "Hello"}
@@ -1037,6 +1040,8 @@ def test_anthropic_thinking_with_reasoning_model(stream):
             e.get("content_block", {}).get("type") == "thinking"]
         assert len(thinking_starts) > 0, "Should have thinking content_block_start event"
         assert thinking_starts[0]["index"] == 0, "Thinking block should be at index 0"
+        assert "signature" in thinking_starts[0]["content_block"], \
+            "Thinking content_block_start should carry a signature field"
 
         # should have thinking_delta events
         thinking_deltas = [e for e in events if
@@ -1085,3 +1090,191 @@ def test_anthropic_thinking_with_reasoning_model(stream):
         # should also have text block
         text_blocks = [b for b in content if b.get("type") == "text"]
         assert len(text_blocks) > 0, "Should have text content block"
+
+
+# Anthropic request deepening: output_config, tool_choice shapes, cache_control.
+
+def test_anthropic_tool_choice_none():
+    """tool_choice none must not produce tool_use blocks"""
+    server.jinja = True
+    server.start()
+
+    res = server.make_request("POST", "/v1/messages", data={
+        "model": "test",
+        "max_tokens": 100,
+        "tools": [{
+            "name": "get_weather",
+            "description": "Get the current weather in a location",
+            "input_schema": {
+                "type": "object",
+                "properties": {"location": {"type": "string"}},
+                "required": ["location"]
+            }
+        }],
+        "tool_choice": {"type": "none"},
+        "messages": [
+            {"role": "user", "content": "What's the weather in Paris?"}
+        ]
+    })
+
+    assert res.status_code == 200
+    assert res.body["type"] == "message"
+    content_types = [block.get("type") for block in res.body["content"]]
+    assert "tool_use" not in content_types, f"tool_choice none produced tool_use: {content_types}"
+
+
+def test_anthropic_tool_choice_named_tool_is_enforced():
+    """tool_choice on a name restricts the callable tools to that name"""
+    server.jinja = True
+    server.start()
+
+    # 'unknown_tool' is not in tools: the named choice must be rejected, which proves the
+    # name is carried through instead of degrading to a plain 'required'.
+    res = server.make_request("POST", "/v1/messages", data={
+        "model": "test",
+        "max_tokens": 100,
+        "tools": [{
+            "name": "get_weather",
+            "description": "Get the current weather in a location",
+            "input_schema": {"type": "object", "properties": {"location": {"type": "string"}}}
+        }],
+        "tool_choice": {"type": "tool", "name": "unknown_tool"},
+        "messages": [
+            {"role": "user", "content": "What's the weather in Paris?"}
+        ]
+    })
+
+    assert res.status_code == 400, f"Expected 400, got {res.status_code}: {res.body}"
+    assert "unknown_tool" in res.body["error"]["message"]
+
+
+def test_anthropic_output_config_effort_invalid():
+    """output_config.effort outside the official enum is rejected"""
+    server.start()
+
+    res = server.make_request("POST", "/v1/messages", data={
+        "model": "test",
+        "max_tokens": 50,
+        "output_config": {"effort": "turbo"},
+        "messages": [
+            {"role": "user", "content": "Hello"}
+        ]
+    })
+
+    assert res.status_code == 400, f"Expected 400, got {res.status_code}: {res.body}"
+    assert "output_config.effort" in res.body["error"]["message"]
+
+
+def test_anthropic_output_config_effort():
+    """output_config.effort is accepted and mapped to the local effort"""
+    server.start()
+
+    res = server.make_request("POST", "/v1/messages", data={
+        "model": "test",
+        "max_tokens": 50,
+        "output_config": {"effort": "low"},
+        "messages": [
+            {"role": "user", "content": "Hello"}
+        ]
+    })
+
+    assert res.status_code == 200
+    assert res.body["type"] == "message"
+
+
+def test_anthropic_output_config_format_json_schema():
+    """output_config.format json_schema constrains the response to valid JSON"""
+    server.start()
+
+    res = server.make_request("POST", "/v1/messages", data={
+        "model": "test",
+        "max_tokens": 200,
+        "output_config": {
+            "format": {
+                "type": "json_schema",
+                "schema": {
+                    "type": "object",
+                    "properties": {"answer": {"type": "string"}},
+                    "required": ["answer"]
+                }
+            }
+        },
+        "messages": [
+            {"role": "user", "content": "Reply with JSON"}
+        ]
+    })
+
+    assert res.status_code == 200
+    text = next((b["text"] for b in res.body["content"] if b.get("type") == "text"), "")
+    assert isinstance(json.loads(text), dict), f"Expected a JSON object, got: {text!r}"
+
+
+def test_anthropic_thinking_disabled():
+    """thinking disabled is accepted and does not emit thinking blocks"""
+    server.start()
+
+    res = server.make_request("POST", "/v1/messages", data={
+        "model": "test",
+        "max_tokens": 50,
+        "thinking": {"type": "disabled"},
+        "messages": [
+            {"role": "user", "content": "Hello"}
+        ]
+    })
+
+    assert res.status_code == 200
+    assert res.body["type"] == "message"
+    content_types = [block.get("type") for block in res.body["content"]]
+    assert "thinking" not in content_types, f"thinking disabled produced a thinking block: {content_types}"
+
+
+def test_anthropic_cache_control_breakpoint():
+    """cache_control on a system block maps to a local prompt cache breakpoint"""
+    server.start()
+
+    payload = {
+        "model": "test",
+        "max_tokens": 16,
+        "system": [
+            {
+                "type": "text",
+                "text": "You are a helpful assistant. " + "Cache me. " * 40,
+                "cache_control": {"type": "ephemeral"}
+            }
+        ],
+        "messages": [
+            {"role": "user", "content": "Hello"}
+        ]
+    }
+
+    first = server.make_request("POST", "/v1/messages", data=payload)
+    assert first.status_code == 200, f"Expected 200, got {first.status_code}: {first.body}"
+
+    # the breakpoint forces a checkpoint, so the identical follow-up reads the cached prefix
+    second = server.make_request("POST", "/v1/messages", data=payload)
+    assert second.status_code == 200, f"Expected 200, got {second.status_code}: {second.body}"
+    assert second.body["usage"]["cache_read_input_tokens"] > 0, \
+        f"Expected a prompt cache hit, got usage {second.body['usage']}"
+
+
+def test_anthropic_cache_control_invalid():
+    """cache_control with an unknown type or ttl is rejected"""
+    server.start()
+
+    res = server.make_request("POST", "/v1/messages", data={
+        "model": "test",
+        "max_tokens": 16,
+        "system": [
+            {
+                "type": "text",
+                "text": "system",
+                "cache_control": {"type": "persistent"}
+            }
+        ],
+        "messages": [
+            {"role": "user", "content": "Hello"}
+        ]
+    })
+
+    assert res.status_code == 400, f"Expected 400, got {res.status_code}: {res.body}"
+    assert "cache_control.type" in res.body["error"]["message"]

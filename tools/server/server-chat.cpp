@@ -621,11 +621,39 @@ static void normalize_anthropic_billing_header(std::string & system_text) {
 json server_chat_convert_anthropic_to_oai(const json & body) {
     json oai_body;
 
+    // Anthropic cache_control -> local prompt cache: the marker becomes a local explicit
+    // breakpoint on the annotated part, and the TTL feeds prompt_cache_options.ttl.
+    // The local prompt cache holds a single TTL per request, so multiple different TTLs
+    // collapse to the last one seen (see OFFICIAL_API_SCOPE.md).
+    std::string cache_ttl;
+    auto note_cache_control = [&cache_ttl](const json & cache_control) {
+        const std::string cc_type = json_value(cache_control, "type", std::string());
+        if (cc_type != "ephemeral") {
+            throw std::invalid_argument("'cache_control.type' must be 'ephemeral'");
+        }
+        const std::string ttl = json_value(cache_control, "ttl", std::string());
+        if (!ttl.empty()) {
+            if (ttl != "5m" && ttl != "1h") {
+                throw std::invalid_argument("'cache_control.ttl' must be '5m' or '1h'");
+            }
+            cache_ttl = ttl;
+        }
+    };
+    auto mark_cache_breakpoint = [&note_cache_control](json & part, const json & block) {
+        if (!block.contains("cache_control") || block.at("cache_control").is_null()) {
+            return;
+        }
+        note_cache_control(block.at("cache_control"));
+        part["prompt_cache_breakpoint"] = {{"mode", "explicit"}};
+    };
+
     // Convert system prompt
     json oai_messages = json::array();
     auto system_param = json_value(body, "system", json());
     if (!system_param.is_null()) {
         std::string system_content;
+        json system_parts = json::array();
+        bool system_has_breakpoint = false;
 
         if (system_param.is_string()) {
             system_content = system_param.get<std::string>();
@@ -636,14 +664,26 @@ json server_chat_convert_anthropic_to_oai(const json & body) {
                     auto system_text = json_value(block, "text", std::string());
                     normalize_anthropic_billing_header(system_text);
                     system_content += system_text;
+
+                    json part = {
+                        {"type", "text"},
+                        {"text", system_text},
+                    };
+                    mark_cache_breakpoint(part, block);
+                    system_has_breakpoint = system_has_breakpoint || part.contains("prompt_cache_breakpoint");
+                    system_parts.push_back(part);
                 }
             }
         }
 
-        oai_messages.push_back({
-            {"role", "system"},
-            {"content", system_content}
-        });
+        json system_msg = {{"role", "system"}};
+        if (system_has_breakpoint) {
+            // a breakpoint needs part form; plain strings cannot carry one
+            system_msg["content"] = system_parts;
+        } else {
+            system_msg["content"] = system_content;
+        }
+        oai_messages.push_back(system_msg);
     }
 
     // Convert messages
@@ -685,7 +725,9 @@ json server_chat_convert_anthropic_to_oai(const json & body) {
                 std::string type = json_value(block, "type", std::string());
 
                 if (type == "text") {
-                    converted_content.push_back(block);
+                    json part = block;
+                    mark_cache_breakpoint(part, block);
+                    converted_content.push_back(part);
                 } else if (type == "thinking") {
                     reasoning_content += json_value(block, "thinking", std::string());
                 } else if (type == "image") {
@@ -698,20 +740,24 @@ json server_chat_convert_anthropic_to_oai(const json & body) {
                         std::ostringstream ss;
                         ss << "data:" << media_type << ";base64," << data;
 
-                        converted_content.push_back({
+                        json part = {
                             {"type", "image_url"},
                             {"image_url", {
                                 {"url", ss.str()}
                             }}
-                        });
+                        };
+                        mark_cache_breakpoint(part, block);
+                        converted_content.push_back(part);
                     } else if (source_type == "url") {
                         std::string url = json_value(source, "url", std::string());
-                        converted_content.push_back({
+                        json part = {
                             {"type", "image_url"},
                             {"image_url", {
                                 {"url", url}
                             }}
-                        });
+                        };
+                        mark_cache_breakpoint(part, block);
+                        converted_content.push_back(part);
                     }
                 } else if (type == "tool_use") {
                     tool_calls.push_back({
@@ -844,8 +890,21 @@ json server_chat_convert_anthropic_to_oai(const json & body) {
             std::string type = json_value(tc, "type", std::string());
             if (type == "auto") {
                 oai_body["tool_choice"] = "auto";
-            } else if (type == "any" || type == "tool") {
+            } else if (type == "any") {
                 oai_body["tool_choice"] = "required";
+            } else if (type == "tool") {
+                // a named tool_choice forces exactly that tool
+                oai_body["tool_choice"] = {
+                    {"type", "function"},
+                    {"function", {
+                        {"name", json_value(tc, "name", std::string())}
+                    }}
+                };
+            } else if (type == "none") {
+                oai_body["tool_choice"] = "none";
+            }
+            if (json_value(tc, "disable_parallel_tool_use", false)) {
+                oai_body["parallel_tool_calls"] = false;
             }
         }
     }
@@ -869,6 +928,34 @@ json server_chat_convert_anthropic_to_oai(const json & body) {
         }
     }
 
+    // Handle Anthropic-specific output_config param
+    // effort -> local reasoning_effort (the official enum is a subset of the local one)
+    // format -> local response_format (json_schema)
+    if (body.contains("output_config") && body.at("output_config").is_object()) {
+        const json & output_config = body.at("output_config");
+        if (output_config.contains("effort") && !output_config.at("effort").is_null()) {
+            const std::string effort = json_value(output_config, "effort", std::string());
+            if (effort != "low" && effort != "medium" && effort != "high" &&
+                    effort != "xhigh" && effort != "max") {
+                throw std::invalid_argument(
+                    "'output_config.effort' must be one of: low, medium, high, xhigh, max");
+            }
+            oai_body["reasoning_effort"] = effort;
+        }
+        auto output_format = json_value(output_config, "format", json());
+        if (output_format.is_object()) {
+            const std::string format_type = json_value(output_format, "type", std::string());
+            if (format_type == "json_schema") {
+                oai_body["response_format"] = {
+                    {"type", "json_schema"},
+                    {"json_schema", {
+                        {"schema", json_value(output_format, "schema", json::object())}
+                    }}
+                };
+            }
+        }
+    }
+
     // Handle Anthropic-specific thinking param
     if (body.contains("thinking")) {
         json thinking = json_value(body, "thinking", json::object());
@@ -876,7 +963,50 @@ json server_chat_convert_anthropic_to_oai(const json & body) {
         if (thinking_type == "enabled") {
             int budget_tokens = json_value(thinking, "budget_tokens", 10000);
             oai_body["thinking_budget_tokens"] = budget_tokens;
+        } else if (thinking_type == "disabled") {
+            // "none" is the local way to disable thinking. It wins over output_config.effort:
+            // the client asked for no thinking at all, so no effort hint is forwarded.
+            oai_body["reasoning_effort"] = "none";
         }
+    }
+
+    // Top-level cache_control: the official "automatic caching" breakpoint sits on the last
+    // cacheable block and moves forward as the conversation grows. Locally a breakpoint
+    // anchors at a message boundary, so mark the last message part that can carry one.
+    if (body.contains("cache_control") && !body.at("cache_control").is_null()) {
+        note_cache_control(body.at("cache_control"));
+        json & conv_messages = oai_body.at("messages");
+        for (size_t i = conv_messages.size(); i-- > 0;) {
+            json & msg = conv_messages.at(i);
+            if (json_value(msg, "role", std::string()) == "tool" || !msg.contains("content")) {
+                continue;
+            }
+            json & content = msg.at("content");
+            if (content.is_string()) {
+                const std::string text = content.get<std::string>();
+                if (!text.empty()) {
+                    content = json::array({{
+                        {"type", "text"},
+                        {"text", text},
+                        {"prompt_cache_breakpoint", {{"mode", "explicit"}}},
+                    }});
+                    break;
+                }
+            }
+            if (content.is_array() && !content.empty()) {
+                json & part = content.back();
+                const std::string part_type = json_value(part, "type", std::string());
+                if (part_type == "text" || part_type == "image_url") {
+                    part["prompt_cache_breakpoint"] = {{"mode", "explicit"}};
+                    break;
+                }
+            }
+        }
+    }
+
+    // cache_control.ttl -> prompt_cache_options.ttl (the local cache takes 5m/30m/1h)
+    if (!cache_ttl.empty()) {
+        oai_body["prompt_cache_options"] = {{"ttl", cache_ttl}};
     }
 
     // Handle Anthropic-specific metadata param

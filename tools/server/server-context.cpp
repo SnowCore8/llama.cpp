@@ -4934,9 +4934,13 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                        oai_stream_resp_id, oai_stream_request, oai_stream_model](std::string & output) -> bool {
             auto format_error = [&](task_response_type res_type, const json & res_json) {
                 if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
+                    // official error frame shape: {"type":"error","error":{...}}
                     return format_anthropic_sse({
                         {"event", "error"},
-                        {"data", res_json},
+                        {"data", {
+                            {"type", "error"},
+                            {"error", res_json},
+                        }},
                     });
                 }
                 if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
