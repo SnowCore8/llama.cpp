@@ -327,9 +327,16 @@ def _check_prompt_cache_ttl_expiry(
         "TTL block: " + ("echo-foxtrot-golf-hotel " * 40)
     )
     user_input = f"{prefix}\nReply with exactly: TTL_EXPIRY_PROBE"
+    # Unique leading system message: keeps the injected verbosity hint out of the
+    # prompt head, so an unrelated slot cannot answer the post-expiry request with
+    # its cached hint prefix
+    uniq = f"ttl{time.time_ns()}"
     body = {
         "model": model,
-        "input": user_input,
+        "input": [
+            _msg("system", f"ttl expiry probe {key} {uniq}"),
+            _msg("user", user_input),
+        ],
         "max_output_tokens": 24,
         "temperature": 0,
         "prompt_cache_key": key,
