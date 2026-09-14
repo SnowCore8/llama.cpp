@@ -724,7 +724,9 @@ void server_openai_validate_completions_create(const json & body) {
         if (best_of < 1) {
             throw std::invalid_argument("'best_of' must be >= 1");
         }
-        // Official rule: best_of >= n. Local ranks candidates by token logprob sum.
+        // Official prose says best_of must be greater than n, but the schema default is
+        // best_of = 1 with n = 1, so equality is legal; only best_of < n is rejected.
+        // Local ranks candidates by token logprob sum.
         if (best_of < n_val) {
             throw std::invalid_argument("'best_of' must be greater than or equal to 'n'");
         }
@@ -2831,6 +2833,7 @@ json oaicompat_chat_params_parse(
     // Handle "logprobs" field (Chat Completions shape uses content[]).
     if (json_value(body, "logprobs", false)) {
         if (has_tools && stream) {
+            // Local streaming tool-call path emits no content logprobs, so reject this combo.
             throw std::invalid_argument("logprobs is not supported with tools + stream");
         }
         int top_lp = 20;
