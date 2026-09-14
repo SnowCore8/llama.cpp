@@ -5515,6 +5515,17 @@ void server_routes::init_routes() {
         }
         try {
             server_openai_validate_completions_create(body);
+            if (body.contains("best_of") && !body.at("best_of").is_null()) {
+                // each candidate keeps a slot until the best one is picked, so a ranking request
+                // cannot hold more candidates than the server has slots; OpenAI caps best_of at 20
+                const int best_of_max = std::min((int) params.n_parallel, 20);
+                const int best_of = body.at("best_of").get<int>();
+                if (best_of > best_of_max) {
+                    throw std::invalid_argument(string_format(
+                            "Field 'best_of': Value must be between 1 <= value <= %d, but got %d",
+                            best_of_max, best_of));
+                }
+            }
             // official Completions clamps logprobs to 5; a larger value is not an error
             if (body.contains("logprobs") && body.at("logprobs").is_number_integer() &&
                     body.at("logprobs").get<int>() > 5) {

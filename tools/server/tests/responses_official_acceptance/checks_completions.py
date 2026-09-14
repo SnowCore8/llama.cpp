@@ -1218,6 +1218,81 @@ def run_completions_checks(
         "PASS" if code_bo_stream >= 400 else "FAIL",
         f"HTTP {code_bo_stream}",
     )
+
+    # capacity: candidates keep a slot until the best one is picked, so best_of above the
+    # slot count must be rejected instead of blocking on a free slot
+    pcode_slots, props_slots = client.get_json("/props")
+    slots_bo = 0
+    if isinstance(props_slots, dict):
+        try:
+            slots_bo = int(props_slots.get("total_slots") or 0)
+        except (TypeError, ValueError):
+            slots_bo = 0
+    if slots_bo <= 0:
+        # a router reports the model props but owns no slots; ask the child
+        mcode_slots, mprops_slots = client.get_json(f"/props?model={model}")
+        if mcode_slots == 200 and isinstance(mprops_slots, dict):
+            try:
+                slots_bo = int(mprops_slots.get("total_slots") or 0)
+            except (TypeError, ValueError):
+                slots_bo = 0
+    if slots_bo <= 0:
+        report.add(
+            "scenario",
+            "completions_best_of_gt_slots_rejected",
+            "SKIP",
+            f"no slot count from /props (http={pcode_slots})",
+        )
+    else:
+        # official Completions caps best_of at 20; the slot count binds first on small servers
+        best_of_max = min(slots_bo, 20)
+        code_bo_over, data_bo_over = client.post_json(
+            "/v1/completions",
+            {
+                "model": model,
+                "prompt": _PROMPT_PARAM,
+                "max_tokens": 8,
+                "n": 1,
+                "best_of": best_of_max + 1,
+                **extra,
+            },
+        )
+        msg_bo_over = ""
+        if isinstance(data_bo_over, dict):
+            err_bo_over = data_bo_over.get("error")
+            if isinstance(err_bo_over, dict) and isinstance(err_bo_over.get("message"), str):
+                msg_bo_over = err_bo_over["message"]
+        # best_of == best_of_max is the largest ranking request the server accepts
+        code_bo_fit, data_bo_fit = client.post_json(
+            "/v1/completions",
+            {
+                "model": model,
+                "prompt": _PROMPT_PARAM,
+                "max_tokens": 8,
+                "n": 1,
+                "best_of": best_of_max,
+                **extra,
+            },
+        )
+        n_bo_fit = (
+            len(data_bo_fit.get("choices") or [])
+            if code_bo_fit == 200 and isinstance(data_bo_fit, dict)
+            else -1
+        )
+        ok_bo_slots = (
+            code_bo_over == 400
+            and "best_of" in msg_bo_over
+            and code_bo_fit == 200
+            and n_bo_fit == 1
+        )
+        report.add(
+            "scenario",
+            "completions_best_of_gt_slots_rejected",
+            "PASS" if ok_bo_slots else "FAIL",
+            f"slots={slots_bo} best_of_max={best_of_max} http_over/fit={code_bo_over}/{code_bo_fit} "
+            f"n_fit={n_bo_fit} msg={msg_bo_over!r}",
+        )
+
     code_ok_bo, data_ok_bo = client.post_json(
         "/v1/completions",
         {
