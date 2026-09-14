@@ -224,7 +224,7 @@ def test_router_models_max_per_device_evicts_same_pool_only(models_max):
     """the per-device limit only gives up models of the same device pool"""
     global server
 
-    preset_path = os.path.join(TMP_DIR, "test_models_max_per_device.ini")
+    preset_path = os.path.join(TMP_DIR, f"test_models_max_per_device_{models_max}.ini")
     with open(preset_path, "w") as f:
         f.write(
             "[pool-a]\n"
