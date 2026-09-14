@@ -4,25 +4,30 @@ from utils import *
 
 server: ServerProcess
 
+# the local default `verbosity` hint (official default "medium") is appended to the leading
+# system message by the server; it renders into the prompt and adds 53 tokens on this test model
+VERBOSITY_HINT = "\n\nRespond with a balanced amount of detail. Prefer clear, moderately sized answers."
+
 @pytest.fixture(autouse=True)
 def create_server():
     global server
     server = ServerPreset.tinyllama2()
 
 
+# n_prompt values include VERBOSITY_HINT, which the server injects as a leading system message
 @pytest.mark.parametrize(
     "model,system_prompt,user_prompt,max_tokens,re_content,n_prompt,n_predicted,finish_reason,jinja,chat_template",
     [
-        ("tinyllama-2", "Book", "Hey", 8, "But she couldn't", 69, 8, "length", False, None),
-        ("tinyllama-2", "Book", "Hey", 8, "But she couldn't", 69, 8, "length", True, None),
-        ("tinyllama-2", "Book", "What is the best book", 8, "(Suddenly)+|\\{ \" Sarax.", 77, 8, "length", False, None),
-        ("tinyllama-2", "Book", "What is the best book", 8, "(Suddenly)+|\\{ \" Sarax.", 77, 8, "length", True,  None),
-        ("tinyllama-2", "Book", "What is the best book", 8, "(Suddenly)+|\\{ \" Sarax.", 77, 8, "length", True, 'chatml'),
-        ("tinyllama-2", "Book", "What is the best book", 8, "^ blue",                    23, 8, "length", True, "This is not a chat template, it is"),
-        ("tinyllama-2", "You are a coding assistant.", "Write the fibonacci function in c++.", 128, "(Aside|she|felter|alonger)+", 104, 128, "length", False, None),
-        ("tinyllama-2", "You are a coding assistant.", "Write the fibonacci function in c++.", 128, "(Aside|she|felter|alonger)+", 104, 128, "length", True, None),
-        ("tinyllama-2", "Book", [{"type": "text", "text": "What is"}, {"type": "text", "text": "the best book"}], 8, "Whillicter", 79, 8, "length", False, None),
-        ("tinyllama-2", "Book", [{"type": "text", "text": "What is"}, {"type": "text", "text": "the best book"}], 8, "Whillicter", 79, 8, "length", True, None),
+        ("tinyllama-2", "Book", "Hey", 8, "^Suddenly", 122, 8, "length", False, None),
+        ("tinyllama-2", "Book", "Hey", 8, "^Suddenly", 122, 8, "length", True, None),
+        ("tinyllama-2", "Book", "What is the best book", 8, "^When she got to the", 130, 8, "length", False, None),
+        ("tinyllama-2", "Book", "What is the best book", 8, "^When she got to the", 130, 8, "length", True,  None),
+        ("tinyllama-2", "Book", "What is the best book", 8, "^When she got to the", 130, 8, "length", True, 'chatml'),
+        ("tinyllama-2", "Book", "What is the best book", 8, "^ blue",                              23, 8, "length", True, "This is not a chat template, it is"),
+        ("tinyllama-2", "You are a coding assistant.", "Write the fibonacci function in c++.", 128, "(Aside|she|felter|alonger)+", 157, 99, "length", False, None),
+        ("tinyllama-2", "You are a coding assistant.", "Write the fibonacci function in c++.", 128, "(Aside|she|felter|alonger)+", 157, 99, "length", True, None),
+        ("tinyllama-2", "Book", [{"type": "text", "text": "What is"}, {"type": "text", "text": "the best book"}], 8, "^When they arrived", 132, 8, "length", False, None),
+        ("tinyllama-2", "Book", [{"type": "text", "text": "What is"}, {"type": "text", "text": "the best book"}], 8, "^When they arrived", 132, 8, "length", True, None),
     ]
 )
 def test_chat_completion(model, system_prompt, user_prompt, max_tokens, re_content, n_prompt, n_predicted, finish_reason, jinja, chat_template):
@@ -56,10 +61,10 @@ def test_chat_completion_cached_tokens():
     server.n_slots = 1
     server.start()
     seq = [
-        ("1 2 3 4 5 6", 77, 0),
-        ("1 2 3 4 5 6", 77, 76),
-        ("1 2 3 4 5 9", 77, 51),
-        ("1 2 3 9 9 9", 77, 47),
+        ("1 2 3 4 5 6", 130, 0),
+        ("1 2 3 4 5 6", 130, 129),
+        ("1 2 3 4 5 9", 130, 104),
+        ("1 2 3 9 9 9", 130, 100),
     ]
     for user_prompt, n_prompt, n_cache in seq:
         res = server.make_request("POST", "/chat/completions", data={
@@ -76,8 +81,8 @@ def test_chat_completion_cached_tokens():
 @pytest.mark.parametrize(
     "system_prompt,user_prompt,max_tokens,re_content,n_prompt,n_predicted,finish_reason",
     [
-        ("Book", "What is the best book", 8, "(Suddenly)+", 77, 8, "length"),
-        ("You are a coding assistant.", "Write the fibonacci function in c++.", 128, "(Aside|she|felter|alonger)+", 104, 128, "length"),
+        ("Book", "What is the best book", 8, "^When she got to the", 130, 8, "length"),
+        ("You are a coding assistant.", "Write the fibonacci function in c++.", 128, "(Aside|she|felter|alonger)+", 157, 99, "length"),
     ]
 )
 def test_chat_completion_stream(system_prompt, user_prompt, max_tokens, re_content, n_prompt, n_predicted, finish_reason):
@@ -138,7 +143,7 @@ def test_chat_completion_with_openai_library():
     assert res.system_fingerprint is not None and res.system_fingerprint.startswith("b")
     assert res.choices[0].finish_reason == "length"
     assert res.choices[0].message.content is not None
-    assert match_regex("(Suddenly)+", res.choices[0].message.content)
+    assert match_regex("^When she got to the", res.choices[0].message.content)
 
 
 def test_chat_template():
@@ -156,7 +161,7 @@ def test_chat_template():
     })
     assert res.status_code == 200
     assert "__verbose" in res.body
-    assert res.body["__verbose"]["prompt"] == "<s> <|start_header_id|>system<|end_header_id|>\n\nBook<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nWhat is the best book<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+    assert res.body["__verbose"]["prompt"] == f"<s> <|start_header_id|>system<|end_header_id|>\n\nBook{VERBOSITY_HINT}<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nWhat is the best book<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
 
 
 @pytest.mark.parametrize("prefill,re_prefill", [
@@ -522,7 +527,8 @@ def test_context_size_exceeded_stream():
 @pytest.mark.parametrize(
     "n_batch,batch_count,reuse_cache",
     [
-        (64, 4, False),
+        # VERBOSITY_HINT is inserted as a leading system message, so the cold prompt needs one more batch
+        (64, 5, False),
         (64, 2, True),
     ]
 )

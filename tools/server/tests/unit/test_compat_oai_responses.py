@@ -25,7 +25,7 @@ def test_responses_with_openai_library():
     assert res.id.startswith("resp_")
     assert res.output[0].id is not None
     assert res.output[0].id.startswith("msg_")
-    assert match_regex("(Suddenly)+", res.output_text)
+    assert match_regex("^When they were playing", res.output_text)
 
 def test_responses_stream_with_openai_library():
     global server
@@ -82,7 +82,7 @@ def test_responses_stream_with_llama_telemetry():
 
     saw_progress = False
     saw_delta_timings = False
-    completed = None
+    final = None
 
     res = server.make_stream_request("POST", "/responses", data={
         "model": server.model_alias,
@@ -105,11 +105,12 @@ def test_responses_stream_with_llama_telemetry():
             assert "predicted_per_second" in data["timings"]
             if data["type"] == "response.output_text.delta":
                 saw_delta_timings = True
-        if data["type"] == "response.completed":
-            completed = data
+        # reaching max_output_tokens ends the response as incomplete (official semantics)
+        if data["type"] in ("response.completed", "response.incomplete"):
+            final = data
 
     assert saw_progress
     assert saw_delta_timings
-    assert completed is not None
-    assert "usage" in completed["response"]
-    assert "timings" in completed
+    assert final is not None
+    assert "usage" in final["response"]
+    assert "timings" in final
