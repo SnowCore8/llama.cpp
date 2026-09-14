@@ -40,6 +40,7 @@
 | Models | list + retrieve（含 `shutdown_date: null`；router 从 model store 同路由） | 两主套件 |
 | Conversations | 8 端点（create/retrieve/update/delete + items add/list/get/delete） | `responses_official_acceptance` |
 | OpenAI Completions | `/v1/completions`（echo/`best_of`/FIM/logprobs/seed/stop 等） | `responses_official_acceptance` |
+| Anthropic Messages（`/v1/messages`，**口径不同**） | **合理加深**（非全量对齐）：命名 `tool_choice`/`none`/`disable_parallel_tool_use`、`output_config.effort`/`format`、`thinking.disabled`、`cache_control`、usage 新字段、thinking `signature`、SSE `error` 帧包裹；官方其余字段登记不修（SCOPE「Anthropic Messages」） | `unit/test_compat_anthropic.py`（34 passed）+ live 探针（15 PASS，S4 运行期不可触发）；见 §5 #14 |
 | 本地扩展面（DIFF §5） | web_search（Responses/Chat）、`GET /v1/tools`、Slot KV、本地持久化 store、`prompt.id` 文件模板、compact `local.` blob、`prompt_cache_*` 调度/亲和/TTL、reasoning budget 阶梯 | `local_durability_acceptance` + 两主套件 |
 
 ### 2.2 非目标（out of scope，DIFF §1）
@@ -63,6 +64,7 @@
 | 官方实拍件 | `/tmp/oai-probe/`（如 `first-attempt-401-models.json` 401 原始响应；`web-b1/` B1 取证；`web-b2/` B2 社区原文） | 原始响应 bytes 级依据 |
 | 机器可读 spec | `openai/openai-openapi` `openapi.yaml`（`info.version` 2.3.0，2026-09-13 拉取，sha1 `39619f0a...`） | 四个 create 端点请求侧默认值（SCOPE「Official parameter defaults」） |
 | 官方 SDK 行为 | tests venv pin `openai==3.11.0`；SDK 拆包行为（openai-python `_client.py`：`data = body.get("error", body)`） | 行为佐证（如 wire 形状 vs SDK 异常 `.body` 视角） |
+| Anthropic 官方文档语料 | `/root/anthropic-docs`（`llms-full.txt` 全量正文 34.3 MB 切页 628 页 + `docs/**/*.md`） | `/v1/messages` 加深的字段/事件/错误形状依据（SCOPE「Anthropic Messages」；口径为合理加深，非全量对齐） |
 
 ### 3.2 证据等级（campaign 约定）
 
@@ -114,6 +116,7 @@
 | 11 | Completions `best_of` 超槽数修复 + 官方声明上限 20/128 | 2026-09-14 | legacy `/v1/completions` 路由层（`post_completions_oai`）拒绝 `best_of > min(n_parallel, 20)` -> 400 `Field 'best_of': Value must be between 1 <= value <= <界>, but got <N>`（与 `n` 的 schema 硬限同形；原状：超槽数会无限挂起）；同时落地官方 OpenAPI 声明上限 `n_cmpl` schema 硬限 `min(n_parallel, 128)`（覆盖 Chat/Completions/Responses/native）与 `best_of <= 20`；新增套件行 `completions_best_of_gt_slots_rejected`（读 `/props.total_slots`，界取 `min(total_slots, 20)`，环境无关） | **已实现并验证**（代码切片 `6cc674611`；本文档随本次提交） | **acceptance 三套件**：ctx=262144 全量 530 = **506 PASS / 24 SKIP / 0 FAIL**（responses 378 = 356/22、chat 143 = 142/1、local_durability 9 = 8/1；修复后证据 `/tmp/best-of-slots/reports-ttlfix/`）；与 B2b 基线 520 个共有 suite+name 键逐行 0 状态变化、仅 +1 新行（去重键 520 -> 521）。本切片首轮现场为 530 = 504/24/2（2 行预存 cache 偶发 FAIL，非本切片引入，已裁定另开切片修，见 §5 #12），修复后该 2 行转 PASS；探针 4 槽（界 4/4）、21 槽（`best_of` 界 20、`n` 界 21）、129 槽（`best_of` 界 20、`n` 界 128，`n=128` -> 200 且 128 choices）全 PASS；修复前同实例 `best_of=5`（槽数 4）无响应 30 s、`--parallel 1` 上 `best_of=2` 无限挂起 -> 现 0.7 ms 400；契约登记见 SCOPE「Recorded deviations」，差异登记见 DIFF §4.1（原 #19 + 「新」） |
 | 12 | `prompt_cache_ttl_expiry_clears_kv` 去偶发（纯套件修复） | 2026-09-14 | 该探针加**唯一首条 system 消息**（prompt 首 token 唯一），消除「磁盘 TTL 过期只清本 key 槽位、别的槽位仍按纯 token LCP 命中注入 hint 头」造成的 `expired_cached=20` 偶发；断言 `expired_cached == 0` 强度不变（真实回归时第 3 次仍命中该 key 自己的槽位/L2 -> `cached ≈ warm` -> FAIL）；无服务端改动 | **已实现并验证**（套件切片 `af0d0fc63`；本文档随本次提交） | **整条 responses lane 修复后复跑 378 = 356 PASS / 22 SKIP / 0 FAIL**（`/tmp/best-of-slots/ttl-fix-run1.json`，该行 `warm_cached=440 expired_cached=0`）；**ctx=262144 全量三套件 530 = 506 PASS / 24 SKIP / 0 FAIL**（`/tmp/best-of-slots/reports-ttlfix/`；与首轮现场 504/24/2 相比仅这 2 行 FAIL -> PASS，其余逐行 0 变化）；机制证据链（过期只清本 key 槽位 / L1 纯 token LCP 无 key 检查 / hint 无条件注入）见 SCOPE「Suite-only fixes」，差异登记见 DIFF §6 |
 | 13 | 词表修正波复验（401/503/exceed，纯验证波，无提交） | 2026-09-14 | 复验 `/tmp/envelope-report.md` §8.3 的待验证清单：401 无/错 key、503 两条可构造路径（启动窗口 / `no slot available`）、`exceed_context_size_error` 形状；同批带 envelope 波 12 项对照与 B1 三面回归 | 无提交（纯证据波） | **17 PASS / 0 FAIL / 0 SKIP**（exit=0）：小实例（9B、ctx 2048、`--parallel 2`、8093、无 `--metrics`）+ `/tmp/env-probe2.py`，证据 `/tmp/env-503-aux/probe-startup.log`、`REPORT.md`；另澄清 `exceed_context_size_error` 的 `n_prompt_tokens`/`n_ctx` 与四字段**同层**（都在 `error` 内），`/v1/responses` 超预算走另一路径（`invalid_request_error`）；9B 全量新基线回填 530 = 506/24/0（`/tmp/best-of-slots/reports-ttlfix/`，见 DIFF §6 / §8.1 #4）；同批单元测试回归在网络命名空间隔离（`unshare -n`，零 HF 下载）下全绿：`unit/test_security.py::test_incorrect_api_key` 2 passed（9.45 s）、`unit/test_router.py::test_router_api_key_required` 1 passed（13.11 s），断言 `error.type == "invalid_request_error"`（证据 `/tmp/env-503-aux/unit-security.log`、`unit-router.log`） |
+| 14 | Anthropic `/v1/messages` 合理加深 | 2026-09-14 | 把官方 Anthropic 字段接到本地既有机制：请求侧命名 `tool_choice`/`none`/`disable_parallel_tool_use`、`output_config.effort`/`format`、`thinking.disabled`、`cache_control`（含顶层自动缓存与 `ttl`）；响应侧 `usage.cache_creation_input_tokens`/`output_tokens_details.thinking_tokens`、thinking `content_block_start.signature`、SSE `error` 帧官方包裹；`unit/test_compat_anthropic.py` 新增 8 项覆盖并修 `test_anthropic_vs_openai_different_response_format`（改用 `server.model_alias`）；`tools/server/README.md` 的 `/v1/messages` 选项补记 | **已提交** `70d114082`（文档随本次提交） | 单测 `unit/test_compat_anthropic.py -m "not slow" -k "not vision"` = **34 passed / 4 deselected**（30.54 s，`/tmp/anthropic-deepen/unit-anthropic-full.log`）；live 探针（V100 + Qwen3.5-9B-Q4_K_M、ctx 2048、2 槽、8095）**15 PASS / 2 FAIL**（2 FAIL 为 S4 SSE error 帧运行期不可触发，`/tmp/anthropic-deepen/probe.log`、`probe-results.json`）；同批登记 42 个预存单测失败（§8.4）；契约见 SCOPE「Anthropic Messages (`/v1/messages`) deepen」，差异登记见 DIFF §3 / §4 #20/#21 |
 
 ## 6. 规范判定表（2026-09-14）
 
@@ -221,7 +224,7 @@ FAIL / PARTIAL / SKIP 归因（DIFF §6）：
 | 1 | B2：legacy Completions `echo=true` + `logprobs` 组合完整语义 | **非流式（B2a）已实现并提交**（`47bf58b08`；探针 36/36 + 三套件全绿）：分片前置 prompt 行、第 0 行 `token_logprobs`/`top_logprobs` 双 `null`、行 p+1 取自位置 p 的 logits、`text_offset` 原点 = 完整 text 开头（单位沿用 UTF-8 字节）、`logprobs>5` 夹到 5；**流式（B2b）已实现并验证**（B2b 切片，已提交 `65b93d9ad`；首块并进 prompt 文本与 prompt 行、`text_offset` 跨块累计、末事件不重复 prompt；三套件全绿 + 新行 3 连跑稳定） | `/tmp/oai-probe/web-b2/report.md`（官方文档/实拍）、实现方 vLLM/SGLang 源码对照、b-audit/report.md B2；本轮改动见 §5 #9 / §5 #10 |
 | 2 | SDK `responses.create.custom_tool` 行 temperature 硬化 | **已处理**（已提交 `7137fab81`；套件已验证）：该调用补 `temperature=0`（按先例 `58d28395b`，forced-tool 检查 pin temperature 0）；该行曾 flaky（PASS/FAIL 双峰），本次运行时复验 PASS | drift-report §3；checks_sdk.py |
 | 3 | embeddings live 实测 | **已完成（2026-09-14）**：sdk `embeddings.create` 在未启 `--embeddings` 的实例上 SKIP（9B 全量即如此）；已在 `--embeddings --pooling mean` 实例（9B、8094）上跑 `--only embeddings,sdk` = 30 = 29 PASS / 0 FAIL / 1 SKIP（exit=0），`embeddings.create` 转 PASS（`dim=4096`）；唯一 SKIP = `embeddings.dimensions`（官方仅 text-embedding-3+ 支持，本地接受但忽略，按设计记录不断言） | DIFF §6 注 / §7.1；证据 `/tmp/env-emb-8094/resp-emb-sdk.json` |
-| 4 | `/v1/messages` 显式 verbosity/reasoning_effort | anthropic 转换器不透传顶层字段（pre-A 既有）；缺省注入已按 gating 限定 OpenAI 端点；若要支持显式值需扩转换器 | gating-report §6.2 |
+| 4 | `/v1/messages` 显式 verbosity/reasoning_effort | **已闭合（2026-09-14，`70d114082`）**：官方 Anthropic 请求没有顶层 `verbosity`/`reasoning_effort`（`/root/anthropic-docs` 全量语料核对：`output_config.effort` 与 `thinking` 才是官方形态），故不接线非官方字段 —— 改接官方形态：`output_config.effort` -> `reasoning_effort`（官方 5 值即本地子集）、`output_config.format` -> `response_format`、`thinking{disabled}` -> `reasoning_effort="none"`。缺省注入仍按 gating 仅作用于 OpenAI 端点（`/v1/messages` 的缺省行为不变） | `/root/anthropic-docs`（2026-09-14 全量语料）；gating-report §6.2；见 §5 #14 |
 
 ### 8.3 SCOPE「Recorded deviations」登记项（2026-09-14 时点；编号稳定，原 #5/#6/#21/#25 已对齐）
 
@@ -252,14 +255,18 @@ FAIL / PARTIAL / SKIP 归因（DIFF §6）：
 23. `params_base.n_outputs_max` 抬高：已接受的已知代价（accepted cost），所有请求常驻增量实测 +1812 MiB（上界 `n_batch x n_vocab x 4` 约 2.0 GB，`n_vocab`=248320 / `n_batch`=2048）；
 24. MTP 下生成行 `top_logprobs` 退化（`--spec-type draft-mtp`；预存、非本波引入、未修）；
 25. `/v1/completions` `best_of > n_parallel` 无校验且请求挂起 - **已修**（本切片，代码 `6cc674611`；路由层按 `best_of > min(n_parallel, 20)` -> 400，并落地官方声明上限 `n <= 128` / `best_of <= 20`；见 DIFF §4.1 原 #19 + 「新」）；
+26. Anthropic `/v1/messages` 未接的官方字段（2026-09-14）：`thinking{type:"adaptive"}` 与 `display`、`tools[]`/`tool_use`/`tool_result` 上的 `cache_control`、`service_tier`/`container`/`inference_geo`、`tools[].strict`/`input_examples`、响应 `usage.service_tier`/`stop_details`/`container`/`inference_geo`、`message_delta.usage` 的 input/cache_*、非流式错误体官方包裹（`ex_wrapper` 为跨端点设计）；见 §5 #14 / DIFF §4 #20；
+27. Anthropic SSE `error` 帧（2026-09-14）：代码已按官方包裹 `{"type":"error","error":{…}}`，但默认配置**运行期不可达**（超上下文在流开始前即普通 400 JSON）-> 未验证；见 DIFF §4 #21；
+28. 42 个预存单测失败（2026-09-14 登记，未修）：`unit/test_chat_completion.py` + `unit/test_tool_call.py`，根因 = model 校验 `07ede89c8`；见 §8.4；
 
 ### 8.4 其它已登记（波报告未决点）
 
+- 42 个预存单测失败（2026-09-14 由 Anthropic 加深波暴露并登记，**未修**）：`unit/test_chat_completion.py` + `unit/test_tool_call.py` 在当前构建上 **42 failed / 16 passed / 196 deselected**（42.04 s，`unshare -n` 零 HF 下载；证据 `/tmp/anthropic-deepen/unit-regression-full.log`）。原因分布与根因（model 校验 `07ede89c8` 引入：`'model' is required` -> 400、未加载 model 名 -> 404 `model_not_found`；本波 `git diff --stat` 未触碰校验路径）见 SCOPE「Suite-only fixes」；运行期复验（当前构建、8095）：`model:"test"` -> 404 `model_not_found`、省略 `model` -> 400 `'model' is required`。属独立波次（跨两个测试文件的大范围机械化修改），待裁定是否另起一波。
 - 2 行 cache 偶发 FAIL（`prompt_cache_ttl_expiry_clears_kv` + 连带 `prompt_cache_hit_monitor`）：残差 20 = 注入 hint 常量前缀（槽位 L1 残留竞态）-> **已修**（§5 #12：探针加唯一首条 system 消息；修复后全量 530 = 506/24/0；该行的服务端软共享语义本身未改，观察见 SCOPE「Suite-only fixes」）。
 - WS 未知 model 单独探针未单列（envelope-report §6.5）；
 - router 与单模型的分层差异（B1 既有，保持；envelope-report §6.4）；
 - `prompt_cache_single_text_append` 新判据未在 dense 模型复验（drift-report §6.1）；
-- Anthropic SSE 透传错误帧 `code` int -> null（顺带效果，登记）（envelope-report §6.2）；
+- Anthropic SSE 透传错误帧（顺带效果，登记）：现按官方包裹 `{"type":"error","error":{…}}`，内层仍是本地统一错误体（`code` 可为 null）；默认配置不可达（见 §8.3 #27 / DIFF §4 #21）（envelope-report §6.2）；
 - background response error 体仅 `{message}`（协议对象，明确范围外）（envelope-report §6.3）。
 
 ## 9. 风险与回退
@@ -275,6 +282,7 @@ FAIL / PARTIAL / SKIP 归因（DIFF §6）：
 | Completions `echo=true`+`logprobs>0` 新语义 + `logprobs>5` 夹取 + Responses 骨架 `usage: null` + compact `service_tier` 收窄 | 本轮（B2a；已提交 `47bf58b08` + `84f929fce` + `7137fab81`） | 依赖 `logprobs>5 -> 400` 的客户端现在收 200（夹到 5）；该类请求失去 prompt 前缀复用/后端采样（延迟上升）；未完成 Responses 对象新增 `usage: null` 键；`n_outputs_max` 抬高带来常驻内存（实测 +1812 MiB，上界 `n_batch x n_vocab x 4` 约 2.0 GB；已随 `47bf58b08` 入库，用户裁定无条件抬高保持） | 与官方一致；本轮为独立提交切片，已并入基线并跑通，可整体回退 |
 | MTP 下生成行 `top_logprobs` 退化为 1 键 | 预存（非本轮引入） | `--spec-type draft-mtp` 时被接受草稿 token 的生成行只带自身分值；prompt 行不受影响 | 用户裁定先不修；默认关闭 MTP（`/root/llama_gguf/models.ini` 两段 `spec-type = draft-mtp` 已注释）；与本轮切片无关 |
 | Completions `best_of` 超槽数由挂起改为 400；`best_of`/`n` 上限收窄到 `min(n_parallel, 20)` / `min(n_parallel, 128)` | 本轮（本切片；代码 `6cc674611`） | 原来 `best_of > n_parallel` 时请求无限挂起（无错误、无响应；`--parallel 1` 上 `best_of=2`），现返回 400 `Field 'best_of': ...`；`n` 上限由原先的仅槽数界改为槽数与官方界 128 取小（21/129 槽实例上界值收敛）；4 槽等常见实例行为不变 | 与官方 OpenAPI 声明上限一致（`best_of <= 20`、`n <= 128`）且在请求校验层提前拒绝（官方/vLLM/SGLang 同层）；独立切片，可单独回退 |
+| Anthropic `/v1/messages` 加深（命名 `tool_choice`、`tool_choice{none}`、`output_config.effort`/`format`、`thinking.disabled`、`cache_control`、`usage.cache_creation_input_tokens`/`output_tokens_details`、thinking `signature`、SSE `error` 帧包裹） | 本轮（Anthropic 加深；已提交 `70d114082`） | 之前被丢弃的请求字段开始生效：命名 `tool_choice` 收窄到该工具、`none` 禁用工具、非法 `output_config.effort`/`cache_control` 现在返回 400；响应 `usage` 新增 `cache_creation_input_tokens`（恒 0）与 `output_tokens_details`；流式 thinking 块新增空 `signature` 键；流式 `error` 帧新增外层 `type:error` 包裹（默认配置不可达） | 与官方 Anthropic 形状一致；单测（34 passed）+ live 探针（15 PASS）覆盖，S4 不可达已在 SCOPE 标注；独立提交切片，可整体回退 |
 
 ### 9.2 回退方式
 
