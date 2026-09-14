@@ -245,10 +245,12 @@ bool server_http_context::init(const common_params & params) {
 
         // API key is invalid or not provided
         res.status = 401;
+        const std::string msg = "Invalid API Key";
+        // Anthropic routes answer with the official envelope, where a rejected key is authentication_error
         res.set_content(
-            safe_json_to_str(json {
-                {"error", format_error_response("Invalid API Key", ERROR_TYPE_AUTHENTICATION, "", "invalid_api_key")}
-            }),
+            safe_json_to_str(is_anthropic_api_path(req.path) ?
+                format_anthropic_error("authentication_error", msg) :
+                json {{"error", format_error_response(msg, ERROR_TYPE_AUTHENTICATION, "", "invalid_api_key")}}),
             "application/json; charset=utf-8"
         );
 
@@ -264,13 +266,15 @@ bool server_http_context::init(const common_params & params) {
             }
             // no endpoints are allowed to be accessed when the server is not ready
             // this is to prevent any data races or inconsistent states
-            res.status = 503;
-            res.set_content(
-                safe_json_to_str(json {
-                    {"error", format_error_response("Loading model", ERROR_TYPE_UNAVAILABLE)}
-                }),
-                "application/json; charset=utf-8"
-            );
+            const json error_data = format_error_response("Loading model", ERROR_TYPE_UNAVAILABLE);
+            if (is_anthropic_api_path(req.path)) {
+                // local capacity error maps onto the official overloaded_error (529)
+                res.status = anthropic_error_status_from_body(error_data);
+                res.set_content(safe_json_to_str(format_anthropic_error_response(error_data)), "application/json; charset=utf-8");
+            } else {
+                res.status = 503;
+                res.set_content(safe_json_to_str(json {{"error", error_data}}), "application/json; charset=utf-8");
+            }
             return false;
         }
         return true;

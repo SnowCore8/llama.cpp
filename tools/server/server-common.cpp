@@ -100,6 +100,57 @@ int error_status_from_body(const json & error_data, int fallback) {
     return it == status_by_type.end() ? fallback : it->second;
 }
 
+// map a local error type onto the official Anthropic vocabulary and its HTTP status; local-only
+// types fold into invalid_request_error
+static std::pair<const char *, int> anthropic_error_from_local_type(const std::string & local_type) {
+    if (local_type == "invalid_request_error" || local_type == "exceed_context_size_error" ||
+            local_type == "not_supported_error") {
+        return {"invalid_request_error", 400};
+    }
+    if (local_type == "authentication_error") {
+        return {"authentication_error", 401};
+    }
+    if (local_type == "permission_error") {
+        return {"permission_error", 403};
+    }
+    if (local_type == "not_found_error") {
+        return {"not_found_error", 404};
+    }
+    if (local_type == "service_unavailable_error") {
+        // local capacity/loading error is the closest match to the official 529 overloaded
+        return {"overloaded_error", 529};
+    }
+    return {"api_error", 500};
+}
+
+json format_anthropic_error(const std::string & official_type, const std::string & message) {
+    return json {
+        {"type", "error"},
+        {"error", {
+            {"type",    official_type},
+            {"message", message},
+        }},
+        // no per-request id exists locally
+        {"request_id", nullptr},
+    };
+}
+
+int anthropic_error_status_from_body(const json & local_error_body) {
+    return anthropic_error_from_local_type(
+            json_value(local_error_body, "type", std::string())).second;
+}
+
+json format_anthropic_error_response(const json & local_error_body) {
+    return format_anthropic_error(
+            anthropic_error_from_local_type(json_value(local_error_body, "type", std::string())).first,
+            json_value(local_error_body, "message", std::string()));
+}
+
+bool is_anthropic_api_path(const std::string & path) {
+    static const std::string prefix = "/v1/messages";
+    return path == prefix || path.rfind(prefix + "/", 0) == 0;
+}
+
 json format_oai_model_not_found(const std::string & model_name) {
     return json {{"error", format_error_response(
         string_format("The model `%s` does not exist or you do not have access to it.", model_name.c_str()),
@@ -2234,18 +2285,15 @@ json oaicompat_chat_params_parse(
             const std::string role = json_value(msg, "role", std::string());
             const int32_t ordinal = ++role_counts[role];
 
-            if (!msg.contains("content") || !msg.at("content").is_array()) {
-                continue;
-            }
             bool msg_has_breakpoint = false;
-            for (const auto & p : msg.at("content")) {
-                if (!p.is_object() || !p.contains("prompt_cache_breakpoint") ||
-                        p.at("prompt_cache_breakpoint").is_null()) {
-                    continue;
-                }
+            bool is_tools_anchor = false;
+
+            // message-level breakpoint; a tool_use or tool_result block maps here, since
+            // such a block has no part of its own after the conversion
+            if (msg.contains("prompt_cache_breakpoint") && !msg.at("prompt_cache_breakpoint").is_null()) {
                 msg_has_breakpoint = true;
                 n_breakpoints++;
-                const json & bp = p.at("prompt_cache_breakpoint");
+                const json & bp = msg.at("prompt_cache_breakpoint");
                 if (!bp.is_object()) {
                     throw std::invalid_argument("'prompt_cache_breakpoint' must be an object");
                 }
@@ -2253,10 +2301,40 @@ json oaicompat_chat_params_parse(
                         bp.at("mode").get<std::string>() != "explicit") {
                     throw std::invalid_argument("'prompt_cache_breakpoint.mode' must be 'explicit'");
                 }
+                if (bp.contains("anchor") && !bp.at("anchor").is_null()) {
+                    if (!bp.at("anchor").is_string() || bp.at("anchor").get<std::string>() != "tools") {
+                        throw std::invalid_argument("'prompt_cache_breakpoint.anchor' must be 'tools'");
+                    }
+                    is_tools_anchor = true;
+                }
+            }
+
+            if (msg.contains("content") && msg.at("content").is_array()) {
+                for (const auto & p : msg.at("content")) {
+                    if (!p.is_object() || !p.contains("prompt_cache_breakpoint") ||
+                            p.at("prompt_cache_breakpoint").is_null()) {
+                        continue;
+                    }
+                    msg_has_breakpoint = true;
+                    n_breakpoints++;
+                    const json & bp = p.at("prompt_cache_breakpoint");
+                    if (!bp.is_object()) {
+                        throw std::invalid_argument("'prompt_cache_breakpoint' must be an object");
+                    }
+                    if (!bp.contains("mode") || !bp.at("mode").is_string() ||
+                            bp.at("mode").get<std::string>() != "explicit") {
+                        throw std::invalid_argument("'prompt_cache_breakpoint.mode' must be 'explicit'");
+                    }
+                }
             }
             // locate a message once, even if several of its parts carry a breakpoint
             if (msg_has_breakpoint) {
-                oai_prompt_cache_breakpoints.emplace_back(role, ordinal);
+                if (is_tools_anchor) {
+                    // the "tools" anchor is located at the start of the first message
+                    oai_prompt_cache_breakpoints.emplace_back("tools", 0);
+                } else {
+                    oai_prompt_cache_breakpoints.emplace_back(role, ordinal);
+                }
             }
         }
         if (n_breakpoints > 4) {

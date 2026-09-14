@@ -618,13 +618,14 @@ static void normalize_anthropic_billing_header(std::string & system_text) {
 }
 
 
-json server_chat_convert_anthropic_to_oai(const json & body) {
+json server_chat_convert_anthropic_to_oai(const json & body, bool count_tokens) {
     json oai_body;
 
     // Anthropic cache_control -> local prompt cache: the marker becomes a local explicit
-    // breakpoint on the annotated part, and the TTL feeds prompt_cache_options.ttl.
-    // The local prompt cache holds a single TTL per request, so multiple different TTLs
-    // collapse to the last one seen (see OFFICIAL_API_SCOPE.md).
+    // breakpoint (on the annotated part or on the message object), and the TTL feeds the
+    // internal cache TTL channel (__prompt_cache_ttl). The local prompt cache holds a single
+    // TTL per request, so multiple different TTLs collapse to the last one seen
+    // (see OFFICIAL_API_SCOPE.md).
     std::string cache_ttl;
     auto note_cache_control = [&cache_ttl](const json & cache_control) {
         const std::string cc_type = json_value(cache_control, "type", std::string());
@@ -720,6 +721,9 @@ json server_chat_convert_anthropic_to_oai(const json & body) {
             json tool_results = json::array();
             std::string reasoning_content;
             bool has_tool_calls = false;
+            // a tool_use block with cache_control marks this whole message: tool parts have no
+            // standalone part form, so the breakpoint rides on the message object
+            bool msg_breakpoint = false;
 
             for (const auto & block : content) {
                 std::string type = json_value(block, "type", std::string());
@@ -760,6 +764,10 @@ json server_chat_convert_anthropic_to_oai(const json & body) {
                         converted_content.push_back(part);
                     }
                 } else if (type == "tool_use") {
+                    if (block.contains("cache_control") && !block.at("cache_control").is_null()) {
+                        note_cache_control(block.at("cache_control"));
+                        msg_breakpoint = true;
+                    }
                     tool_calls.push_back({
                         {"id", json_value(block, "id", std::string())},
                         {"type", "function"},
@@ -770,6 +778,13 @@ json server_chat_convert_anthropic_to_oai(const json & body) {
                     });
                     has_tool_calls = true;
                 } else if (type == "tool_result") {
+                    // cache_control on a tool_result marks the tool message it converts into
+                    const bool result_breakpoint =
+                        block.contains("cache_control") && !block.at("cache_control").is_null();
+                    if (result_breakpoint) {
+                        note_cache_control(block.at("cache_control"));
+                    }
+
                     std::string tool_use_id = json_value(block, "tool_use_id", std::string());
 
                     auto result_content = json_value(block, "content", json());
@@ -837,6 +852,10 @@ json server_chat_convert_anthropic_to_oai(const json & body) {
                             {"content", ""}
                         });
                     }
+
+                    if (result_breakpoint) {
+                        tool_results.back()["prompt_cache_breakpoint"] = {{"mode", "explicit"}};
+                    }
                 }
             }
 
@@ -852,6 +871,20 @@ json server_chat_convert_anthropic_to_oai(const json & body) {
                 }
                 if (!reasoning_content.empty()) {
                     new_msg["reasoning_content"] = reasoning_content;
+                }
+                // a tool_use cache_control marks the message, but only when no text/image part
+                // already carries the marker: several markers on one message are one breakpoint
+                if (msg_breakpoint) {
+                    bool part_has_breakpoint = false;
+                    for (const auto & part : converted_content) {
+                        if (part.contains("prompt_cache_breakpoint")) {
+                            part_has_breakpoint = true;
+                            break;
+                        }
+                    }
+                    if (!part_has_breakpoint) {
+                        new_msg["prompt_cache_breakpoint"] = {{"mode", "explicit"}};
+                    }
                 }
                 oai_messages.push_back(new_msg);
             }
@@ -869,7 +902,15 @@ json server_chat_convert_anthropic_to_oai(const json & body) {
         const json & tools = body.at("tools");
         if (tools.is_array()) {
             json oai_tools = json::array();
+            bool tools_breakpoint = false;
             for (const auto & tool : tools) {
+                // cache_control on a tool entry anchors right after the tools section
+                if (tool.contains("cache_control") && !tool.at("cache_control").is_null()) {
+                    note_cache_control(tool.at("cache_control"));
+                    tools_breakpoint = true;
+                }
+                // strict / input_examples are accepted and ignored: the local tool grammar is
+                // always schema-driven, so neither changes behavior
                 oai_tools.push_back({
                     {"type", "function"},
                     {"function", {
@@ -880,6 +921,11 @@ json server_chat_convert_anthropic_to_oai(const json & body) {
                 });
             }
             oai_body["tools"] = oai_tools;
+            if (tools_breakpoint && !oai_messages.empty()) {
+                // the anchor sits at the start of the first message, i.e. after the tools;
+                // server-context resolves the "tools" role to that position
+                oai_body.at("messages").at(0)["prompt_cache_breakpoint"] = {{"mode", "explicit"}, {"anchor", "tools"}};
+            }
         }
     }
 
@@ -914,17 +960,44 @@ json server_chat_convert_anthropic_to_oai(const json & body) {
         oai_body["stop"] = body.at("stop_sequences");
     }
 
-    // Handle max_tokens (required in Anthropic, but we're permissive)
-    if (body.contains("max_tokens")) {
+    // max_tokens is required by the official Messages API (0 pre-warms the cache without
+    // generating); /v1/messages/count_tokens has no such field at all
+    if (!count_tokens && (!body.contains("max_tokens") || body.at("max_tokens").is_null())) {
+        throw std::invalid_argument("'max_tokens' is required");
+    }
+    if (body.contains("max_tokens") && !body.at("max_tokens").is_null()) {
+        if (!body.at("max_tokens").is_number_integer() || body.at("max_tokens").get<int>() < 0) {
+            throw std::invalid_argument("'max_tokens' must be a non-negative integer");
+        }
         oai_body["max_tokens"] = body.at("max_tokens");
-    } else {
-        oai_body["max_tokens"] = 4096;
     }
 
     // Pass through common params
     for (const auto & key : {"temperature", "top_p", "top_k", "stream", "chat_template_kwargs"}) {
         if (body.contains(key)) {
             oai_body[key] = body.at(key);
+        }
+    }
+
+    // service_tier / container / inference_geo carry no local semantics, but the official
+    // shapes are validated so invalid values fail early instead of being silently dropped.
+    // The values are not forwarded: the local server has neither capacity tiers nor
+    // containers, and the response always reports the standard tier (see server-task.cpp).
+    if (body.contains("service_tier") && !body.at("service_tier").is_null()) {
+        const std::string tier = json_value(body, "service_tier", std::string());
+        if (tier != "auto" && tier != "standard_only") {
+            throw std::invalid_argument("'service_tier' must be 'auto' or 'standard_only'");
+        }
+    }
+    if (body.contains("container") && !body.at("container").is_null()) {
+        if (!body.at("container").is_string() && !body.at("container").is_object()) {
+            throw std::invalid_argument("'container' must be a string or an object");
+        }
+    }
+    if (body.contains("inference_geo") && !body.at("inference_geo").is_null()) {
+        const std::string geo = json_value(body, "inference_geo", std::string());
+        if (geo != "global" && geo != "us") {
+            throw std::invalid_argument("'inference_geo' must be 'global' or 'us'");
         }
     }
 
@@ -958,15 +1031,41 @@ json server_chat_convert_anthropic_to_oai(const json & body) {
 
     // Handle Anthropic-specific thinking param
     if (body.contains("thinking")) {
-        json thinking = json_value(body, "thinking", json::object());
-        std::string thinking_type = json_value(thinking, "type", std::string());
+        const json thinking = json_value(body, "thinking", json::object());
+        const std::string thinking_type = json_value(thinking, "type", std::string());
         if (thinking_type == "enabled") {
-            int budget_tokens = json_value(thinking, "budget_tokens", 10000);
+            const bool has_budget = thinking.contains("budget_tokens") && !thinking.at("budget_tokens").is_null();
+            const int budget_tokens = json_value(thinking, "budget_tokens", 10000);
+            if (has_budget) {
+                // official bound: at least 1024. An omitted budget keeps the permissive local
+                // default (the local reasoning budget is capped later).
+                const bool has_max_tokens = oai_body.contains("max_tokens");
+                const int  max_tokens     = json_value(oai_body, "max_tokens", 0);
+                if (budget_tokens < 1024) {
+                    throw std::invalid_argument("'thinking.budget_tokens' must be at least 1024");
+                }
+                // count_tokens carries no max_tokens, so the upper bound is unverifiable there
+                if (has_max_tokens && budget_tokens >= max_tokens) {
+                    throw std::invalid_argument("'thinking.budget_tokens' must be less than 'max_tokens'");
+                }
+            }
             oai_body["thinking_budget_tokens"] = budget_tokens;
         } else if (thinking_type == "disabled") {
             // "none" is the local way to disable thinking. It wins over output_config.effort:
             // the client asked for no thinking at all, so no effort hint is forwarded.
             oai_body["reasoning_effort"] = "none";
+        } else if (thinking_type == "adaptive") {
+            // adaptive lets the model size its own thinking: no token budget to set, so
+            // effort / the local default decides (see output_config.effort above)
+        }
+        // display=omitted hides the thinking text in the response but keeps the block,
+        // its signature and the signature_delta; the local serializers read this flag
+        if (thinking.contains("display") && !thinking.at("display").is_null()) {
+            const std::string display = json_value(thinking, "display", std::string());
+            if (display != "summarized" && display != "omitted") {
+                throw std::invalid_argument("'thinking.display' must be 'summarized' or 'omitted'");
+            }
+            oai_body["anthropic_thinking_display"] = display;
         }
     }
 
@@ -1004,9 +1103,10 @@ json server_chat_convert_anthropic_to_oai(const json & body) {
         }
     }
 
-    // cache_control.ttl -> prompt_cache_options.ttl (the local cache takes 5m/30m/1h)
+    // cache_control.ttl -> internal cache TTL channel: the official prompt_cache_options.ttl
+    // only accepts 30m, so the Anthropic 5m/1h values must bypass that whitelist
     if (!cache_ttl.empty()) {
-        oai_body["prompt_cache_options"] = {{"ttl", cache_ttl}};
+        oai_body["__prompt_cache_ttl"] = cache_ttl;
     }
 
     // Handle Anthropic-specific metadata param

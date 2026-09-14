@@ -13,8 +13,9 @@
 // Convert OpenAI Responses API format to OpenAI Chat Completions API format
 json server_chat_convert_responses_to_chatcmpl(const json & body);
 
-// Convert Anthropic Messages API format to OpenAI Chat Completions API format
-json server_chat_convert_anthropic_to_oai(const json & body);
+// Convert Anthropic Messages API format to OpenAI Chat Completions API format.
+// Set `count_tokens` for /v1/messages/count_tokens, whose body has no `max_tokens` field
+json server_chat_convert_anthropic_to_oai(const json & body, bool count_tokens = false);
 
 // convert OpenAI transcriptions API format to OpenAI Chat Completions API format
 json convert_transcriptions_to_chatcmpl(

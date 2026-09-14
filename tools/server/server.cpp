@@ -80,8 +80,14 @@ static server_http_context::handler_t ex_wrapper(server_http_context::handler_t 
         res->status = 500;
         try {
             json error_data = format_error_response(message, error);
-            res->status = error_status_from_body(error_data);
-            res->data = safe_json_to_str({{ "error", error_data }});
+            if (is_anthropic_api_path(req.path)) {
+                // Anthropic routes: official envelope + type vocabulary (503 capacity -> 529)
+                res->status = anthropic_error_status_from_body(error_data);
+                res->data = safe_json_to_str(format_anthropic_error_response(error_data));
+            } else {
+                res->status = error_status_from_body(error_data);
+                res->data = safe_json_to_str({{ "error", error_data }});
+            }
             SRV_WRN("got exception: %s\n", res->data.c_str());
         } catch (const std::exception & e) {
             SRV_ERR("got another exception: %s | while handling exception: %s\n", e.what(), message.c_str());

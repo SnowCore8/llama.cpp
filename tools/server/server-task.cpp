@@ -1212,9 +1212,13 @@ json server_task_result_cmpl_final::to_json_anthropic() {
 
     // thinking block comes first (Anthropic extended thinking format)
     if (!msg.reasoning_content.empty()) {
+        // display=omitted hides the text but keeps the block and its signature
+        const std::string thinking_text = generation_params.anthropic_thinking_display_omitted
+            ? std::string()
+            : msg.reasoning_content;
         content_blocks.push_back({
             {"type", "thinking"},
-            {"thinking", msg.reasoning_content},
+            {"thinking", thinking_text},
             {"signature", ""}  // empty signature for local models (no cryptographic verification)
         });
     }
@@ -1246,18 +1250,30 @@ json server_task_result_cmpl_final::to_json_anthropic() {
         {"id", oaicompat_cmpl_id},
         {"type", "message"},
         {"role", "assistant"},
+        {"container", nullptr}, // no code execution container locally
         {"content", content_blocks},
         {"model", oaicompat_model},
+        {"stop_details", nullptr}, // refusal details only; local has no refusal channel
         {"stop_reason", stop_reason},
         {"stop_sequence", stopping_word.empty() ? nullptr : json(stopping_word)},
         {"usage", {
+            {"cache_creation", {
+                {"ephemeral_1h_input_tokens", 0},
+                {"ephemeral_5m_input_tokens", 0}
+            }},
             {"cache_creation_input_tokens", 0},
             {"cache_read_input_tokens", n_prompt_tokens_cache},
+            {"inference_geo", nullptr},
             {"input_tokens", n_prompt_tokens - n_prompt_tokens_cache},
             {"output_tokens", n_decoded},
             {"output_tokens_details", {
                 {"thinking_tokens", std::max(0, n_reasoning_tokens)}
-            }}
+            }},
+            {"server_tool_use", {
+                {"web_fetch_requests", 0},
+                {"web_search_requests", 0}
+            }},
+            {"service_tier", "standard"} // local capacity is always the standard tier
         }}
     };
 
@@ -1303,17 +1319,20 @@ json server_task_result_cmpl_final::to_json_anthropic_stream() {
                 thinking_block_started = true;
             }
 
-            events.push_back({
-                {"event", "content_block_delta"},
-                {"data", {
-                    {"type", "content_block_delta"},
-                    {"index", thinking_block_index},
-                    {"delta", {
-                        {"type", "thinking_delta"},
-                        {"thinking", diff.reasoning_content_delta}
+            // display=omitted keeps the block and the signature_delta, but skips thinking_delta
+            if (!generation_params.anthropic_thinking_display_omitted) {
+                events.push_back({
+                    {"event", "content_block_delta"},
+                    {"data", {
+                        {"type", "content_block_delta"},
+                        {"index", thinking_block_index},
+                        {"delta", {
+                            {"type", "thinking_delta"},
+                            {"thinking", diff.reasoning_content_delta}
+                        }}
                     }}
-                }}
-            });
+                });
+            }
         }
 
         // handle regular text content
@@ -1438,6 +1457,10 @@ json server_task_result_cmpl_final::to_json_anthropic_stream() {
                 {"stop_sequence", stopping_word.empty() ? nullptr : json(stopping_word)}
             }},
             {"usage", {
+                // cumulative totals, as the official message_delta usage prescribes
+                {"cache_creation_input_tokens", 0},
+                {"cache_read_input_tokens", n_prompt_tokens_cache},
+                {"input_tokens", n_prompt_tokens - n_prompt_tokens_cache},
                 {"output_tokens", n_decoded}
             }}
         }}
@@ -1930,15 +1953,27 @@ json server_task_result_cmpl_partial::to_json_anthropic() {
                     {"id", oaicompat_cmpl_id},
                     {"type", "message"},
                     {"role", "assistant"},
+                    {"container", nullptr}, // no code execution container locally
                     {"content", json::array()},
                     {"model", oaicompat_model},
+                    {"stop_details", nullptr}, // refusal details only; local has no refusal channel
                     {"stop_reason", nullptr},
                     {"stop_sequence", nullptr},
                     {"usage", {
+                        {"cache_creation", {
+                            {"ephemeral_1h_input_tokens", 0},
+                            {"ephemeral_5m_input_tokens", 0}
+                        }},
                         {"cache_creation_input_tokens", 0},
                         {"cache_read_input_tokens", n_prompt_tokens_cache},
+                        {"inference_geo", nullptr},
                         {"input_tokens", n_prompt_tokens - n_prompt_tokens_cache},
-                        {"output_tokens", 0}
+                        {"output_tokens", 0},
+                        {"server_tool_use", {
+                            {"web_fetch_requests", 0},
+                            {"web_search_requests", 0}
+                        }},
+                        {"service_tier", "standard"} // local capacity is always the standard tier
                     }}
                 }}
             }}
@@ -1974,17 +2009,20 @@ json server_task_result_cmpl_partial::to_json_anthropic() {
                 thinking_started = true;
             }
 
-            events.push_back({
-                {"event", "content_block_delta"},
-                {"data", {
-                    {"type", "content_block_delta"},
-                    {"index", thinking_block_index},
-                    {"delta", {
-                        {"type", "thinking_delta"},
-                        {"thinking", diff.reasoning_content_delta}
+            // display=omitted keeps the block and the signature_delta, but skips thinking_delta
+            if (!generation_params.anthropic_thinking_display_omitted) {
+                events.push_back({
+                    {"event", "content_block_delta"},
+                    {"data", {
+                        {"type", "content_block_delta"},
+                        {"index", thinking_block_index},
+                        {"delta", {
+                            {"type", "thinking_delta"},
+                            {"thinking", diff.reasoning_content_delta}
+                        }}
                     }}
-                }}
-            });
+                });
+            }
         }
 
         // handle regular text content

@@ -792,10 +792,10 @@ def test_anthropic_thinking():
 
     res = server.make_request("POST", "/v1/messages", data={
         "model": "test",
-        "max_tokens": 100,
+        "max_tokens": 1025,
         "thinking": {
             "type": "enabled",
-            "budget_tokens": 50
+            "budget_tokens": 1024
         },
         "messages": [
             {"role": "user", "content": "What is 2+2?"}
@@ -804,6 +804,183 @@ def test_anthropic_thinking():
 
     assert res.status_code == 200
     assert res.body["type"] == "message"
+
+
+def test_anthropic_thinking_bounds():
+    """Official bounds: budget_tokens >= 1024 and < max_tokens"""
+    server.start()
+    messages = [{"role": "user", "content": "What is 2+2?"}]
+
+    res = server.make_request("POST", "/v1/messages", data={
+        "model": "test",
+        "max_tokens": 1025,
+        "thinking": {"type": "enabled", "budget_tokens": 512},
+        "messages": messages,
+    })
+    assert res.status_code == 400, f"Expected 400, got {res.status_code}: {res.body}"
+    assert "at least 1024" in res.body["error"]["message"]
+
+    res = server.make_request("POST", "/v1/messages", data={
+        "model": "test",
+        "max_tokens": 1024,
+        "thinking": {"type": "enabled", "budget_tokens": 1024},
+        "messages": messages,
+    })
+    assert res.status_code == 400, f"Expected 400, got {res.status_code}: {res.body}"
+    assert "less than 'max_tokens'" in res.body["error"]["message"]
+
+    res = server.make_request("POST", "/v1/messages", data={
+        "model": "test",
+        "max_tokens": 1025,
+        "thinking": {"type": "enabled", "budget_tokens": 1024},
+        "messages": messages,
+    })
+    assert res.status_code == 200, f"Expected 200, got {res.status_code}: {res.body}"
+
+
+def test_anthropic_thinking_adaptive_and_display():
+    """thinking adaptive carries no budget; thinking.display is validated"""
+    server.start()
+    messages = [{"role": "user", "content": "What is 2+2?"}]
+
+    res = server.make_request("POST", "/v1/messages", data={
+        "model": "test",
+        "max_tokens": 64,
+        "thinking": {"type": "adaptive"},
+        "messages": messages,
+    })
+    assert res.status_code == 200, f"Expected 200, got {res.status_code}: {res.body}"
+
+    res = server.make_request("POST", "/v1/messages", data={
+        "model": "test",
+        "max_tokens": 1025,
+        "thinking": {"type": "enabled", "budget_tokens": 1024, "display": "verbose"},
+        "messages": messages,
+    })
+    assert res.status_code == 400, f"Expected 400, got {res.status_code}: {res.body}"
+    assert "display" in res.body["error"]["message"]
+
+    res = server.make_request("POST", "/v1/messages", data={
+        "model": "test",
+        "max_tokens": 1025,
+        "thinking": {"type": "enabled", "budget_tokens": 1024, "display": "omitted"},
+        "messages": messages,
+    })
+    assert res.status_code == 200, f"Expected 200, got {res.status_code}: {res.body}"
+    # the block is kept when the model reasons; its text stays hidden
+    for block in res.body["content"]:
+        if block.get("type") == "thinking":
+            assert block["thinking"] == "", f"display=omitted leaked thinking text: {block['thinking']!r}"
+
+
+def test_anthropic_error_envelope():
+    """errors use the official Anthropic envelope: {"type":"error","error":{...},"request_id"}"""
+    server.start()
+
+    # max_tokens is required by the official API
+    res = server.make_request("POST", "/v1/messages", data={
+        "model": "test",
+        "messages": [{"role": "user", "content": "Hello"}],
+    })
+
+    assert res.status_code == 400, f"Expected 400, got {res.status_code}: {res.body}"
+    assert res.body["type"] == "error", f"Expected the Anthropic error envelope, got {res.body}"
+    assert res.body["error"]["type"] == "invalid_request_error"
+    assert "max_tokens" in res.body["error"]["message"]
+    assert isinstance(res.body["error"]["message"], str) and res.body["error"]["message"]
+    assert "request_id" in res.body
+
+
+def test_anthropic_max_tokens_required():
+    """max_tokens must be a non-negative integer"""
+    server.start()
+    messages = [{"role": "user", "content": "Hello"}]
+
+    for value in (None, -1, "16", 1.5):
+        res = server.make_request("POST", "/v1/messages", data={
+            "model": "test",
+            "max_tokens": value,
+            "messages": messages,
+        })
+        assert res.status_code == 400, f"Expected 400 for max_tokens={value!r}, got {res.status_code}: {res.body}"
+        assert "max_tokens" in res.body["error"]["message"]
+
+
+def test_anthropic_response_fields():
+    """official response fields: container / stop_details / service_tier and the usage detail fields"""
+    server.start()
+
+    res = server.make_request("POST", "/v1/messages", data={
+        "model": "test",
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "Hello"}],
+    })
+
+    assert res.status_code == 200, f"Expected 200, got {res.status_code}: {res.body}"
+    assert res.body["container"] is None
+    assert res.body["stop_details"] is None
+
+    usage = res.body["usage"]
+    assert usage["cache_creation"] == {
+        "ephemeral_1h_input_tokens": 0,
+        "ephemeral_5m_input_tokens": 0,
+    }
+    assert usage["inference_geo"] is None
+    assert usage["service_tier"] == "standard"
+    assert usage["server_tool_use"] == {
+        "web_fetch_requests": 0,
+        "web_search_requests": 0,
+    }
+
+
+def test_anthropic_cloud_shaped_fields():
+    """service_tier / container / inference_geo are validated, then dropped (no local semantics)"""
+    server.start()
+    messages = [{"role": "user", "content": "Hello"}]
+
+    for field, value in [("service_tier", "turbo"), ("inference_geo", "eu"), ("container", 5)]:
+        res = server.make_request("POST", "/v1/messages", data={
+            "model": "test",
+            "max_tokens": 16,
+            field: value,
+            "messages": messages,
+        })
+        assert res.status_code == 400, f"Expected 400 for {field}={value!r}, got {res.status_code}: {res.body}"
+
+    for field, value in [
+        ("service_tier", "standard_only"),
+        ("inference_geo", "us"),
+        ("container", "cnt_1"),
+        ("container", {"id": "cnt_1"}),
+    ]:
+        res = server.make_request("POST", "/v1/messages", data={
+            "model": "test",
+            "max_tokens": 16,
+            field: value,
+            "messages": messages,
+        })
+        assert res.status_code == 200, f"Expected 200 for {field}={value!r}, got {res.status_code}: {res.body}"
+
+
+def test_anthropic_stream_message_delta_usage():
+    """message_delta.usage carries the cumulative totals"""
+    server.start()
+
+    res = server.make_stream_request("POST", "/v1/messages", data={
+        "model": "test",
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "Hello"}],
+        "stream": True,
+    })
+    events = list(res)
+
+    deltas = [e for e in events if e.get("type") == "message_delta"]
+    assert deltas, f"Expected a message_delta event, got {[e.get('type') for e in events]}"
+    usage = deltas[-1]["usage"]
+    assert usage["output_tokens"] > 0
+    assert usage["input_tokens"] > 0
+    assert "cache_read_input_tokens" in usage
+    assert "cache_creation_input_tokens" in usage
 
 
 def test_anthropic_metadata():
@@ -1021,10 +1198,10 @@ def test_anthropic_thinking_with_reasoning_model(stream):
     if stream:
         res = server.make_stream_request("POST", "/v1/messages", data={
             "model": "test",
-            "max_tokens": 1024,
+            "max_tokens": 3072,
             "thinking": {
                 "type": "enabled",
-                "budget_tokens": 500
+                "budget_tokens": 1024
             },
             "messages": [
                 {"role": "user", "content": "What is 2+2?"}
@@ -1064,10 +1241,10 @@ def test_anthropic_thinking_with_reasoning_model(stream):
     else:
         res = server.make_request("POST", "/v1/messages", data={
             "model": "test",
-            "max_tokens": 1024,
+            "max_tokens": 3072,
             "thinking": {
                 "type": "enabled",
-                "budget_tokens": 500
+                "budget_tokens": 1024
             },
             "messages": [
                 {"role": "user", "content": "What is 2+2?"}
@@ -1278,3 +1455,103 @@ def test_anthropic_cache_control_invalid():
 
     assert res.status_code == 400, f"Expected 400, got {res.status_code}: {res.body}"
     assert "cache_control.type" in res.body["error"]["message"]
+
+
+def test_anthropic_cache_control_tools_anchor():
+    """cache_control on tools[] maps to the tools anchor and warms the prompt cache"""
+    server.jinja = True
+    server.start()
+
+    payload = {
+        "model": "test",
+        "max_tokens": 16,
+        "tools": [{
+            "name": "get_weather",
+            "description": "Get the current weather in a location",
+            "input_schema": {"type": "object", "properties": {"location": {"type": "string"}}},
+            "cache_control": {"type": "ephemeral"},
+        }],
+        "tool_choice": {"type": "none"},
+        "messages": [
+            {"role": "user", "content": "Hello " + "cache the tools. " * 40}
+        ],
+    }
+
+    first = server.make_request("POST", "/v1/messages", data=payload)
+    assert first.status_code == 200, f"Expected 200, got {first.status_code}: {first.body}"
+
+    second = server.make_request("POST", "/v1/messages", data=payload)
+    assert second.status_code == 200, f"Expected 200, got {second.status_code}: {second.body}"
+    assert second.body["usage"]["cache_read_input_tokens"] > 0, \
+        f"Expected the tools anchor to warm the cache, got usage {second.body['usage']}"
+
+
+def test_anthropic_cache_control_tool_blocks():
+    """cache_control on a tool_use / tool_result block is accepted"""
+    server.jinja = True
+    server.start()
+
+    res = server.make_request("POST", "/v1/messages", data={
+        "model": "test",
+        "max_tokens": 16,
+        "tools": [{
+            "name": "get_weather",
+            "description": "Get the current weather in a location",
+            "input_schema": {"type": "object", "properties": {"location": {"type": "string"}}},
+        }],
+        "messages": [
+            {"role": "user", "content": "What's the weather in Paris?"},
+            {
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "get_weather",
+                    "input": {"location": "Paris"},
+                    "cache_control": {"type": "ephemeral"},
+                }],
+            },
+            {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_1",
+                    "content": "sunny",
+                    "cache_control": {"type": "ephemeral"},
+                }],
+            },
+        ],
+    })
+
+    assert res.status_code == 200, f"Expected 200, got {res.status_code}: {res.body}"
+    assert res.body["type"] == "message"
+
+
+def test_anthropic_cache_control_ttl_ladder():
+    """cache_control.ttl accepts the official 5m/1h values (internal TTL channel)"""
+    server.start()
+
+    for ttl in ("5m", "1h"):
+        res = server.make_request("POST", "/v1/messages", data={
+            "model": "test",
+            "max_tokens": 16,
+            "system": [{
+                "type": "text",
+                "text": "You are a helpful assistant. " + "Cache me. " * 40,
+                "cache_control": {"type": "ephemeral", "ttl": ttl},
+            }],
+            "messages": [{"role": "user", "content": "Hello"}],
+        })
+        assert res.status_code == 200, f"Expected 200 for ttl={ttl}, got {res.status_code}: {res.body}"
+
+    res = server.make_request("POST", "/v1/messages", data={
+        "model": "test",
+        "max_tokens": 16,
+        "system": [{
+            "type": "text",
+            "text": "system",
+            "cache_control": {"type": "ephemeral", "ttl": "30m"},
+        }],
+        "messages": [{"role": "user", "content": "Hello"}],
+    })
+    assert res.status_code == 400, f"Expected 400 for ttl=30m, got {res.status_code}: {res.body}"

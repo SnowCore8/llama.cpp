@@ -95,6 +95,10 @@ struct task_params {
     json        oaicompat_resp_request      = nullptr; // original/prepared Responses request body
     bool        oaicompat_steer_hold        = false; // WebSocket steering: request has tools, steering waits for the terminal
 
+    // Anthropic Messages: thinking.display == "omitted" hides thinking text but keeps the
+    // thinking block, its (empty) signature and the signature_delta
+    bool anthropic_thinking_display_omitted = false;
+
     // OpenAI Chat Completions: echo/store request fields (persisted when store=true)
     bool oaicompat_chat_store    = false;
     json oaicompat_chat_metadata = nullptr;

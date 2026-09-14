@@ -4568,7 +4568,13 @@ struct server_res_generator : server_res_spipe {
         status = 200;
         data = safe_json_to_str(response_data);
     }
-    void error(const json & error_data) {
+    void error(const json & error_data, bool anthropic = false) {
+        if (anthropic) {
+            // Anthropic routes use the official envelope and type vocabulary
+            status = anthropic_error_status_from_body(error_data);
+            data = safe_json_to_str(format_anthropic_error_response(error_data));
+            return;
+        }
         status = error_status_from_body(error_data);
         data = safe_json_to_str({{ "error", error_data }});
     }
@@ -4665,6 +4671,29 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                     }
                     const std::string role_str = json_value(bp, "role", std::string());
                     const int32_t ordinal = json_value(bp, "ordinal", 0);
+                    const std::string anchor_str = json_value(bp, "anchor", std::string());
+
+                    // tools anchor: the checkpoint sits at the start of the first message
+                    // span, i.e. right after the tools section (not at a message end)
+                    if (role_str == "tools" || anchor_str == "tools") {
+                        if (task.params.message_spans.spans.empty()) {
+                            SRV_WRN("%s\n", "prompt_cache_breakpoint: tools anchor has no message spans, skipping");
+                            continue;
+                        }
+                        const size_t start = task.params.message_spans.spans.front().pos;
+                        if (start > (size_t) INT32_MAX) {
+                            SRV_WRN("prompt_cache_breakpoint: message start %" PRIu64 " out of range, skipping\n", (uint64_t) start);
+                            continue;
+                        }
+                        const int32_t pos = (int32_t) start;
+                        if (std::find(task.params.oai_prompt_cache_breakpoints.begin(),
+                                    task.params.oai_prompt_cache_breakpoints.end(), pos) ==
+                                task.params.oai_prompt_cache_breakpoints.end()) {
+                            task.params.oai_prompt_cache_breakpoints.push_back(pos);
+                        }
+                        continue;
+                    }
+
                     const common_chat_role role = common_chat_role_from_string(role_str);
 
                     if (role == COMMON_CHAT_ROLE_UNKNOWN) {
@@ -4729,6 +4758,11 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                         }
                     }
                 }
+            }
+            if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
+                // thinking.display=omitted suppresses thinking text in the response body
+                task.params.anthropic_thinking_display_omitted =
+                    json_value(data, "anthropic_thinking_display", std::string()) == "omitted";
             }
             if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT) {
                 task.params.oaicompat_chat_store = json_value(data, "__oai_chat_store", false);
@@ -4806,7 +4840,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
 
         rd.post_tasks(std::move(tasks));
     } catch (const std::exception & e) {
-        res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+        res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST),
+                res_type == TASK_RESPONSE_TYPE_ANTHROPIC);
         return res;
     }
 
@@ -4818,7 +4853,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         if (all_results.is_terminated) {
             return res; // connection is closed
         } else if (all_results.error) {
-            res->error(all_results.error->to_json());
+            res->error(all_results.error->to_json(), res_type == TASK_RESPONSE_TYPE_ANTHROPIC);
             return res;
         } else {
             json arr = json::array();
@@ -4906,7 +4941,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         }
 
         if (first_result->is_error()) {
-            res->error(first_result->to_json());
+            res->error(first_result->to_json(), res_type == TASK_RESPONSE_TYPE_ANTHROPIC);
             return res;
         }
 
@@ -6024,7 +6059,8 @@ void server_routes::init_routes() {
                         {"status",     "failed"},
                         {"background", true},
                         {"output",     json::array()},
-                        {"error",      {{"message", e.what()}}},
+                        // official ResponseError shape: code + message
+                        {"error",      {{"code", "server_error"}, {"message", e.what()}}},
                     };
                     server_responses_remember(failed, prepared_input_copy, instructions_copy);
                 }
@@ -6315,6 +6351,10 @@ void server_routes::init_routes() {
             meta->chat_params,
             files,
             false);
+        // carry the thinking display flag through to the Anthropic serializers
+        if (body.contains("anthropic_thinking_display")) {
+            body_parsed["anthropic_thinking_display"] = body.at("anthropic_thinking_display");
+        }
         return handle_completions_impl(
             req,
             SERVER_TASK_TYPE_COMPLETION,
@@ -6817,7 +6857,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_count_tokens(const l
             } break;
         case TASK_RESPONSE_TYPE_ANTHROPIC:
             {
-                body = server_chat_convert_anthropic_to_oai(body);
+                body = server_chat_convert_anthropic_to_oai(body, true);
             } break;
         default:
             res->error(format_error_response("invalid res_type", ERROR_TYPE_INVALID_REQUEST));
