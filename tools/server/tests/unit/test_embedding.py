@@ -169,7 +169,7 @@ def test_embedding_openai_library_single():
     server.pooling = 'last'
     server.start()
     client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
-    res = client.embeddings.create(model="text-embedding-3-small", input="I believe the meaning of life is")
+    res = client.embeddings.create(model=server.model_alias, input="I believe the meaning of life is")
     assert len(res.data) == 1
     assert len(res.data[0].embedding) > 1
 
@@ -179,7 +179,7 @@ def test_embedding_openai_library_multiple():
     server.pooling = 'last'
     server.start()
     client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
-    res = client.embeddings.create(model="text-embedding-3-small", input=[
+    res = client.embeddings.create(model=server.model_alias, input=[
         "I believe the meaning of life is",
         "Write a joke about AI from a very long prompt which will not be truncated",
         "This is a test",

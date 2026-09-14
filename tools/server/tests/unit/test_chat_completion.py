@@ -13,16 +13,16 @@ def create_server():
 @pytest.mark.parametrize(
     "model,system_prompt,user_prompt,max_tokens,re_content,n_prompt,n_predicted,finish_reason,jinja,chat_template",
     [
-        (None, "Book", "Hey", 8, "But she couldn't", 69, 8, "length", False, None),
-        (None, "Book", "Hey", 8, "But she couldn't", 69, 8, "length", True, None),
-        (None, "Book", "What is the best book", 8, "(Suddenly)+|\\{ \" Sarax.", 77, 8, "length", False, None),
-        (None, "Book", "What is the best book", 8, "(Suddenly)+|\\{ \" Sarax.", 77, 8, "length", True,  None),
-        (None, "Book", "What is the best book", 8, "(Suddenly)+|\\{ \" Sarax.", 77, 8, "length", True, 'chatml'),
-        (None, "Book", "What is the best book", 8, "^ blue",                    23, 8, "length", True, "This is not a chat template, it is"),
-        ("codellama70b", "You are a coding assistant.", "Write the fibonacci function in c++.", 128, "(Aside|she|felter|alonger)+", 104, 128, "length", False, None),
-        ("codellama70b", "You are a coding assistant.", "Write the fibonacci function in c++.", 128, "(Aside|she|felter|alonger)+", 104, 128, "length", True, None),
-        (None, "Book", [{"type": "text", "text": "What is"}, {"type": "text", "text": "the best book"}], 8, "Whillicter", 79, 8, "length", False, None),
-        (None, "Book", [{"type": "text", "text": "What is"}, {"type": "text", "text": "the best book"}], 8, "Whillicter", 79, 8, "length", True, None),
+        ("tinyllama-2", "Book", "Hey", 8, "But she couldn't", 69, 8, "length", False, None),
+        ("tinyllama-2", "Book", "Hey", 8, "But she couldn't", 69, 8, "length", True, None),
+        ("tinyllama-2", "Book", "What is the best book", 8, "(Suddenly)+|\\{ \" Sarax.", 77, 8, "length", False, None),
+        ("tinyllama-2", "Book", "What is the best book", 8, "(Suddenly)+|\\{ \" Sarax.", 77, 8, "length", True,  None),
+        ("tinyllama-2", "Book", "What is the best book", 8, "(Suddenly)+|\\{ \" Sarax.", 77, 8, "length", True, 'chatml'),
+        ("tinyllama-2", "Book", "What is the best book", 8, "^ blue",                    23, 8, "length", True, "This is not a chat template, it is"),
+        ("tinyllama-2", "You are a coding assistant.", "Write the fibonacci function in c++.", 128, "(Aside|she|felter|alonger)+", 104, 128, "length", False, None),
+        ("tinyllama-2", "You are a coding assistant.", "Write the fibonacci function in c++.", 128, "(Aside|she|felter|alonger)+", 104, 128, "length", True, None),
+        ("tinyllama-2", "Book", [{"type": "text", "text": "What is"}, {"type": "text", "text": "the best book"}], 8, "Whillicter", 79, 8, "length", False, None),
+        ("tinyllama-2", "Book", [{"type": "text", "text": "What is"}, {"type": "text", "text": "the best book"}], 8, "Whillicter", 79, 8, "length", True, None),
     ]
 )
 def test_chat_completion(model, system_prompt, user_prompt, max_tokens, re_content, n_prompt, n_predicted, finish_reason, jinja, chat_template):
@@ -63,6 +63,7 @@ def test_chat_completion_cached_tokens():
     ]
     for user_prompt, n_prompt, n_cache in seq:
         res = server.make_request("POST", "/chat/completions", data={
+            "model": server.model_alias,
             "max_tokens": 8,
             "messages": [
                 {"role": "system", "content": "Test"},
@@ -84,6 +85,7 @@ def test_chat_completion_stream(system_prompt, user_prompt, max_tokens, re_conte
     server.model_alias = "llama-test-model"
     server.start()
     res = server.make_stream_request("POST", "/chat/completions", data={
+        "model": server.model_alias,
         "max_tokens": max_tokens,
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -124,7 +126,7 @@ def test_chat_completion_with_openai_library():
     server.start()
     client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
     res = client.chat.completions.create(
-        model="gpt-3.5-turbo-instruct",
+        model=server.model_alias,
         messages=[
             {"role": "system", "content": "Book"},
             {"role": "user", "content": "What is the best book"},
@@ -145,6 +147,7 @@ def test_chat_template():
     server.debug = True  # to get the "__verbose" object in the response
     server.start()
     res = server.make_request("POST", "/chat/completions", data={
+        "model": server.model_alias,
         "max_tokens": 8,
         "messages": [
             {"role": "system", "content": "Book"},
@@ -167,6 +170,7 @@ def test_chat_template_assistant_prefill(prefill, re_prefill):
     server.debug = True  # to get the "__verbose" object in the response
     server.start()
     res = server.make_request("POST", "/chat/completions", data={
+        "model": server.model_alias,
         "max_tokens": 8,
         "messages": [
             {"role": "system", "content": "Book"},
@@ -188,6 +192,7 @@ def test_chat_template_continue_final_message_vllm_compat():
     server.debug = True
     server.start()
     res = server.make_request("POST", "/chat/completions", data={
+        "model": server.model_alias,
         "max_tokens": 8,
         "add_generation_prompt": False,
         "continue_final_message": True,
@@ -249,6 +254,7 @@ def test_completion_with_response_format(response_format: dict, n_predicted: int
     global server
     server.start()
     res = server.make_request("POST", "/chat/completions", data={
+        "model": server.model_alias,
         "max_tokens": n_predicted,
         "messages": [
             {"role": "system", "content": "You are a coding assistant."},
@@ -275,6 +281,7 @@ def test_completion_with_json_schema(jinja: bool, json_schema: dict, n_predicted
     server.debug = True
     server.start()
     res = server.make_request("POST", "/chat/completions", data={
+        "model": server.model_alias,
         "max_tokens": n_predicted,
         "messages": [
             {"role": "system", "content": "You are a coding assistant."},
@@ -296,6 +303,7 @@ def test_completion_with_grammar(jinja: bool, grammar: str, n_predicted: int, re
     server.jinja = jinja
     server.start()
     res = server.make_request("POST", "/chat/completions", data={
+        "model": server.model_alias,
         "max_tokens": n_predicted,
         "messages": [
             {"role": "user", "content": "Does not matter what I say, does it?"},
@@ -346,6 +354,7 @@ def test_chat_completion_with_timings_per_token():
     global server
     server.start()
     res = server.make_stream_request("POST", "/chat/completions", data={
+        "model": server.model_alias,
         "max_tokens": 10,
         "messages": [{"role": "user", "content": "test"}],
         "stream": True,
@@ -377,7 +386,7 @@ def test_logprobs():
     server.start()
     client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
     res = client.chat.completions.create(
-        model="gpt-3.5-turbo-instruct",
+        model=server.model_alias,
         temperature=0.0,
         messages=[
             {"role": "system", "content": "Book"},
@@ -404,7 +413,7 @@ def test_logprobs_stream():
     server.start()
     client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
     res = client.chat.completions.create(
-        model="gpt-3.5-turbo-instruct",
+        model=server.model_alias,
         temperature=0.0,
         messages=[
             {"role": "system", "content": "Book"},
@@ -455,7 +464,7 @@ def test_logit_bias():
 
     client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
     res = client.chat.completions.create(
-        model="gpt-3.5-turbo-instruct",
+        model=server.model_alias,
         temperature=0.0,
         messages=[
             {"role": "system", "content": "Book"},
@@ -472,6 +481,7 @@ def test_context_size_exceeded():
     global server
     server.start()
     res = server.make_request("POST", "/chat/completions", data={
+        "model": server.model_alias,
         "messages": [
             {"role": "system", "content": "Book"},
             {"role": "user", "content": "What is the best book"},
@@ -491,6 +501,7 @@ def test_context_size_exceeded_stream():
     server.start()
     try:
         for _ in server.make_stream_request("POST", "/chat/completions", data={
+            "model": server.model_alias,
             "messages": [
                 {"role": "system", "content": "Book"},
                 {"role": "user", "content": "What is the best book"},
@@ -523,6 +534,7 @@ def test_return_progress(n_batch, batch_count, reuse_cache):
     server.start()
     def make_cmpl_request():
         return server.make_stream_request("POST", "/chat/completions", data={
+            "model": server.model_alias,
             "max_tokens": 10,
             "messages": [
                 {"role": "user", "content": "This is a test" * 10},
@@ -572,6 +584,7 @@ def test_chat_completions_multiple_choices():
     # ref: https://github.com/ggml-org/llama.cpp/pull/18663
     for _ in range(2):
         res = server.make_request("POST", "/chat/completions", data={
+            "model": server.model_alias,
             "max_tokens": 8,
             "n": 2,
             "messages": [
@@ -610,6 +623,7 @@ def test_verbose_debug():
     server.start()
     for verbose in [True, False]:
         res = server.make_request("POST", "/chat/completions", data={
+            "model": server.model_alias,
             "max_tokens": 2,
             "messages": [
                 {"role": "system", "content": "Book"},

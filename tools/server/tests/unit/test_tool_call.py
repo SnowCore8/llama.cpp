@@ -290,6 +290,7 @@ def test_completion_with_required_tool_real_model(tool: dict, argument_key: str 
 
 def do_test_completion_without_tool_call(server: ServerProcess, n_predict: int, tools: list[dict], tool_choice: str | None, **kwargs):
     body = server.make_any_request("POST", "/v1/chat/completions", data={
+        "model": server.model_alias,
         "max_tokens": n_predict,
         "messages": [
             {"role": "system", "content": "You are a coding assistant."},

@@ -18,6 +18,7 @@ def test_gcp_predict_camel_case():
         "instances": [
             {
                 "@requestFormat": "chatCompletions",
+                "model": server.model_alias,
                 "max_tokens": 8,
                 "messages": [
                     {"role": "user", "content": "What is the meaning of life?"},
@@ -43,11 +44,13 @@ def test_gcp_predict_multiple_instances():
         "instances": [
             {
                 "@requestFormat": "chatCompletions",
+                "model": server.model_alias,
                 "max_tokens": 8,
                 "messages": [{"role": "user", "content": "Say hello"}],
             },
             {
                 "@requestFormat": "chatCompletions",
+                "model": server.model_alias,
                 "max_tokens": 8,
                 "messages": [{"role": "user", "content": "Say world"}],
             },

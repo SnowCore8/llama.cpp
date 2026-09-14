@@ -75,6 +75,7 @@ def test_ctx_shift_disabled_stream():
     global server
     server.start()
     res = server.make_stream_request("POST", "/v1/completions", data={
+        "model": server.model_alias,
         "n_predict": 256,
         "prompt": "Once",
         "stream": True,

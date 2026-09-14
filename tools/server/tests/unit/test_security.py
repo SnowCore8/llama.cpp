@@ -78,7 +78,7 @@ def test_openai_library_correct_api_key():
     server.start()
     client = OpenAI(api_key=TEST_API_KEY, base_url=f"http://{server.server_host}:{server.server_port}")
     res = client.chat.completions.create(
-        model="gpt-3.5-turbo",
+        model=server.model_alias,
         messages=[
             {"role": "system", "content": "You are a chatbot."},
             {"role": "user", "content": "What is the meaning of life?"},
@@ -229,6 +229,7 @@ def test_local_media_file(media_path, image_url, success,):
     server.media_path = media_path
     server.start()
     res = server.make_request("POST", "/chat/completions", data={
+        "model": server.model_alias,
         "max_tokens": 1,
         "messages": [
             {"role": "user", "content": [

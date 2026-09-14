@@ -14,7 +14,7 @@ def test_responses_with_openai_library():
     server.start()
     client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
     res = client.responses.create(
-        model="gpt-4.1",
+        model=server.model_alias,
         input=[
             {"role": "system", "content": "Book"},
             {"role": "user", "content": "What is the best book"},
@@ -32,7 +32,7 @@ def test_responses_stream_with_openai_library():
     server.start()
     client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
     stream = client.responses.create(
-        model="gpt-4.1",
+        model=server.model_alias,
         input=[
             {"role": "system", "content": "Book"},
             {"role": "user", "content": "What is the best book"},
@@ -85,6 +85,7 @@ def test_responses_stream_with_llama_telemetry():
     completed = None
 
     res = server.make_stream_request("POST", "/responses", data={
+        "model": server.model_alias,
         "input": "This is a test" * 10,
         "max_output_tokens": 8,
         "temperature": 0.8,
