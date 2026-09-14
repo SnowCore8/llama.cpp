@@ -79,6 +79,7 @@ def test_vision_chat_completion(prompt, image_url, success, re_content):
     global server
     server.start()
     res = server.make_request("POST", "/chat/completions", data={
+        "model": server.model_alias,
         "temperature": 0.0,
         "top_k": 1,
         "messages": [

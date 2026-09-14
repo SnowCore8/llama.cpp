@@ -218,6 +218,7 @@ def test_chat_template_continue_final_message_mutual_exclusion():
     server.chat_template = "llama3"
     server.start()
     res = server.make_request("POST", "/chat/completions", data={
+        "model": server.model_alias,
         "max_tokens": 8,
         "add_generation_prompt": True,
         "continue_final_message": True,
@@ -324,6 +325,7 @@ def test_completion_with_invalid_grammar():
     global server
     server.start()
     res = server.make_request("POST", "/chat/completions", data={
+        "model": server.model_alias,
         "max_tokens": 8,
         "messages": [
             {"role": "user", "content": "Does not matter what I say, does it?"},
@@ -349,6 +351,7 @@ def test_invalid_chat_completion_req(messages):
     global server
     server.start()
     res = server.make_request("POST", "/chat/completions", data={
+        "model": server.model_alias,
         "messages": messages,
     })
     assert res.status_code == 400 or res.status_code == 500

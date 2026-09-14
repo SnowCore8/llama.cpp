@@ -99,6 +99,7 @@ WEATHER_TOOL = ToolDefinition(
 
 def do_test_completion_with_required_tool_tiny(server: ServerProcess, tool: dict, argument_key: str | None, n_predict, **kwargs):
     body = server.make_any_request("POST", "/v1/chat/completions", data={
+        "model": server.model_alias,
         "max_tokens": n_predict,
         "messages": [
             {"role": "system", "content": "You are a coding assistant."},
@@ -261,6 +262,7 @@ def test_completion_with_required_tool_real_model(tool: dict, argument_key: str 
         server.chat_template = template_override
     server.start(timeout_seconds=TIMEOUT_START_SLOW)
     body = server.make_any_request("POST", "/v1/chat/completions", data={
+        "model": server.model_alias,
         "max_tokens": n_predict,
         "messages": [
             {"role": "system", "content": "You are a coding assistant."},
@@ -403,6 +405,7 @@ def test_weather(hf_repo: str, template_override: str | Tuple[str, str | None] |
 
 def do_test_weather(server: ServerProcess, **kwargs):
     body = server.make_any_request("POST", "/v1/chat/completions", data={
+        "model": server.model_alias,
         "messages": [
             {"role": "system", "content": "You are a chatbot that uses tools/functions. Dont overthink things."},
             {"role": "user", "content": "What is the weather in Istanbul?"},
@@ -462,6 +465,7 @@ def test_calc_result(result_override: str | None, n_predict: int, hf_repo: str, 
 
 def do_test_calc_result(server: ServerProcess, result_override: str | None, n_predict: int, **kwargs):
     body = server.make_any_request("POST", "/v1/chat/completions", data={
+        "model": server.model_alias,
         "max_tokens": n_predict,
         "messages": [
             {"role": "system", "content": "You are a tools-calling assistant. You express numerical values with at most two decimals."},
@@ -546,6 +550,7 @@ def test_thoughts(n_predict: int, reasoning_format: Literal['deepseek', 'none'] 
         server.chat_template = template_override
     server.start()
     body = server.make_any_request("POST", "/v1/chat/completions", data={
+        "model": server.model_alias,
         "max_tokens": n_predict,
         "messages": [
             {"role": "user", "content": "What's the sum of 102 and 7?"},
@@ -624,6 +629,7 @@ def test_hello_world(hf_repo: str, template_override: str | Tuple[str, str | Non
 
 def do_test_hello_world(server: ServerProcess, **kwargs):
     body = server.make_any_request("POST", "/v1/chat/completions", data={
+        "model": server.model_alias,
         "messages": [
             {"role": "system", "content": "You are a tool-calling agent."},
             {"role": "user", "content": "say hello world with python"},
