@@ -320,6 +320,8 @@ struct server_slot {
 
     // legacy /v1/completions echo + logprobs: one row per prompt token (row 0 stays empty)
     std::vector<completion_token_output> prompt_token_probs;
+    int32_t n_prompt_text_bytes = -1;      // byte length of the prompt text, -1 until measured
+    bool    prompt_rows_sent    = false;   // prompt rows and text are streamed once
 
     bool has_next_token = true;
     bool has_new_line   = false;
@@ -425,6 +427,8 @@ struct server_slot {
         generated_tokens.clear();
         generated_token_probs.clear();
         prompt_token_probs.clear();
+        n_prompt_text_bytes = -1;
+        prompt_rows_sent    = false;
         json_schema = json();
 
         task_prev = std::move(task);
@@ -2289,6 +2293,31 @@ private:
         } else {
             res->content = tkn.text_to_send;
             res->tokens  = { tkn.tok };
+
+            // legacy /v1/completions logprobs: streamed rows share the offsets of the
+            // non-streamed response, so they count from the start of the full text
+            if (!is_progress && slot.task->params.sampling.n_probs > 0) {
+                const bool echo_first = slot.need_prompt_logprobs() && !slot.prompt_rows_sent;
+                if (echo_first) {
+                    // echo=true: the prompt text and its rows ride along the first chunk, so
+                    // that chunk starts over at 0 and the generated rows continue past them
+                    slot.prompt_rows_sent    = true;
+                    res->prompt              = slot.task->tokens.detokenize(ctx_tgt, true);
+                    res->prompt_probs_output = slot.prompt_token_probs;
+                    res->offset_base         = 0;
+                    slot.n_prompt_text_bytes = 0;
+                    for (const auto & row : slot.prompt_token_probs) {
+                        std::string txt(row.text_to_send);
+                        txt.resize(validate_utf8(txt));
+                        slot.n_prompt_text_bytes += (int32_t) txt.size();
+                    }
+                } else {
+                    if (slot.n_prompt_text_bytes < 0) {
+                        slot.n_prompt_text_bytes = (int32_t) slot.task->tokens.detokenize(ctx_tgt, true).size();
+                    }
+                    res->offset_base = slot.n_prompt_text_bytes + slot.n_sent_text - tkn.text_to_send.size();
+                }
+            }
         }
 
         res->n_decoded             = slot.stats.n_gen;

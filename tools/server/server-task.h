@@ -497,6 +497,12 @@ struct server_task_result_cmpl_partial : server_task_result {
     server_slot_stats stats;
     result_prompt_progress progress;
 
+    // legacy /v1/completions echo + logprobs: the prompt text and its rows ride along the
+    // first chunk, offset_base keeps the streamed rows on the full text
+    std::string                          prompt;
+    std::vector<completion_token_output> prompt_probs_output;
+    size_t                               offset_base = 0;
+
     // response formatting
     bool               verbose  = false;
     task_response_type res_type = TASK_RESPONSE_TYPE_NONE;

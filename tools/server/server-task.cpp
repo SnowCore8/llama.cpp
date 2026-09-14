@@ -507,8 +507,9 @@ json server_task_result_cmpl_final::to_json_oaicompat() {
         finish_reason = "stop";
     }
     std::string text_out = content;
-    if (generation_params.oaicompat_cmpl_echo && !prompt.empty()) {
-        // OpenAI Completions echo=true: choice text starts with the prompt.
+    if (generation_params.oaicompat_cmpl_echo && !prompt.empty() && !stream) {
+        // OpenAI Completions echo=true: choice text starts with the prompt. Streamed chunks
+        // carry the prompt with the first chunk instead, so the final event stays empty here.
         text_out = prompt + content;
     }
     json res = json {
@@ -1563,13 +1564,21 @@ json server_task_result_cmpl_partial::to_json_non_oaicompat() {
 json server_task_result_cmpl_partial::to_json_oaicompat() {
     std::time_t t = std::time(0);
     json logprobs = json(nullptr); // OAI default to null
-    if (prob_output.probs.size() > 0) {
-        logprobs = completion_token_output::probs_vector_to_json_oaicompat_completions({prob_output});
+    if (prob_output.probs.size() > 0 || !prompt_probs_output.empty()) {
+        const std::vector<completion_token_output> * prompt_probs =
+            prompt_probs_output.empty() ? nullptr : &prompt_probs_output;
+        logprobs = completion_token_output::probs_vector_to_json_oaicompat_completions(
+                {prob_output}, prompt_probs, offset_base);
+    }
+    std::string text_out = content;
+    if (generation_params.oaicompat_cmpl_echo && !prompt.empty()) {
+        // OpenAI Completions echo=true: the chunk text starts with the prompt
+        text_out = prompt + content;
     }
     json res = json {
         {"choices",            json::array({
             json{
-                {"text",          content},
+                {"text",          text_out},
                 {"index",         index},
                 {"logprobs",      logprobs},
                 {"finish_reason", nullptr},

@@ -961,6 +961,83 @@ def run_completions_checks(
         "PASS" if elp_ok else "FAIL",
         f"HTTP {code_elp} {detail_elp}"[:200],
     )
+    # Official Completions echo=true + logprobs over SSE: a streamed object has the shape of
+    # the non-streamed one, so the prompt text and its rows ride along the first chunk and
+    # the offsets keep counting from the start of the full text.
+    body_els = {
+        "model": model,
+        "prompt": echo_prompt,
+        "max_tokens": 8,
+        "temperature": 0,
+        "echo": True,
+        "logprobs": 2,
+        **extra,
+    }
+    code_els, headers_els, raw_els = client.request(
+        "POST", "/v1/completions", {**body_els, "stream": True}, stream=True
+    )
+    els_ct = headers_els.get("Content-Type", "") or headers_els.get("content-type", "")
+    els_chunks = []
+    if code_els == 200:
+        for _, obj in parse_sse(raw_els):
+            if not isinstance(obj, dict):
+                continue
+            for ch in obj.get("choices") or []:
+                if isinstance(ch, dict) and isinstance(ch.get("logprobs"), dict):
+                    lp = ch["logprobs"]
+                    els_chunks.append((
+                        ch.get("text") or "",
+                        lp.get("tokens") or [],
+                        lp.get("token_logprobs") or [],
+                        lp.get("top_logprobs") or [],
+                        lp.get("text_offset") or [],
+                    ))
+    code_elsn, data_elsn = client.post_json("/v1/completions", body_els)
+    text_elsn = _completion_text(data_elsn) if code_elsn == 200 else ""
+    els_ok = False
+    detail_els = "missing"
+    if els_chunks:
+        first_toks, first_tlps, first_tops = els_chunks[0][1], els_chunks[0][2], els_chunks[0][3]
+        toks = [t for _, r_toks, _, _, _ in els_chunks for t in r_toks]
+        tlps = [v for _, _, r_tlps, _, _ in els_chunks for v in r_tlps]
+        offs = [v for _, _, _, _, r_offs in els_chunks for v in r_offs]
+        # every chunk's rows still spell out exactly that chunk's text
+        chunk_text_ok = all("".join(r_toks) == r_text for r_text, r_toks, _, _, _ in els_chunks)
+        # offsets run over the full text across chunks (no restart per chunk)
+        offsets_ok = (
+            len(offs) == len(toks) == len(tlps)
+            and offs[0] == 0
+            and all(
+                offs[i + 1] - offs[i] == len(str(toks[i]).encode("utf-8"))
+                for i in range(len(offs) - 1)
+            )
+        )
+        # the first chunk carries the prompt rows: first position has no logits, the rest do
+        prompt_rows_ok = (
+            len(first_toks) > 1
+            and first_tlps[0] is None
+            and first_tops[0] is None
+            and any(v is not None for v in first_tlps[1:])
+        )
+        stream_text = "".join(r_text for r_text, _, _, _, _ in els_chunks)
+        els_ok = (
+            "text/event-stream" in els_ct
+            and chunk_text_ok
+            and offsets_ok
+            and prompt_rows_ok
+            and stream_text.startswith(echo_prompt)
+            and stream_text == text_elsn
+        )
+        detail_els = (
+            f"chunks={len(els_chunks)} n={len(toks)} offs0={offs[0]} first_rows={len(first_toks)}"
+            f" tlps0={first_tlps[0]} same_text={stream_text == text_elsn}"
+        )
+    report.add(
+        "scenario",
+        "completions_echo_logprobs_stream_chunks",
+        "PASS" if els_ok else "FAIL",
+        f"HTTP {code_els} {detail_els}"[:200],
+    )
     code_suf, data_suf = client.post_json(
         "/v1/completions",
         {
