@@ -322,9 +322,10 @@ void server_openai_validate_cloud_shaped_fields(const json & body, bool allow_pr
             if (!opts.at("ttl").is_string()) {
                 throw std::invalid_argument("'prompt_cache_options.ttl' must be a string");
             }
+            // Official: 30m is currently the only supported value.
             const std::string ttl = opts.at("ttl").get<std::string>();
-            if (ttl != "30m" && ttl != "5m" && ttl != "1h") {
-                throw std::invalid_argument("'prompt_cache_options.ttl' must be one of: 5m, 30m, 1h");
+            if (ttl != "30m") {
+                throw std::invalid_argument("'prompt_cache_options.ttl' must be '30m'");
             }
         }
         // comparison_response_id is a Responses diagnostics hint; an unknown id is not an
@@ -424,7 +425,10 @@ void server_openai_apply_prompt_cache_semantics(json & body) {
                          !body.at("prompt_cache_key").get<std::string>().empty();
     const bool has_ret = body.contains("prompt_cache_retention") && !body.at("prompt_cache_retention").is_null();
     const bool has_opts = body.contains("prompt_cache_options") && body.at("prompt_cache_options").is_object();
-    if (!has_key && !has_ret && !has_opts) {
+    // Internal TTL channel: the Anthropic layer writes cache_control.ttl here, so 5m/1h stay
+    // usable without widening the official prompt_cache_options.ttl enum.
+    const bool has_local_ttl = body.contains("__prompt_cache_ttl") && body.at("__prompt_cache_ttl").is_string();
+    if (!has_key && !has_ret && !has_opts && !has_local_ttl) {
         return;
     }
 
@@ -448,17 +452,25 @@ void server_openai_apply_prompt_cache_semantics(json & body) {
     }
     if (has_opts && body.at("prompt_cache_options").contains("ttl") &&
             body.at("prompt_cache_options").at("ttl").is_string()) {
-        // Options TTL is more specific when present.
+        // Options TTL is more specific when present; official supports only 30m.
         const std::string opt_ttl = body.at("prompt_cache_options").at("ttl").get<std::string>();
-        if (opt_ttl == "30m") {
-            ttl = 30 * 60;
-        } else if (opt_ttl == "5m") {
+        if (opt_ttl != "30m") {
+            throw std::invalid_argument("'prompt_cache_options.ttl' must be '30m'");
+        }
+        ttl = 30 * 60;
+    }
+    if (has_local_ttl) {
+        // Internal channel (Anthropic cache_control.ttl). It feeds the same local cache TTL
+        // as prompt_cache_options.ttl, but keeps the local 5m/1h values off the wire.
+        const std::string local_ttl = body.at("__prompt_cache_ttl").get<std::string>();
+        if (local_ttl == "5m") {
             ttl = 5 * 60;
-        } else if (opt_ttl == "1h") {
+        } else if (local_ttl == "30m") {
+            ttl = 30 * 60;
+        } else if (local_ttl == "1h") {
             ttl = 60 * 60;
         } else {
-            throw std::invalid_argument(
-                "'prompt_cache_options.ttl' must be one of: 5m, 30m, 1h");
+            throw std::invalid_argument("'__prompt_cache_ttl' must be one of: 5m, 30m, 1h");
         }
     }
 

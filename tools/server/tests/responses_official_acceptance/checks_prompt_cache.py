@@ -272,7 +272,7 @@ def run_prompt_cache_checks(
     # Disk TTL expiry must clear slot KV (alive checked before touch refresh).
     _check_prompt_cache_ttl_expiry(client, report, model, extra)
     _check_retention_and_implicit(client, report, model, extra)
-    _check_prompt_cache_options_ttl_ladder(client, report, model, extra)
+    _check_prompt_cache_options_ttl_only_30m(client, report, model, extra)
 
     # comparison_response_id diagnostics: the request must stay 200, the baseline
     # comes from the response store, an unknown id reports not-found.
@@ -341,7 +341,7 @@ def _check_prompt_cache_ttl_expiry(
         "temperature": 0,
         "prompt_cache_key": key,
         "prompt_cache_retention": "in_memory",
-        "prompt_cache_options": {"ttl": "5m"},
+        "prompt_cache_options": {"ttl": "30m"},
         **extra,
     }
     # Cold + warm
@@ -475,55 +475,53 @@ def _check_retention_and_implicit(
     )
 
 
-def _check_prompt_cache_options_ttl_ladder(
+def _check_prompt_cache_options_ttl_only_30m(
     client: ResponsesHttpClient,
     report: Report,
     model: str,
     extra: dict[str, Any],
 ) -> None:
-    """prompt_cache_options.ttl 5m/30m/1h must set distinct disk expires_at deltas."""
+    """Official: 30m is the only supported prompt_cache_options.ttl, other values are rejected."""
     import json
     import os
     from pathlib import Path
 
     root = Path(os.environ.get("LLAMA_OPENAI_FILES_PATH", "/tmp/llama-openai-files"))
     uniq = f"ttl{time.time_ns()}"
-    pad = f"ttl ladder pad {uniq}: " + ("papa-quebec " * 20)
-    expected = {"5m": 5 * 60, "30m": 30 * 60, "1h": 60 * 60}
-    observed: dict[str, int] = {}
-    codes: dict[str, int] = {}
+    pad = f"ttl pad {uniq}: " + ("papa-quebec " * 20)
+    key = f"resp-ttl-30m-{uniq}"
+    body = {
+        "model": model,
+        "input": f"{pad}\nReply with exactly: TTL_30M",
+        "max_output_tokens": 12,
+        "temperature": 0,
+        "prompt_cache_key": key,
+        "prompt_cache_options": {"mode": "explicit", "ttl": "30m"},
+        **extra,
+    }
     now = int(time.time())
-    for ttl, secs in expected.items():
-        key = f"resp-ttl-{ttl}-{uniq}"
-        body = {
-            "model": model,
-            "input": f"{pad}\nReply with exactly: TTL_{ttl}",
-            "max_output_tokens": 12,
-            "temperature": 0,
-            "prompt_cache_key": key,
-            "prompt_cache_options": {"mode": "explicit", "ttl": ttl},
-            **extra,
-        }
-        code, _ = client.post_json("/v1/responses", body)
-        codes[ttl] = code
-        meta = root / "prompt_cache_keys" / f"{key}.json"
-        delta = -1
-        if meta.exists():
-            try:
-                exp = int(json.loads(meta.read_text()).get("expires_at") or 0)
-                delta = exp - now if exp > 0 else 0
-            except Exception:
-                delta = -1
-        observed[ttl] = delta
+    code, _ = client.post_json("/v1/responses", body)
+    meta = root / "prompt_cache_keys" / f"{key}.json"
+    delta = -1
+    if meta.exists():
+        try:
+            exp = int(json.loads(meta.read_text()).get("expires_at") or 0)
+            delta = exp - now if exp > 0 else 0
+        except Exception:
+            delta = -1
+    rejected: dict[str, int] = {}
+    for ttl in ("5m", "1h"):
+        other = dict(body)
+        other["prompt_cache_key"] = f"resp-ttl-{ttl}-{uniq}"
+        other["prompt_cache_options"] = {"mode": "explicit", "ttl": ttl}
+        rejected[ttl], _ = client.post_json("/v1/responses", other)
     # Allow ±90s skew for request latency / clock.
-    ok = all(codes[t] == 200 for t in expected) and all(
-        abs(observed[t] - expected[t]) <= 90 for t in expected
-    ) and observed["5m"] < observed["30m"] < observed["1h"]
+    ok = code == 200 and abs(delta - 30 * 60) <= 90 and all(c >= 400 for c in rejected.values())
     report.add(
         "cache",
-        "prompt_cache_options_ttl_ladder",
+        "prompt_cache_options_ttl_only_30m",
         "PASS" if ok else "FAIL",
-        f"codes={codes} deltas={observed}",
+        f"http_30m={code} delta_30m={delta} rejected={rejected}",
     )
 
 

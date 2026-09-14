@@ -403,46 +403,52 @@ def run_semantic_checks(
         f"http={c1}/{c2} cached=({_cached(d1)},{_cached(d2)})",
     )
 
-    # --- prompt_cache_options.ttl ladder: 5m < 30m < 1h on disk expires_at ---
+    # --- prompt_cache_options.ttl: official documents 30m as the only supported value ---
     import os
     from pathlib import Path
 
     root = Path(os.environ.get("LLAMA_OPENAI_FILES_PATH", "/tmp/llama-openai-files"))
     uniq_t = f"ttl{time.time_ns()}"
-    pad_t = f"chat ttl ladder {uniq_t}: " + ("romeo-sierra " * 20)
-    expected = {"5m": 5 * 60, "30m": 30 * 60, "1h": 60 * 60}
-    observed: dict[str, int] = {}
-    codes: dict[str, int] = {}
+    pad_t = f"chat ttl {uniq_t}: " + ("romeo-sierra " * 20)
+    key_t = f"chat-ttl-30m-{uniq_t}"
     now_t = int(time.time())
-    for ttl, secs in expected.items():
-        key = f"chat-ttl-{ttl}-{uniq_t}"
+    c30, _ = _create(
+        client,
+        model,
+        extra,
+        {
+            "prompt_cache_key": key_t,
+            "prompt_cache_options": {"mode": "explicit", "ttl": "30m"},
+            "max_tokens": 12,
+            "messages": [{"role": "user", "content": f"{pad_t}\nReply with exactly: TTL_30M"}],
+        },
+    )
+    meta = root / "prompt_cache_keys" / f"{key_t}.json"
+    delta_30 = -1
+    if meta.exists():
+        try:
+            exp = int(json.loads(meta.read_text()).get("expires_at") or 0)
+            delta_30 = exp - now_t if exp > 0 else 0
+        except Exception:
+            delta_30 = -1
+    rejected: dict[str, int] = {}
+    for ttl in ("5m", "1h"):
         c, _ = _create(
             client,
             model,
             extra,
             {
-                "prompt_cache_key": key,
+                "prompt_cache_key": f"chat-ttl-{ttl}-{uniq_t}",
                 "prompt_cache_options": {"mode": "explicit", "ttl": ttl},
                 "max_tokens": 12,
                 "messages": [{"role": "user", "content": f"{pad_t}\nReply with exactly: TTL_{ttl}"}],
             },
         )
-        codes[ttl] = c
-        meta = root / "prompt_cache_keys" / f"{key}.json"
-        delta = -1
-        if meta.exists():
-            try:
-                exp = int(json.loads(meta.read_text()).get("expires_at") or 0)
-                delta = exp - now_t if exp > 0 else 0
-            except Exception:
-                delta = -1
-        observed[ttl] = delta
-    ok_ttl = all(codes[t] == 200 for t in expected) and all(
-        abs(observed[t] - expected[t]) <= 90 for t in expected
-    ) and observed["5m"] < observed["30m"] < observed["1h"]
+        rejected[ttl] = c
+    ok_ttl = c30 == 200 and abs(delta_30 - 30 * 60) <= 90 and all(c >= 400 for c in rejected.values())
     report.add(
         "semantic",
-        "prompt_cache_options_ttl_ladder",
+        "prompt_cache_options_ttl_only_30m",
         "PASS" if ok_ttl else "FAIL",
-        f"codes={codes} deltas={observed}",
+        f"http_30m={c30} delta_30m={delta_30} rejected={rejected}",
     )
