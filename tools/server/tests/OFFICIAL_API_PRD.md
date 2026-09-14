@@ -258,7 +258,7 @@ FAIL / PARTIAL / SKIP 归因（DIFF §6）：
 25. `/v1/completions` `best_of > n_parallel` 无校验且请求挂起 - **已修**（本切片，代码 `c52034650`；路由层按 `best_of > min(n_parallel, 20)` -> 400，并落地官方声明上限 `n <= 128` / `best_of <= 20`；见 DIFF §4.1 原 #19 + 「新」）；
 26. Anthropic `/v1/messages` 未接的官方字段（2026-09-14）：`thinking{type:"adaptive"}` 与 `display`、`tools[]`/`tool_use`/`tool_result` 上的 `cache_control`、`service_tier`/`container`/`inference_geo`、`tools[].strict`/`input_examples`、响应 `usage.service_tier`/`stop_details`/`container`/`inference_geo`、`message_delta.usage` 的 input/cache_*、非流式错误体官方包裹（`ex_wrapper` 为跨端点设计）；见 §5 #14 / DIFF §4 #20；
 27. Anthropic SSE `error` 帧（2026-09-14）：代码已按官方包裹 `{"type":"error","error":{…}}`，但默认配置**运行期不可达**（超上下文在流开始前即普通 400 JSON）-> 未验证；见 DIFF §4 #21；
-28. 42 个预存单测失败 - **已消化**（2026-09-14）：model 校验类已修（全量 `unit/` 离线 `64 failed -> 27 failed`），残余 16 条为本地缺省 verbosity hint 偏差（已按 fork 行为重基线）、10 条为离线网络依赖、1 条为 metrics 快照差异；见 §8.4；
+28. 42 个预存单测失败 - **已消化**（2026-09-14）：model 校验类已修（全量 `unit/` 离线 `64 failed -> 27 failed`），残余 16 条为本地缺省 verbosity hint 偏差（已按 fork 行为重基线）、10 条为离线网络依赖、1 条为 metrics 快照差异（已定位为 fork bug 并修复，`adaed898f`）；见 §8.4；
 
 ### 8.4 其它已登记（波报告未决点）
 
@@ -269,6 +269,12 @@ FAIL / PARTIAL / SKIP 归因（DIFF §6）：
 - `prompt_cache_single_text_append` 新判据未在 dense 模型复验（drift-report §6.1）；
 - Anthropic SSE 透传错误帧（顺带效果，登记）：现按官方包裹 `{"type":"error","error":{…}}`，内层仍是本地统一错误体（`code` 可为 null）；默认配置不可达（见 §8.3 #27 / DIFF §4 #21）（envelope-report §6.2）；
 - background response error 体仅 `{message}`（协议对象，明确范围外）（envelope-report §6.3）。
+- **fork-only CI 工作流（2026-09-14）**：`.github/workflows/fork-v100.yml`（`push: v100` + `workflow_dispatch`）在 GitHub 托管 runner（`ubuntu-24.04`，无 CUDA）上做 CPU 构建（`-DGGML_SCHED_NO_REALLOC=ON`，只建 `llama-server`）+ 全量 server 单测（`pytest unit/ -n auto --dist=worksteal -m "not slow"`），替代上游需要自托管 runner 的三个工作流（`build-cann` 恒红且无 job、`python-type-check`/`python-check-requirements` 需 `[self-hosted, fast]` 永久排队；三者已 `disabled_manually`）。首次运行（run 34830980875，commit `8a100b613`）= **5 failed / 384 passed / 3 skipped**（112-114 s）；同 commit 重跑复现同样 5 条（确定性）。该套件带网络、远优于离线本机基线（11 failed / 11 errors 全为下载依赖）。
+- 上述 5 条 CI 失败逐条归因与处置（2026-09-14）：
+  1. `unit/test_sleep.py::test_server_sleep_read_only_endpoints` - **fork bug，已修**（`adaed898f`）：sleep 期的 metrics 快照只带 `server_metrics`，L2 prompt cache 的 counter/gauge 全为 0（`prompt_cache_limit_bytes 0` vs live `8.58993e+09`、`prompt_cache_misses_total 0` vs `1`）；快照改为同时缓存 `prompt_cache->stats()`。修后本地单测 **1 passed**。
+  2. `unit/test_stream.py::test_stream_resumes_after_reload_during_model_load` - **fork bug，已修**（`52fb705d9`）：全局 404 兜底 error handler 也作用于**已带 content provider** 的代理/SSE 404，`set_content` 给它加上 `Content-Length: 161` 而 provider 只发 101 字节 -> `ChunkedEncodingError: IncompleteRead(101 bytes read, 60 more expected)`；条件加 `&& !res.content_provider_`。修后本地 `unit/test_stream.py unit/test_sleep.py` = **6 passed**。
+  3. `unit/test_vision_api.py::test_vision_chat_completion` 2 行（`IMG_URL_0` / `IMG_BASE64_URI_0`）- **缺省 verbosity hint 行为，按 fork 契约重基线**（`71b5d04c1`；登记见 SCOPE「Suite-only fixes」）：同一请求 `verbosity` 省略 -> `automobile automobile automobile automobile`、`verbosity:"low"` -> `cat cat cat cat`、`verbosity:"none"` -> 400；期望放宽为 `(cat)+|(automobile)+`（与同文件原生 `/completions` 用例对同一张图一致）。修后 `unit/test_vision_api.py` = **19 passed**。
+  4. `unit/test_completion.py::test_n_probs_post_backend_sampling` - **未解释（登记，未修）**：CI 上 `assert 421 == 354`（两次运行同 id、同 step）；`backend_sampling:true` 的请求在 step 4 抽到 `l`（0.169）而 legacy 请求抽到 `ke`（0.831），但**两条请求报出的后验分布一致**（`ke` 0.83109 vs 0.83105，测试容差 0.01）-> 分歧在采样抽签（backend 路径的 RNG 流），不在数值：runner 上 legacy 路径的 token/prob/content 与本机逐位相同。fork 未改 `src/`（backend sampling 实现）与 `ggml/src/ggml-cpu`；`common/sampling.cpp` 唯一路径相关改动（backend sampling 关闭时也建 rbudget）对本请求惰性（`sampler chain` 打印无 rbudget，两条请求链同为 `top-k/min-p/temp-ext/dist`）。本机确定性通过（单测 6/6、`taskset -c 0-3`、`LLAMA_ARG_THREADS=2`（n_threads=2 已核）均 PASS）；runner = 4 vCPU EPYC 7763，CI 与本机 CPU 特性行相同（SSE3/AVX2/F16C/FMA/BMI2/LLAMAFILE/OPENMP/REPACK）。**下一步（未做）**：在同一 runner 上用上游 `origin/master` 构建跑同一条测试，判定是否上游在 x64/4-vCPU 上的潜在脆弱，再决定排除或继续追。
 
 ## 9. 风险与回退
 
