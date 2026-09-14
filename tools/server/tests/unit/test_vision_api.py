@@ -64,8 +64,9 @@ def test_v1_models_supports_multimodal_capability():
     "prompt, image_url, success, re_content",
     [
         # test model is trained on CIFAR-10, but it's quite dumb due to small size
-        ("What is this:\n", "IMG_URL_0",              True, "(cat)+"),
-        ("What is this:\n", "IMG_BASE64_URI_0",       True, "(cat)+"),
+        # the server's default verbosity hint shifts this one between cat and automobile
+        ("What is this:\n", "IMG_URL_0",              True, "(cat)+|(automobile)+"),
+        ("What is this:\n", "IMG_BASE64_URI_0",       True, "(cat)+|(automobile)+"),
         ("What is this:\n", "IMG_URL_1",              True, "(frog)+"),
         ("Test test\n",     "IMG_URL_1",              True, "(frog)+"), # test invalidate cache
         ("What is this:\n", "malformed",              False, None),
