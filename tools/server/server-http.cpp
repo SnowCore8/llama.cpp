@@ -152,10 +152,11 @@ bool server_http_context::init(const common_params & params) {
     });
 
     srv->set_error_handler([](const httplib::Request & req, httplib::Response & res) {
-        // cpp-httplib invokes the error handler for every 4xx/5xx before writing.
-        // Only fill a default body for unmatched routes (empty body). Do NOT overwrite
-        // handler-produced 404s such as model/batch/response not found.
-        if (res.status == 404 && res.body.empty()) {
+        // cpp-httplib invokes the error handler for every 4xx/5xx before writing. Only fill a default
+        // body for unmatched routes: handler-produced 404s (model/batch/response not found) and
+        // streamed responses (proxied child error, SSE) must keep their own body, otherwise
+        // set_content sets Content-Length on a response written from the content provider
+        if (res.status == 404 && res.body.empty() && !res.content_provider_) {
             const std::string msg = req.method + " " + req.path + " not found"
                 " (if base_url already ends with /v1, do not append another /v1)";
             res.set_content(
