@@ -42,6 +42,7 @@ _RUNNABLE_NAMES = (
     "error shape: unknown event type",
     "error shape: invalid json",
     "error shape: HTTP 400 -> invalid_request_error",
+    "error shape: unknown model -> model_not_found",
     "background is ignored over WS",
     "previous_response_not_found",
     "lane FIFO",
@@ -366,6 +367,25 @@ def run_ws_checks(
             )
             add("error shape: HTTP 400 -> invalid_request_error", ok,
                 f"outcome={outcome} status={st} error={json.dumps(err)[:200]}")
+
+    def unknown_model(deadline: float) -> None:
+        # an unknown model arrives as a request-level error frame; the model check
+        # runs before the request reaches the model, so no frame precedes it
+        unknown = f"{model}-does-not-exist"
+        with _connect(ws_connect, client) as ws:
+            ws.send(json.dumps(_create(unknown, extra)))
+            frames, outcome, ev = _drain_one(ws, deadline, max_frames=8)
+            err = _err_of(ev)
+            ok = (
+                outcome == "error"
+                and len(frames) == 1
+                and err.get("code") == "model_not_found"
+                and err.get("param") == "model"
+                and isinstance(err.get("message"), str)
+                and unknown in err.get("message", "")
+            )
+            add("error shape: unknown model -> model_not_found", ok,
+                f"outcome={outcome} frames={len(frames)} error={json.dumps(err)[:200]}")
 
     def background_ignored(deadline: float) -> None:
         # official WebSocket mode: background is not supported and is never echoed back
@@ -1616,6 +1636,7 @@ def run_ws_checks(
     guarded("error shape: unknown event type", unknown_event_type)
     guarded("error shape: invalid json", invalid_json)
     guarded("error shape: HTTP 400 -> invalid_request_error", http_status_error_type)
+    guarded("error shape: unknown model -> model_not_found", unknown_model)
     guarded("background is ignored over WS", background_ignored)
     guarded("previous_response_not_found", previous_response_missing)
     guarded("lane FIFO", lane_fifo)
