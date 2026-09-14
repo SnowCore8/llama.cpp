@@ -7,7 +7,6 @@ Set of LLM REST APIs and a web UI to interact with llama.cpp.
 **Features:**
  * LLM inference of F16 and quantized models on GPU and CPU
  * [OpenAI API](https://github.com/openai/openai-openapi) compatible chat completions, responses, and embeddings routes
- * [Anthropic Messages API](https://docs.anthropic.com/en/api/messages) compatible chat completions
  * Reranking endpoint (https://github.com/ggml-org/llama.cpp/pull/9510)
  * Parallel decoding with multi-user support
  * Continuous batching
@@ -1164,7 +1163,7 @@ checkpoint. `GET /props` reports the same counters as JSON.
 
 ### Slot KV cache persistence (local session acceleration)
 
-This is a **llama-server native** feature for saving / restoring a slot’s KV (prompt cache) to disk. It is **not** part of the OpenAI / Anthropic HTTP APIs.
+This is a **llama-server native** feature for saving / restoring a slot’s KV (prompt cache) to disk. It is **not** part of the OpenAI HTTP APIs.
 
 | Concept | What it is | What it is not |
 |---------|------------|----------------|
@@ -1778,91 +1777,6 @@ Example response:
   "object": "response.input_tokens",
   "input_tokens": 11
 }
-```
-
-## Anthropic-compatible API Endpoints
-
-### POST `/v1/messages`: Anthropic-compatible Messages API
-
-Given a list of `messages`, returns the assistant's response. Streaming is supported via Server-Sent Events. While no strong claims of compatibility with the Anthropic API spec are made, in our experience it suffices to support many apps.
-
-*Options:*
-
-See [Anthropic Messages API documentation](https://docs.anthropic.com/en/api/messages). Tool use requires `--jinja` flag.
-
-`model`: Model identifier (required)
-
-`messages`: Array of message objects with `role` and `content` (required)
-
-`max_tokens`: Maximum tokens to generate (required; `0` pre-warms the prompt cache without generating)
-
-`system`: System prompt as string or array of content blocks
-
-`temperature`: Sampling temperature 0-1 (default: 1.0)
-
-`top_p`: Nucleus sampling (default: 1.0)
-
-`top_k`: Top-k sampling
-
-`stop_sequences`: Array of stop sequences
-
-`stream`: Enable streaming (default: false)
-
-`tools`: Array of tool definitions (requires `--jinja`). `strict` and `input_examples` are accepted and ignored (the local tool grammar is always schema-driven)
-
-`tool_choice`: Tool selection mode (`{"type": "auto"}`, `{"type": "any"}`, `{"type": "tool", "name": "..."}`, or `{"type": "none"}`); `disable_parallel_tool_use` maps to `parallel_tool_calls=false`
-
-`output_config`: `effort` (`low`/`medium`/`high`/`xhigh`/`max`) maps to the local reasoning effort; `format` with `{"type": "json_schema", "schema": {...}}` constrains the response to that schema
-
-`thinking`: `{"type": "enabled", "budget_tokens": N}` sets the local thinking budget; `{"type": "disabled"}` turns thinking off; `{"type": "adaptive"}` lets the model size its own thinking (no budget, `output_config.effort` decides); `display` (`summarized`/`omitted`) only controls whether the thinking text is returned - `omitted` keeps the thinking block, its signature and `signature_delta`
-
-`service_tier`, `container`, `inference_geo`: shape-validated and ignored (the local server has no tier, container or geo routing)
-
-`cache_control`: `{"type": "ephemeral", "ttl": "5m"|"1h"}` on a system block or on a `text`/`image` content block maps to a local prompt-cache breakpoint; `tools[]`, `tool_use` and `tool_result` are accepted too and mark the enclosing message; the top-level field marks the last cacheable block (Anthropic automatic caching). The TTL feeds the local cache TTL directly, so Claude-style `5m`/`1h` work even though the OpenAI-style `prompt_cache_options.ttl` only accepts `30m`
-
-The response carries the official `container` / `stop_details` (`null` locally) and the `usage` details `cache_creation_input_tokens` (always `0`), `cache_creation.ephemeral_1h_input_tokens` / `ephemeral_5m_input_tokens` (always `0`), `cache_read_input_tokens`, `output_tokens_details.thinking_tokens`, `service_tier` (always `"standard"`), `inference_geo` (`null` locally) and `server_tool_use` (always `{web_fetch_requests: 0, web_search_requests: 0}`) next to the other Anthropic counters. Streaming `message_delta.usage` carries the cumulative counters.
-
-Errors use the Anthropic error envelope (`{"type": "error", "error": {"type": ..., "message": ...}, "request_id": ...}`) on both `/v1/messages` and `/v1/messages/count_tokens`, including the `401` / `503` (`overloaded_error`, HTTP 529) responses produced before a request reaches the model.
-
-*Examples:*
-
-```shell
-curl http://localhost:8080/v1/messages \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: your-api-key" \
-  -d '{
-    "model": "gpt-4",
-    "max_tokens": 1024,
-    "system": "You are a helpful assistant.",
-    "messages": [
-      {"role": "user", "content": "Hello!"}
-    ]
-  }'
-```
-
-### POST `/v1/messages/count_tokens`: Token Counting
-
-Counts the number of tokens in a request without generating a response.
-
-Accepts the same parameters as `/v1/messages`, except that `max_tokens` is not required (the official token-counting request schema does not define it); if it is sent anyway it is accepted and ignored, so count requests do not need it.
-
-*Example:*
-
-```shell
-curl http://localhost:8080/v1/messages/count_tokens \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4",
-    "messages": [
-      {"role": "user", "content": "Hello!"}
-    ]
-  }'
-```
-
-*Response:*
-
-```json
-{"input_tokens": 10}
 ```
 
 ## Server built-in tools

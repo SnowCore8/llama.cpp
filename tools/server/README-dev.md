@@ -11,7 +11,7 @@ In-scope types of feature:
 - Backend:
     - Basic inference features: text completion, embeddings output
     - Chat-oriented features: chat completion, tool calling
-    - Third-party API compatibility, e.g. OAI-compat, Anthropic-compat
+    - Third-party API compatibility, e.g. OAI-compat
     - Multimodal input/output
     - Memory management: save/load state, context checkpoints
     - Model management
@@ -120,7 +120,7 @@ Here is an example trace of an API request for text completion:
 - As the response is stateless, `server_res_generator` calls `response->update()` to update the response with the current state.
 - `server_res_generator` then calls `response->to_json()` and passes the response to the HTTP layer.
 
-The three chat-shaped surfaces (Chat Completions, Responses, Anthropic Messages) all funnel into the same engine entry `handle_completions_impl`. The plan to keep the engine in one copy while giving each surface its own full surface-layer logic is in [tests/API_SURFACE_SPLIT.md](tests/API_SURFACE_SPLIT.md).
+The two chat-shaped surfaces (Chat Completions, Responses) all funnel into the same engine entry `handle_completions_impl`. The plan to keep the engine in one copy while giving each surface its own full surface-layer logic is in [tests/API_SURFACE_SPLIT.md](tests/API_SURFACE_SPLIT.md).
 
 ### Resumable streaming (SSE replay buffer)
 
