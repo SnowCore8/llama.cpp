@@ -1109,6 +1109,19 @@ static void server_responses_inject_prompt_cache_diagnostics(json & response_obj
         const json & o = obj.at(outer);
         return o.contains(inner) && !o.at(inner).is_null() ? o.at(inner) : json(nullptr);
     };
+    // A compacted baseline folds its history into an opaque item, so the reusable prefix
+    // diverges; the store keeps that folded input.
+    auto has_compaction_item = [](const json & items) {
+        if (!items.is_array()) {
+            return false;
+        }
+        for (const auto & item : items) {
+            if (item.is_object() && json_value(item, "type", std::string()) == "compaction") {
+                return true;
+            }
+        }
+        return false;
+    };
 
     std::string reason = "input_changed";
     // The response echo carries the loaded model name, so the model check compares the
@@ -1138,6 +1151,8 @@ static void server_responses_inject_prompt_cache_diagnostics(json & response_obj
             reason = "reasoning_effort_changed";
         } else if (nested_or_null(request_body, "text", "verbosity") != nested_or_null(base, "text", "verbosity")) {
             reason = "verbosity_changed";
+        } else if (has_compaction_item(entry->input)) {
+            reason = "context_compacted";
         }
     }
     response_obj["prompt_cache_diagnostics"] = json {
