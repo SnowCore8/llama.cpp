@@ -381,6 +381,9 @@ void server_openai_validate_reasoning_object(const json & body);
 // Validate OpenAI Completions (/v1/completions) create fields against official shapes.
 void server_openai_validate_completions_create(const json & body);
 
+// Validate the narrower official Responses compact `service_tier` enum.
+void server_openai_validate_compact_service_tier(const json & body);
+
 // Validate Chat Completions create fields (modalities/audio/verbosity/penalties/…).
 void server_openai_validate_chat_create_fields(const json & body);
 

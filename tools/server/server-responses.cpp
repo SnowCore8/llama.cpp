@@ -1203,6 +1203,11 @@ json server_responses_enrich_response(json response_obj, const json & request_bo
         response_obj["store"] = true;
     }
 
+    // official Response objects always carry the usage key (null until the response completes)
+    if (!response_obj.contains("usage")) {
+        response_obj["usage"] = nullptr;
+    }
+
     // Convenience field used by OpenAI SDKs
     if (!response_obj.contains("output_text") && response_obj.contains("output") &&
         response_obj.at("output").is_array()) {
@@ -1557,6 +1562,8 @@ json server_responses_apply_output_include(json response_obj, const json & inclu
 }
 
 json server_responses_compact(json body, const llama_vocab * vocab, int32_t n_ctx_slot) {
+    // official compact accepts a narrower service_tier enum than create/chat
+    server_openai_validate_compact_service_tier(body);
     body = server_responses_prepare_request(std::move(body), vocab, n_ctx_slot);
 
     json input = server_responses_normalize_input(body.at("input"));

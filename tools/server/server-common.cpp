@@ -219,21 +219,31 @@ static void server_openai_validate_responses_text_object(const json & body) {
     }
 }
 
-// Validate the shared Chat/Responses `service_tier` enum.
-static void server_openai_validate_service_tier(const json & body) {
+// Validate the shared Chat/Responses `service_tier` enum. Official Responses compact
+// documents a narrower enum than the create/chat paths.
+static void server_openai_validate_service_tier(const json & body, bool compact = false) {
     if (!body.contains("service_tier") || body.at("service_tier").is_null()) {
         return;
     }
+    const char * msg = compact
+        ? "'service_tier' must be one of: auto, default, flex, fast, priority"
+        : "'service_tier' must be one of: auto, default, flex, scale, priority, fast, ultrafast";
     if (!body.at("service_tier").is_string()) {
-        throw std::invalid_argument(
-            "'service_tier' must be one of: auto, default, flex, scale, priority, fast, ultrafast");
+        throw std::invalid_argument(msg);
     }
     const std::string tier = body.at("service_tier").get<std::string>();
-    if (tier != "auto" && tier != "default" && tier != "flex" && tier != "scale" &&
-            tier != "priority" && tier != "fast" && tier != "ultrafast") {
-        throw std::invalid_argument(
-            "'service_tier' must be one of: auto, default, flex, scale, priority, fast, ultrafast");
+    if (tier == "auto" || tier == "default" || tier == "flex" || tier == "priority" || tier == "fast") {
+        return;
     }
+    if (!compact && (tier == "scale" || tier == "ultrafast")) {
+        return;
+    }
+    throw std::invalid_argument(msg);
+}
+
+// official compact enum: no scale/ultrafast
+void server_openai_validate_compact_service_tier(const json & body) {
+    server_openai_validate_service_tier(body, /*compact=*/true);
 }
 
 // Validate the official Metadata object: <=16 pairs, keys <=64 chars, string values <=512 chars.
