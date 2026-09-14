@@ -1656,7 +1656,7 @@ curl -s http://localhost:8080/v1/responses \
 
 #### Streaming and background responses
 
-`stream: true` follows the official SSE phases, and every event carries a monotonic `sequence_number`: `response.created` and `response.in_progress` come first, then for each output item `response.output_item.added`, `response.content_part.added`, the incremental events (`response.output_text.delta`, `response.function_call_arguments.delta`, `response.reasoning_summary_text.delta`), the matching `*.done` events, and a terminal `response.completed` / `response.incomplete`. Every SSE event's data object also carries an `obfuscation` padding string by default; set `stream_options.include_obfuscation` to `false` to omit it.
+`stream: true` follows the official SSE phases, and every event carries a monotonic `sequence_number`: `response.created` and `response.in_progress` come first, then for each output item `response.output_item.added`, `response.content_part.added`, the incremental events (`response.output_text.delta`, `response.function_call_arguments.delta`, `response.reasoning_summary_text.delta`), the matching `*.done` events, and a terminal `response.completed` / `response.incomplete`. As in the official API, only the incremental `*.delta` events carry an `obfuscation` padding string by default; set `stream_options.include_obfuscation` to `false` to omit it.
 
 `background: true` answers immediately with an `in_progress` response (the streaming variant starts its stream immediately) that stays retrievable via `GET /v1/responses/{id}` and cancellable via `POST /v1/responses/{id}/cancel` while it runs; a `store: false` background response is still retained for this, but remains invalid as `previous_response_id`. A background stream that loses its connection keeps running server side and can be reattached with `GET /v1/responses/{id}?stream=true`, optionally with `starting_after=<sequence_number>` to replay buffered events after that cursor before following live output. Reattaching to a response without a resumable stream session returns HTTP 404, and a cursor whose replay prefix was already dropped returns HTTP 400 (meaning: restart without `starting_after`); a resume without a cursor follows from the oldest whole event still retained. If a following client falls behind far enough that its replay window is evicted, the server sends a terminal SSE `error` event (`code: server_error`) and closes the stream instead of ending silently.
 
@@ -1794,7 +1794,7 @@ See [Anthropic Messages API documentation](https://docs.anthropic.com/en/api/mes
 
 `messages`: Array of message objects with `role` and `content` (required)
 
-`max_tokens`: Maximum tokens to generate (default: 4096)
+`max_tokens`: Maximum tokens to generate (required; `0` pre-warms the prompt cache without generating)
 
 `system`: System prompt as string or array of content blocks
 
@@ -1808,17 +1808,21 @@ See [Anthropic Messages API documentation](https://docs.anthropic.com/en/api/mes
 
 `stream`: Enable streaming (default: false)
 
-`tools`: Array of tool definitions (requires `--jinja`)
+`tools`: Array of tool definitions (requires `--jinja`). `strict` and `input_examples` are accepted and ignored (the local tool grammar is always schema-driven)
 
 `tool_choice`: Tool selection mode (`{"type": "auto"}`, `{"type": "any"}`, `{"type": "tool", "name": "..."}`, or `{"type": "none"}`); `disable_parallel_tool_use` maps to `parallel_tool_calls=false`
 
 `output_config`: `effort` (`low`/`medium`/`high`/`xhigh`/`max`) maps to the local reasoning effort; `format` with `{"type": "json_schema", "schema": {...}}` constrains the response to that schema
 
-`thinking`: `{"type": "enabled", "budget_tokens": N}` sets the local thinking budget; `{"type": "disabled"}` turns thinking off
+`thinking`: `{"type": "enabled", "budget_tokens": N}` sets the local thinking budget; `{"type": "disabled"}` turns thinking off; `{"type": "adaptive"}` lets the model size its own thinking (no budget, `output_config.effort` decides); `display` (`summarized`/`omitted`) only controls whether the thinking text is returned - `omitted` keeps the thinking block, its signature and `signature_delta`
 
-`cache_control`: `{"type": "ephemeral", "ttl": "5m"|"1h"}` on a system block or on a `text`/`image` content block maps to a local prompt-cache breakpoint; the top-level field marks the last cacheable block (Anthropic automatic caching)
+`service_tier`, `container`, `inference_geo`: shape-validated and ignored (the local server has no tier, container or geo routing)
 
-The response `usage` reports `cache_creation_input_tokens` (always `0`) and `output_tokens_details.thinking_tokens` next to the other Anthropic counters.
+`cache_control`: `{"type": "ephemeral", "ttl": "5m"|"1h"}` on a system block or on a `text`/`image` content block maps to a local prompt-cache breakpoint; `tools[]`, `tool_use` and `tool_result` are accepted too and mark the enclosing message; the top-level field marks the last cacheable block (Anthropic automatic caching). The TTL feeds the local cache TTL directly, so Claude-style `5m`/`1h` work even though the OpenAI-style `prompt_cache_options.ttl` only accepts `30m`
+
+The response carries the official `container` / `stop_details` (`null` locally) and the `usage` details `cache_creation_input_tokens` (always `0`), `cache_creation.ephemeral_1h_input_tokens` / `ephemeral_5m_input_tokens` (always `0`), `cache_read_input_tokens`, `output_tokens_details.thinking_tokens`, `service_tier` (always `"standard"`), `inference_geo` (`null` locally) and `server_tool_use` (always `{web_fetch_requests: 0, web_search_requests: 0}`) next to the other Anthropic counters. Streaming `message_delta.usage` carries the cumulative counters.
+
+Errors use the Anthropic error envelope (`{"type": "error", "error": {"type": ..., "message": ...}, "request_id": ...}`) on both `/v1/messages` and `/v1/messages/count_tokens`, including the `401` / `503` (`overloaded_error`, HTTP 529) responses produced before a request reaches the model.
 
 *Examples:*
 
@@ -1840,7 +1844,7 @@ curl http://localhost:8080/v1/messages \
 
 Counts the number of tokens in a request without generating a response.
 
-Accepts the same parameters as `/v1/messages`. The `max_tokens` parameter is not required.
+Accepts the same parameters as `/v1/messages`, except that `max_tokens` is not required (the official token-counting request schema does not define it); if it is sent anyway it is accepted and ignored, so count requests do not need it.
 
 *Example:*
 
