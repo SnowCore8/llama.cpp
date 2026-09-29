@@ -72,7 +72,7 @@
 | `suffix` | - | - | `null` | - |
 | `encoding_format` | - | - | - | `float` |
 
-`reasoning_effort` 官方枚举: `none`/`low`/`medium`/`high`/`max`。`service_tier` 官方枚举: `auto`/`default`/`flex`/`scale`/`priority`/`fast`（Responses 额外有已弃用的 `ultrafast`）。`prompt_cache_retention` 已弃用，改用 `prompt_cache_options.ttl`。Chat `max_tokens` 已弃用，改用 `max_completion_tokens`。
+`reasoning_effort` 本地接受: `none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`（`minimal`/`xhigh` 为本地扩展）。`service_tier` 本地接受: `auto`/`default`/`flex`/`scale`/`priority`/`fast`（`fast` → 响应映射为 `priority`；Responses 额外有已弃用的 `ultrafast`）。`prompt_cache_retention` 已弃用，改用 `prompt_cache_options.ttl`。Chat `max_tokens` 已弃用，改用 `max_completion_tokens`。
 
 本地采样其余缺省：`min_p=0.05`, `top_k=40`, `repeat_penalty=1.0`, window 64, `dynatemp=0`, `mirostat=0`。
 
