@@ -47,7 +47,7 @@ build/bin/llama-server \
 ## Usage
 
 ```bash
-python -m chat_completions_official_acceptance \
+python -m official_api_acceptance.chat_completions \
   --base-url http://127.0.0.1:8080 \
   --api-key sk-1234567890 \
   --model Qwen3.5-9B-Q4_K_M \
@@ -56,4 +56,4 @@ python -m chat_completions_official_acceptance \
 ```
 
 See also: `../official_api_acceptance/README.md` (meta-runner) and
-`../OFFICIAL_API_SCOPE.md`.
+`../docs/openai-chat-completions.md`.

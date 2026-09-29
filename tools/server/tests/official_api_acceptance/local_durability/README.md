@@ -48,7 +48,7 @@ not reused after it (`SKIP` when no pre-restart reuse was observed).
   without it the `server_restart` row is `SKIP`.
 - Python venv with `tools/server/tests/requirements.txt`, run from
   `tools/server/tests/` (the suite imports the sibling
-  `responses_official_acceptance` package).
+  `official_api_acceptance.responses` package).
 
 Example server start:
 
@@ -81,7 +81,7 @@ build/bin/llama-server \
 
 ```bash
 # from tools/server/tests (venv with requirements.txt)
-python -m local_durability_acceptance \
+python -m official_api_acceptance.local_durability \
   --base-url http://127.0.0.1:8080 \
   --api-key sk-1234567890 \
   --model Qwen3.5-9B-Q4_K_M \
@@ -99,4 +99,4 @@ do not run.
 
 - `../official_api_acceptance/README.md` - meta-runner; local durability runs
   **last** there and may restart the server.
-- `../OFFICIAL_API_SCOPE.md` - scope, evidence and change risk.
+- `../docs/common.md` - shared contracts and evidence.

@@ -5,9 +5,9 @@ llama.cpp server (or compatible proxy):
 
 | Suite | Package | Normative surface |
 |-------|---------|-------------------|
-| OpenAI Responses | `responses_official_acceptance` | `/v1/responses` + Completions + Models + openai Python SDK |
-| OpenAI Chat Completions | `chat_completions_official_acceptance` | `/v1/chat/completions` + openai Python SDK |
-| Local durability | `local_durability_acceptance` | Store restart resume/reload, `GET /v1/tools`, `/props.slot_save_path`, compact expand |
+| OpenAI Responses | `official_api_acceptance.responses` | `/v1/responses` + Completions + Models + openai Python SDK |
+| OpenAI Chat Completions | `official_api_acceptance.chat_completions` | `/v1/chat/completions` + openai Python SDK |
+| Local durability | `official_api_acceptance.local_durability` | Store restart resume/reload, `GET /v1/tools`, `/props.slot_save_path`, compact expand |
 
 The local durability suite runs last: it may kill/restart `llama-server` to
 verify durable stores (restart checks need `LLAMA_SERVER_RESTART_CMD`; without
@@ -40,4 +40,4 @@ Environment overrides: `OFFICIAL_API_BASE_URL`, `OFFICIAL_API_KEY` (falls back
 to `OPENAI_API_KEY`), `OFFICIAL_API_MODEL`, `OFFICIAL_API_EXTRA_JSON`,
 `OFFICIAL_API_REPORT_DIR`.
 
-Individual suites can still be run directly, e.g. `python -m responses_official_acceptance`.
+Individual suites can still be run directly, e.g. `python -m official_api_acceptance.responses`.

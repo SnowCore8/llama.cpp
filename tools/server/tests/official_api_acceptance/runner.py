@@ -15,10 +15,10 @@ if str(TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(TESTS_DIR))
 
 SUITE_ORDER: list[tuple[str, str, str]] = [
-    ("responses", "responses_official_acceptance", "responses.json"),
-    ("chat_completions", "chat_completions_official_acceptance", "chat_completions.json"),
+    ("responses", "official_api_acceptance.responses", "responses.json"),
+    ("chat_completions", "official_api_acceptance.chat_completions", "chat_completions.json"),
     # Last: may kill/restart llama-server to verify durable stores.
-    ("local_durability", "local_durability_acceptance", "local_durability.json"),
+    ("local_durability", "official_api_acceptance.local_durability", "local_durability.json"),
 ]
 
 

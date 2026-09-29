@@ -623,7 +623,7 @@ def run_semantic_checks(
             **extra,
         }
         code, _, raw = client.request("POST", "/v1/responses", body, stream=True)
-        from responses_official_acceptance.http_client import parse_sse
+        from official_api_acceptance.responses.http_client import parse_sse
 
         has = False
         for _ev, obj in parse_sse(raw):

@@ -91,7 +91,7 @@ runner.py / __main__.py
 
 ```bash
 # from tools/server/tests (venv with requirements.txt / openai)
-python -m responses_official_acceptance \
+python -m official_api_acceptance.responses \
   --base-url http://127.0.0.1:8080 \
   --api-key sk-1234567890 \
   --model Qwen3.5-9B-Q4_K_M \
@@ -99,7 +99,7 @@ python -m responses_official_acceptance \
   --report-json /tmp/responses-official-report.json
 
 # run a subset by suite group (default: all)
-python -m responses_official_acceptance --only streaming,conversation
+python -m official_api_acceptance.responses --only streaming,conversation
 ```
 
 `--only` accepts a comma-separated list of groups:
