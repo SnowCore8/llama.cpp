@@ -131,6 +131,8 @@ SDK 基准: `anthropic-sdk-python` main 分支 `MessageCreateParams` / `Message`
 
 - **不生效**: `tools[].strict` / `input_examples`（接受即忽略）
 - **近似**: `service_tier`/`container`/`inference_geo` 请求侧只校验不参与调度；响应侧恒 0/null；`cache_control` 在 `tool_use`/`tool_result` 为消息级断点（非 part 级）；`request_id` 恒 null 且不发响应头
+- **stop_reason 本地实际**: 仅产出 `end_turn`/`max_tokens`/`tool_use`（不产出 `pause_turn`/`refusal`/`model_context_window_exceeded`）
+- **错误类型映射**: 本地 `exceed_context_size_error`/`not_supported_error` → `invalid_request_error`(400)；`service_unavailable_error` → `overloaded_error`(529)；未识别 → `api_error`(500)
 
 ## 运行期验证
 
