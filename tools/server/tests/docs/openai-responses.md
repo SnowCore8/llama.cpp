@@ -41,9 +41,9 @@ SDK 基准: `openai-python` main 分支 `ResponseCreateParamsBase` / `Response`�
 | `completed_at` | float? | 仅 `completed` 时 |
 | `model` | string | |
 | `output` | array | `ResponseOutputItem[]` |
-| `usage` | object? | `input_tokens`/`output_tokens`/`output_tokens_details`/`total_tokens` |
-| `error` | object? | `type`/`message` |
-| `incomplete_details` | object? | 原因码 |
+| `usage` | object? | `input_tokens`/`output_tokens`/`total_tokens`/`input_tokens_details{cached_tokens,cache_write_tokens}`/`output_tokens_details{reasoning_tokens}` |
+| `error` | object? | `code`/`message` |
+| `incomplete_details` | object? | `reason`: `max_output_tokens`/`steered` |
 | `metadata` | object? | ≤16 KV |
 | `temperature`/`top_p` | float? | |
 | `max_output_tokens` | int? | |
