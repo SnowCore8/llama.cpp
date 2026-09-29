@@ -15,6 +15,32 @@
 
 ## 请求侧
 
+### Official field constraints
+
+SDK 基准: `anthropic-sdk-python` main 分支 `MessageCreateParams` / `Message`。
+
+| 字段 | 官方约束 |
+|------|----------|
+| `model` | 必填，模型标识符 |
+| `max_tokens` | 必填，≥0（`0` = 仅预热缓存）；各模型有各自上限 |
+| `messages` | 必填，≤100,000 条；必须 `user`/`assistant` 交替 |
+| `system` | `string` 或 `TextBlockParam[]` |
+| `temperature` | 已弃用（Opus 4.6 后不支持，仅接受 `1.0`，其余 → 400） |
+| `top_p` | 0..1 |
+| `top_k` | ≥0 |
+| `stop_sequences` | string 数组，不能为单 string |
+| `service_tier` | `auto`/`standard_only` |
+| `thinking.type` | `enabled`/`adaptive`/`disabled` |
+| `thinking.budget_tokens` | ≥1024 且 < `max_tokens` |
+| `output_config.effort` | `low`/`medium`/`high`/`xhigh`/`max` |
+| `tool_choice.type` | `auto`/`any`/`tool`/`none` |
+| `cache_control.type` | 必须 `ephemeral`；`ttl`: `5m`/`1h` |
+| `metadata.user_id` | ≤512 字符，禁止 PII |
+| `diagnostics.previous_message_id` | 启用 `cache_miss_reason` 诊断 |
+| `container` | 跨请求容器标识或参数对象 |
+
+### 本地行为映射
+
 | 字段 | 本地行为 |
 |------|----------|
 | `tool_choice{type:"tool",name}` | 转发为命名强制 function tool；名字不在 `tools` 中 → 400 |
@@ -49,6 +75,57 @@
 | `message_delta.usage` | 累积 `input_tokens`/`output_tokens`/`cache_creation`(0)/`cache_read` |
 | SSE `error` 帧 | 官方包裹 `{"type":"error","error":{...}}` |
 | 非流式错误体 | 官方包裹 `{"type":"error","error":{type,message},"request_id":null}`；503 → 529 `overloaded_error` |
+
+## Message 响应对象
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | 唯一标识 |
+| `type` | `"message"` | 固定 |
+| `role` | `"assistant"` | 固定 |
+| `model` | string | |
+| `content` | array | `ContentBlock[]`（`text`/`tool_use`/`thinking`/`redacted_thinking`/`server_tool_use`） |
+| `stop_reason` | string? | 见下表 |
+| `stop_sequence` | string? | 触发停止的自定义序列 |
+| `usage` | object | 见下 |
+| `container` | object? | 本地恒 `null` |
+| `stop_details` | object? | 本地恒 `null` |
+| `diagnostics` | object? | `cache_miss_reason` 等 |
+
+**stop_reason 枚举**: `end_turn`/`max_tokens`/`stop_sequence`/`tool_use`/`pause_turn`/`refusal`/`model_context_window_exceeded`。
+
+**Usage**: `input_tokens`/`output_tokens`/`cache_creation_input_tokens`/`cache_read_input_tokens`/`output_tokens_details.thinking_tokens`/`service_tier`/`inference_geo`/`cache_creation`/`server_tool_use`。
+
+## SSE 事件类型
+
+| 事件 | 数据 |
+|------|------|
+| `message_start` | `{type:"message_start", message:{...content:[]}}` |
+| `content_block_start` | `{type, index, content_block:{type,...}}` |
+| `content_block_delta` | `{type, index, delta:{type:"text_delta"/"input_json_delta"/"thinking_delta"/"signature_delta",...}}` |
+| `content_block_stop` | `{type, index}` |
+| `message_delta` | `{type, delta:{stop_reason,stop_sequence}, usage:{output_tokens,...}}` — usage 为累积值 |
+| `message_stop` | `{type:"message_stop"}` |
+| `ping` | `{type:"ping"}` |
+| `error` | `{type:"error", error:{type,message}}` |
+
+## 错误词表
+
+| HTTP 状态 | `error.type` |
+|-----------|-------------|
+| 400 | `invalid_request_error` |
+| 401 | `authentication_error` |
+| 402 | `billing_error` |
+| 403 | `permission_error` |
+| 404 | `not_found_error` |
+| 409 | `conflict_error` |
+| 413 | `request_too_large` |
+| 429 | `rate_limit_error` |
+| 500 | `api_error` |
+| 504 | `timeout_error` |
+| 529 | `overloaded_error` |
+
+错误体格式: `{"type":"error","error":{"type":"...","message":"..."},"request_id":"..."}`。
 
 ## 仍不生效 / 近似
 

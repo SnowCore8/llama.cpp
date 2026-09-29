@@ -13,11 +13,54 @@
 | POST | `/v1/chat/completions/input_tokens` | Token 计数 |
 | POST | `/v1/chat/completions/control` | 实时控制 in-flight 完成 |
 
+## Official field constraints
+
+SDK 基准: `openai-python` main 分支 `ChatCompletionCreateParams` / `ChatCompletion`。
+
+| 字段 | 官方约束 |
+|------|----------|
+| `temperature` | 0..2 |
+| `top_p` | 0..1 |
+| `top_logprobs` | 0..20（需 `logprobs=true`） |
+| `frequency_penalty`/`presence_penalty` | -2..2 |
+| `stop` | string 或 ≤4 条 string 数组 |
+| `metadata` | ≤16 键值对，键≤64 字符，值≤512 字符 |
+| `safety_identifier` | ≤64 字符 |
+| `service_tier` | `auto`/`default`/`flex`/`scale`/`priority`/`fast`（默认 `auto`） |
+| `reasoning_effort` | `none`/`low`/`medium`/`high`/`max` |
+| `verbosity` | `low`/`medium`/`high`（默认 `medium`） |
+| `max_completion_tokens` | 替代已弃用的 `max_tokens`；与 o 系列不兼容的 `max_tokens` 已弃用 |
+| `prompt_cache_retention` | 已弃用，改用 `prompt_cache_options.ttl`；值 `in_memory`/`24h` |
+| `logit_bias` | 键为 token ID，值 -100..100 |
+| `modalities` | `["text"]`/`["audio"]`/`["text","audio"]` |
+| `store` | bool |
+| `moderation` | 输入输出审核（o 系列支持） |
+| `response_format` | `text`/`json_object`/`json_schema` |
+
+## ChatCompletion 响应对象
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | 唯一标识 |
+| `object` | `"chat.completion"` | 固定 |
+| `created` | int | Unix 秒 |
+| `model` | string | |
+| `choices` | array | `Choice[]`（`n` 决定长度） |
+| `usage` | object? | `CompletionUsage` |
+| `system_fingerprint` | string? | 后端配置指纹 |
+| `service_tier` | string? | |
+| `metadata` | object? | ≤16 KV |
+| `moderation` | object? | |
+
+**Choice**: `index`/`message`/`finish_reason`/`logprobs`。`finish_reason`: `stop`/`length`/`tool_calls`/`content_filter`/`function_call`。
+
+**CompletionUsage**: `prompt_tokens`/`completion_tokens`/`total_tokens`/`completion_tokens_details`/`prompt_tokens_details`。
+
 ## Create 字段
 
 | Kind | 字段 |
 |------|------|
-| **正向行为** | `model`（必填）, `messages`（必填）, `store`+metadata retrieve, `n` 多 choice（上限 `min(n_parallel, 128)`）, `stream`, `stream_options.include_usage`（常规 chunk `usage: null` + 终块统计）, `stream_options.include_obfuscation`, 非流式 `refusal`（无拒答时 `null`）, `seed` 确定性, `frequency_penalty`/`presence_penalty` [-2,2], `modalities=["text"]`, `web_search_options` → 本地搜索 + `message.annotations`(`url_citation`), `user`/`safety_identifier`（`store=true` 时持久化）, legacy `functions`+`function_call`, `reasoning_effort`（budget 阶梯）, `verbosity` system hint, `prediction.type=content` 预填 assistant, `prompt_cache_key`/`prompt_cache_retention`/`prompt_cache_options`, `logprobs`+`top_logprobs`（0..20，超出 → 400）, `prompt_cache_breakpoint` |
+| **正向行为** | `model`（必填）, `messages`（必填）, `store`+metadata retrieve, `n` 多 choice（上限 `min(n_parallel, 128)`）, `stream`, `stream_options.include_usage`（常规 chunk `usage: null` + 终块统计）, `stream_options.include_obfuscation`, 非流式 `refusal`（无拒答时 `null`）, `seed` 确定性, `frequency_penalty`/`presence_penalty` [-2,2], `modalities=["text"]`, `web_search_options` → 本地搜索 + `message.annotations`(`url_citation`), `user`/`safety_identifier`（`store=true` 时持久化）, legacy `functions`+`function_call`, `reasoning_effort`（budget 阶梯）, `verbosity` system hint, `prediction.type=content` 预填 assistant, `prompt_cache_key`/`prompt_cache_retention`/`prompt_cache_options`, `logprobs`+`top_logprobs`（0..20，超出 → 400）, `prompt_cache_breakpoint`, `response_format`（`text`/`json_object`/`json_schema`）, `max_completion_tokens`（替代 `max_tokens`）, `moderation`（接受不生效） |
 | **形状校验** | `audio`/含 `audio` 的 modalities → 400；非法 `prompt_cache_*` → 400 |
 | **正向补充** | `logit_bias` 负偏置抑制目标 token |
 | **Model 校验** | 未知 → 404 + A 族 |

@@ -13,6 +13,56 @@
 | POST | `/v1/responses/input_tokens` | Token 计数 |
 | WS | `/v1/responses` | WebSocket 传输 |
 
+## Official field constraints
+
+SDK 基准: `openai-python` main 分支 `ResponseCreateParamsBase` / `Response`。
+
+| 字段 | 官方约束 |
+|------|----------|
+| `temperature` | 0..2 |
+| `top_logprobs` | 0..20 |
+| `metadata` | ≤16 键值对，键≤64 字符，值≤512 字符 |
+| `safety_identifier` | ≤64 字符 |
+| `service_tier` | `auto`/`default`/`flex`/`fast`/`priority`/`scale`（`ultrafast` 已弃用） |
+| `truncation` | `auto`/`disabled`（默认 `disabled`） |
+| `prompt_cache_retention` | 已弃用，改用 `prompt_cache_options.ttl`；值 `in_memory`/`24h` |
+| `prompt_cache_options.ttl` | 默认 `30m`（支持 `gpt-5.6+`） |
+| `store` | 默认 `true` |
+| `previous_response_id` | 与 `conversation` 互斥 |
+
+## Response 对象
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | 唯一标识 |
+| `object` | `"response"` | 固定 |
+| `status` | string | `queued`/`in_progress`/`completed`/`failed`/`cancelled`/`incomplete` |
+| `created_at` | float | Unix 秒 |
+| `completed_at` | float? | 仅 `completed` 时 |
+| `model` | string | |
+| `output` | array | `ResponseOutputItem[]` |
+| `usage` | object? | `input_tokens`/`output_tokens`/`output_tokens_details`/`total_tokens` |
+| `error` | object? | `type`/`message` |
+| `incomplete_details` | object? | 原因码 |
+| `metadata` | object? | ≤16 KV |
+| `temperature`/`top_p` | float? | |
+| `max_output_tokens` | int? | |
+| `truncation` | string | |
+| `previous_response_id` | string? | |
+| `conversation` | object? | |
+| `tools`/`tool_choice`/`parallel_tool_calls` | array/object/bool | |
+| `reasoning` | object? | |
+| `text` | object? | |
+| `service_tier` | string? | |
+| `prompt` | object? | `id`/`version` |
+| `prompt_cache_key`/`prompt_cache_options` | string?/object? | |
+| `prompt_cache_retention` | string? | 已弃用 |
+| `prompt_cache_diagnostics` | object? | |
+| `safety_identifier`/`user` | string? | `user` 已弃用 |
+| `background`/`max_tool_calls`/`top_logprobs` | bool?/int?/int? | |
+| `moderation` | object? | |
+| `instructions` | string? | |
+
 ## Create 字段
 
 | Kind | 字段 |

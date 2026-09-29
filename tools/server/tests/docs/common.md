@@ -72,6 +72,8 @@
 | `suffix` | - | - | `null` | - |
 | `encoding_format` | - | - | - | `float` |
 
+`reasoning_effort` 官方枚举: `none`/`low`/`medium`/`high`/`max`。`service_tier` 官方枚举: `auto`/`default`/`flex`/`scale`/`priority`/`fast`（Responses 额外有已弃用的 `ultrafast`）。`prompt_cache_retention` 已弃用，改用 `prompt_cache_options.ttl`。Chat `max_tokens` 已弃用，改用 `max_completion_tokens`。
+
 本地采样其余缺省：`min_p=0.05`, `top_k=40`, `repeat_penalty=1.0`, window 64, `dynatemp=0`, `mirostat=0`。
 
 ### 缺省注入行为
@@ -101,7 +103,7 @@
 
 Meta-runner: `python -m official_api_acceptance ...`（durability 最后跑）。判定：exit 0 仅当无 FAIL/PARTIAL/NOT_IMPLEMENTED（SKIP 允许）。
 
-SDK pin: `openai==3.11.0`。验证口径: V100 + Qwen3.5-9B-Q4_K_M。
+SDK: `openai>=3.11.0`。验证口径: V100 + Qwen3.5-9B-Q4_K_M。
 
 ## 共享本地契约
 
