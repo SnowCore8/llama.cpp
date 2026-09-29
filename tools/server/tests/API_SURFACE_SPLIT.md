@@ -2,7 +2,7 @@
 
 **状态**：设计稿（2026-09-14 生效裁定：**只留真正需要共享的部分，不做妥协合并兼容**）。
 **前身**：本文档由"三面（OpenAI Chat / OpenAI Responses / Anthropic Messages）能否完全分开实现"的评估收束而来，结论是**不复制引擎**、只拆面层，并去掉现有的一切"兼容合并"。
-**关联**：[OFFICIAL_API_SCOPE.md](OFFICIAL_API_SCOPE.md)（契约口径见其「Anthropic Messages deep」段与「Recorded deviations」）、[OFFICIAL_API_DIFF.md](OFFICIAL_API_DIFF.md)、[OFFICIAL_API_PRD.md](OFFICIAL_API_PRD.md)、[README-dev.md](../README-dev.md)（请求管线与例程走读）。
+**关联**：[docs/openai-responses.md](docs/openai-responses.md)、[docs/openai-chat-completions.md](docs/openai-chat-completions.md)、[docs/openai-completions.md](docs/openai-completions.md)、[docs/anthropic.md](docs/anthropic.md)、[docs/common.md](docs/common.md)（各 API 接口定义与共有契约）、[README-dev.md](../README-dev.md)（请求管线与例程走读）。
 
 ---
 

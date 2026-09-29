@@ -102,11 +102,11 @@ official OpenAI API surfaces (docs + `openai` Python SDK) and runs the local
 durability/discovery checks. Codex wire shapes are intentionally out of scope.
 Three suites run through the meta-runner:
 
-- `responses_official_acceptance` - Responses + Conversations + Completions +
+- `official_api_acceptance/responses` - Responses + Conversations + Completions +
   Models + durable Responses store + Responses WebSocket + live `openai` SDK
-- `chat_completions_official_acceptance` - Chat Completions + Models + durable
+- `official_api_acceptance/chat_completions` - Chat Completions + Models + durable
   Chat store + live `openai` SDK
-- `local_durability_acceptance` - store restart resume/reload,
+- `official_api_acceptance/local_durability` - store restart resume/reload,
   `GET /v1/tools`, `/props.slot_save_path`, compact expand
 
 ```shell
@@ -131,10 +131,9 @@ directly).
 
 See [`official_api_acceptance/README.md`](official_api_acceptance/README.md)
 for the meta-runner,
-[`responses_official_acceptance/README.md`](responses_official_acceptance/README.md),
-[`chat_completions_official_acceptance/README.md`](chat_completions_official_acceptance/README.md)
+[`official_api_acceptance/responses/README.md`](official_api_acceptance/responses/README.md),
+[`official_api_acceptance/chat_completions/README.md`](official_api_acceptance/chat_completions/README.md)
 and
-[`local_durability_acceptance/README.md`](local_durability_acceptance/README.md)
+[`official_api_acceptance/local_durability/README.md`](official_api_acceptance/local_durability/README.md)
 for the three suites. The scope contract and its differences from the official
-OpenAI docs are documented in [`OFFICIAL_API_SCOPE.md`](OFFICIAL_API_SCOPE.md)
-and [`OFFICIAL_API_DIFF.md`](OFFICIAL_API_DIFF.md).
+OpenAI API contracts are documented in [`docs/`](docs/) (per-API interface specs + shared contracts).
