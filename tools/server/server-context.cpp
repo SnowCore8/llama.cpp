@@ -6,10 +6,6 @@
 #include "server-queue.h"
 #include "server-schema.h"
 #include "server-stream.h"
-#include "server-responses.h"
-#include "server-responses-store.h"
-#include "server-chat-completions-store.h"
-#include "server-conversations.h"
 
 #include "build-info.h"
 #include "common.h"
@@ -22,22 +18,14 @@
 #include "mtmd-helper.h"
 
 #include <algorithm>
-#include <cctype>
-#include <charconv>
-#include <cmath>
 #include <cstddef>
-#include <numeric>
 #include <cinttypes>
-#include <ctime>
 #include <exception>
 #include <memory>
 #include <filesystem>
 #include <random>
-#include <thread>
 #include <utility>
 #include <fstream>
-#include <unordered_map>
-#include <vector>
 
 // fix problem with std::min and std::max
 #if defined(_WIN32)
@@ -49,17 +37,6 @@
 #endif
 
 constexpr int HTTP_POLLING_SECONDS = 1;
-
-// parse a full integer parameter; trailing garbage ("12abc") must not pass
-static bool parse_int64_param(const std::string & s, int64_t & out) {
-    if (s.empty()) {
-        return false;
-    }
-    const char * begin = s.data();
-    const char * end   = begin + s.size();
-    const auto res = std::from_chars(begin, end, out);
-    return res.ec == std::errc() && res.ptr == end;
-}
 
 static common_speculative_output_limits server_output_limits(const common_params & params) {
     if (params.embedding ||
@@ -132,8 +109,7 @@ enum slot_state {
 struct server_slot; // forward declaration
 
 struct server_batch {
-    llama_batch batch;
-    bool batch_rendered = false;
+    common_batch view; // the rendered sub-batch [off, off + n_tokens), see render()
 
     struct token {
         int32_t id_slot;
@@ -149,36 +125,21 @@ struct server_batch {
     // track if given slot can be batched with slots already in the batch
     server_slot * slot_batched = nullptr;
 
-    // in embd mode, we temporarily swap out the tokens arr and restore it on clear()
     bool has_embd = false;
-    llama_token * tokens_ptr = nullptr;
     std::vector<float> embd;
 
     float  alora_scale       = -1.0f;
     size_t alora_disabled_id = 0;
 
-    server_batch() {
-        batch.pos = nullptr; // sentinel: uninitialized batch
-    }
-
-    ~server_batch() {
-        if (batch.pos != nullptr) {
-            clear();
-            llama_batch_free(batch);
-        }
-    }
-
-    void init(int32_t n_tokens_alloc, int32_t n_embd) {
+    void init(llama_context * ctx, int32_t n_tokens_alloc, int32_t n_embd) {
         this->n_tokens_alloc = n_tokens_alloc;
         this->n_embd = n_embd;
-        batch = llama_batch_init(n_tokens_alloc, 0, 1);
-        tokens_ptr = batch.token;
+        view = common_batch(ctx);
         tokens.reserve(n_tokens_alloc);
     }
 
     bool add(int32_t id_slot, llama_token token, llama_pos pos, bool output, bool is_prompt) {
         GGML_ASSERT(!has_embd); // cannot mix tokens + embd in same batch
-        GGML_ASSERT(batch.pos != nullptr);
         if ((int32_t)tokens.size() >= n_tokens_alloc) {
             return false;
         }
@@ -187,7 +148,6 @@ struct server_batch {
     }
 
     bool add(int32_t id_slot, const std::vector<float> & embd_in, llama_pos pos, bool output, bool is_prompt) {
-        GGML_ASSERT(batch.pos != nullptr);
         if ((int32_t)tokens.size() >= n_tokens_alloc) {
             return false;
         }
@@ -200,16 +160,11 @@ struct server_batch {
     void clear() {
         tokens.clear();
         embd.clear();
-        common_batch_clear(batch);
+        view.clear();
         slot_batched      = nullptr;
         alora_scale       = -1.0f;
         alora_disabled_id = 0;
-        batch_rendered    = false;
         has_embd          = false;
-        if (batch.token == nullptr) {
-            batch.token = tokens_ptr;
-            batch.embd  = nullptr;
-        }
     }
 
     int32_t size() const {
@@ -221,41 +176,22 @@ struct server_batch {
         tokens[idx].output = output;
     }
 
-    void render() {
-        GGML_ASSERT(!batch_rendered);
-        GGML_ASSERT(batch.pos != nullptr);
-        common_batch_clear(batch);
-        for (int32_t i = 0; i < size(); i++) {
-            const auto & t = tokens[i];
-            common_batch_add(batch, t.token, t.pos, { t.id_slot }, t.output);
-        }
-        if (has_embd) {
-            batch.token = nullptr; // will be restored on clear()
-            batch.embd  = embd.data();
-        }
-        batch_rendered = true;
-    }
-
-    llama_batch get_view(int32_t off, int32_t n_tokens) const {
-        GGML_ASSERT(batch.pos != nullptr);
-        GGML_ASSERT(batch_rendered);
+    // render the sub-batch [off, off + n_tokens) into view, index i in view is index off + i here
+    void render(int32_t off, int32_t n_tokens) {
         GGML_ASSERT(off >= 0 && off < size());
         GGML_ASSERT(n_tokens > 0 && off + n_tokens <= size());
 
-        auto * token = batch.token ? batch.token + off          : nullptr;
-        auto * embd  = batch.embd  ? batch.embd  + off * n_embd : nullptr;
-
-        llama_batch view = {
-            n_tokens,
-            token,
-            embd,
-            batch.pos      + off,
-            batch.n_seq_id + off,
-            batch.seq_id   + off,
-            batch.logits   + off,
-        };
-
-        return view;
+        view.clear();
+        for (int32_t i = off; i < off + n_tokens; i++) {
+            const auto & t = tokens[i];
+            if (has_embd) {
+                // text embeddings broadcast the same position across the M-RoPE sections
+                const llama_pos pos[GGML_MROPE_SECTIONS] = { t.pos, t.pos, t.pos, 0 };
+                view.add_embd({ embd.data() + (size_t) i * n_embd, 1, (size_t) n_embd }, pos, t.id_slot, t.output);
+            } else {
+                view.add(t.token, t.pos, t.id_slot, t.output);
+            }
+        }
     }
 };
 
@@ -289,15 +225,6 @@ struct server_slot {
     // used to determine the slot that has been used the longest
     int64_t t_last_used = -1;
 
-    // OpenAI prompt_cache_key affinity (local deepen).
-    std::string last_prompt_cache_key;
-    bool        last_prompt_cache_key_explicit = false; // client-provided key = isolation domain
-    int64_t     prompt_cache_key_expires = 0; // unix seconds; 0 = process lifetime
-
-    server_prompt_cache_key prompt_cache_key() const {
-        return { last_prompt_cache_key, last_prompt_cache_key_explicit };
-    }
-
     // generation props
     int32_t n_ctx   = 0;  // context size per slot
     int32_t n_keep  = 0;
@@ -305,9 +232,6 @@ struct server_slot {
 
     // effective generation limit for the current task, -1 means unlimited
     int32_t n_predict_max = -1;
-
-    // Set when a Responses stream already emitted error via send_error (skip final).
-    bool oai_resp_stream_error_sent = false;
 
     size_t last_nl_pos = 0;
 
@@ -317,11 +241,6 @@ struct server_slot {
     size_t n_sent_text = 0; // number of sent text character (i.e. handle partial UTF-8 on streaming)
 
     std::vector<completion_token_output> generated_token_probs;
-
-    // legacy /v1/completions echo + logprobs: one row per prompt token (row 0 stays empty)
-    std::vector<completion_token_output> prompt_token_probs;
-    int32_t n_prompt_text_bytes = -1;      // byte length of the prompt text, -1 until measured
-    bool    prompt_rows_sent    = false;   // prompt rows and text are streamed once
 
     bool has_next_token = true;
     bool has_new_line   = false;
@@ -349,7 +268,7 @@ struct server_slot {
         SRV_TRC(" - saving prompt with length %d, total state size = %.3f MiB (draft: %.3f MiB)\n",
                 (int) prompt.tokens.size(), cur_size / (1024.0 * 1024.0), cur_size_dft / (1024.0 * 1024.0));
 
-        auto * cur = prompt_cache.alloc(prompt, cur_size_tgt, cur_size_dft, prompt_cache_key(), id);
+        auto * cur = prompt_cache.alloc(prompt, cur_size_tgt, cur_size_dft);
         if (cur == nullptr) {
             return false;
         }
@@ -362,8 +281,8 @@ struct server_slot {
         return true;
     }
 
-    bool prompt_load(server_prompt_cache & prompt_cache, const server_tokens & tokens, const server_prompt_cache_key & cache_key) {
-        bool res = prompt_cache.load(prompt, tokens, ctx_tgt, ctx_dft, id, cache_key);
+    bool prompt_load(server_prompt_cache & prompt_cache, const server_tokens & tokens) {
+        bool res = prompt_cache.load(prompt, tokens, ctx_tgt, ctx_dft, id);
         if (!res) {
             SLT_WRN(*this, "%s", "failed to load prompt from cache\n");
         }
@@ -426,9 +345,6 @@ struct server_slot {
         }
         generated_tokens.clear();
         generated_token_probs.clear();
-        prompt_token_probs.clear();
-        n_prompt_text_bytes = -1;
-        prompt_rows_sent    = false;
         json_schema = json();
 
         task_prev = std::move(task);
@@ -478,21 +394,26 @@ struct server_slot {
         return task->need_embd();
     }
 
-    // the prompt must be decoded with logits at every position (prompt-position logprobs)
-    bool need_prompt_logprobs() const {
-        GGML_ASSERT(task);
-        return task->need_prompt_logprobs();
-    }
-
-    // if the context does not have a memory module then all embeddings have to be computed within a single ubatch
-    // also we cannot split if the pooling would require any past tokens
-    // (MTP supports splitting — uses task->need_embd() not need_embd())
     bool can_split() const {
         GGML_ASSERT(task);
-
-        return
-            !task->need_embd() ||
-            (llama_get_memory(ctx_tgt) && llama_pooling_type(ctx_tgt) == LLAMA_POOLING_TYPE_LAST);
+        // MTP supports splitting - uses task->need_embd() not need_embd()
+        if (!task->need_embd()) {
+            return true;
+        }
+        // if the context does not have a memory module then all embeddings have to be computed within a single ubatch
+        if (!llama_get_memory(ctx_tgt)) {
+            return false;
+        }
+        // context can be chunked/split if the pooling type is LAST
+        const auto pooling = llama_pooling_type(ctx_tgt);
+        if (pooling == LLAMA_POOLING_TYPE_LAST) {
+            return true;
+        }
+        // causal rerankers read the last token and have a KV cache, so they can also be chunked/split.
+        if (pooling == LLAMA_POOLING_TYPE_RANK && llama_get_causal_attn(ctx_tgt)) {
+            return true;
+        }
+        return false;
     }
 
     bool can_batch_with(server_slot & other_slot) const {
@@ -517,10 +438,7 @@ struct server_slot {
     }
 
     bool can_speculate() const {
-        if (!spec) {
-            return false;
-        }
-        return true;
+        return !!spec;
     }
 
     void add_token(const completion_token_output & token) {
@@ -538,10 +456,6 @@ struct server_slot {
         if (!can_speculate()) {
             return 0;
         }
-        // Honor explicit per-task draft cap (0 = disabled via local deepen).
-        if (task->params.speculative.draft.n_max <= 0) {
-            return 0;
-        }
 
         // determine the max draft that fits the current slot state
         // note: slot.prompt is not yet expanded with the `id` token sampled above
@@ -551,8 +465,6 @@ struct server_slot {
         if (n_remaining() > 0) {
             n_draft_max = std::min(n_draft_max, n_remaining() - 1);
         }
-
-        n_draft_max = std::min(n_draft_max, task->params.speculative.draft.n_max);
 
         SLT_DBG(*this, "max possible draft: %d\n", n_draft_max);
 
@@ -608,7 +520,6 @@ struct server_slot {
             t_last_used = ggml_time_us();
 
             state = SLOT_STATE_IDLE;
-            oai_resp_stream_error_sent = false;
 
             // do not keep context of the child slots - the parent's context is enough
             if (task->is_child()) {
@@ -789,7 +700,6 @@ struct server_slot {
         other.stats = stats;
 
         other.prompt = prompt.clone();
-        other.prompt_token_probs = prompt_token_probs;
         other.init_sampler();
     }
 };
@@ -810,13 +720,24 @@ static int process_mtmd_chunk(const server_slot & slot, mtmd::batch_ptr & mbatch
         if (mbatch) {
             float * embd = mtmd_batch_get_output_embd(mbatch.get(), chunk.get());
             if (embd) {
-                void * cb_data = slot.spec;
-                static auto cb = [](llama_batch batch, void * user_data) {
-                    common_speculative * spec = static_cast<common_speculative *>(user_data);
-                    if (!common_speculative_process(spec, batch)) {
-                        return 1;
+                struct cb_data_t {
+                    common_speculative * spec;
+                    llama_context * ctx;
+                } cb_data = { slot.spec, slot.ctx_tgt };
+
+                static auto cb = [](const mtmd_helper_embd_batch * b, void * user_data) {
+                    const auto * data = static_cast<cb_data_t *>(user_data);
+
+                    common_batch batch(data->ctx);
+                    for (int32_t i = 0; i < b->n_tokens; ++i) {
+                        llama_pos pos[GGML_MROPE_SECTIONS] = { 0, 0, 0, 0 };
+                        for (int32_t j = 0; j < b->n_pos; ++j) {
+                            pos[j] = b->pos[j * b->n_tokens + i];
+                        }
+                        batch.add_embd({ b->embd + (size_t) i * b->n_embd, 1, (size_t) b->n_embd }, pos, b->seq_id, false);
                     }
-                    return 0;
+
+                    return common_speculative_process(data->spec, batch) ? 0 : 1;
                 };
 
                 llama_pos new_n_past; // unused for now
@@ -830,7 +751,7 @@ static int process_mtmd_chunk(const server_slot & slot, mtmd::batch_ptr & mbatch
                     llama_n_batch(slot.ctx_tgt),
                     &new_n_past,
                     cb,
-                    cb_data
+                    &cb_data
                 );
                 if (res != 0) {
                     SLT_ERR(slot, "failed to decode mtmd chunk, idx = %zu, res = %d\n", idx, res);
@@ -926,10 +847,6 @@ public:
 
     server_metrics get_metrics() const {
         return metrics;
-    }
-
-    server_prompt_cache_stats get_prompt_cache_stats() const {
-        return prompt_cache ? prompt_cache->stats() : server_prompt_cache_stats {};
     }
 
     void reset_metrics_bucket() {
@@ -1076,10 +993,7 @@ private:
 
         params_base = params;
         const auto output_limits = server_output_limits(params_base);
-        // legacy /v1/completions echo + logprobs makes every prompt token an output, so the
-        // context must allow one output per batch token
-        // note: this grows the reserved prompt graph by n_vocab * n_ubatch * 4 bytes
-        params_base.n_outputs_max = std::max({ output_limits.total, params_base.n_batch, params_base.n_parallel });
+        params_base.n_outputs_max = output_limits.total;
         params_base.n_outputs_max_per_seq = output_limits.per_seq;
 
         const bool has_mmproj = !params.mmproj.path.empty();
@@ -1412,7 +1326,7 @@ private:
         {
             const int32_t n_batch = llama_n_batch(ctx_tgt);
             const int32_t n_embd  = llama_model_n_embd_inp(model_tgt);
-            batch.init(std::max(n_batch, params_base.n_parallel), n_embd);
+            batch.init(ctx_tgt, std::max(n_batch, params_base.n_parallel), n_embd);
         }
 
         if (params_base.cache_ram_mib != 0) {
@@ -1575,8 +1489,8 @@ private:
                 if (supported && !enabled) {
                     SRV_INF("%s", "chat template supports preserving reasoning, consider enabling it via --reasoning-preserve\n");
                 }
-                if (!supported && enabled) {
-                    SRV_INF("%s", "chat template lacks preserve_reasoning; using local history <think> fallback when --reasoning-preserve is set\n");
+                if (!supported && specified && enabled) {
+                    SRV_WRN("%s", "chat template does NOT support preserving reasoning, --reasoning-preserve has no effect\n");
                 }
             }
         }
@@ -1624,81 +1538,6 @@ private:
             }
         }
 
-        // Prefer slot bound to the same prompt_cache_key (OpenAI prompt cache deepen).
-        if (ret == nullptr && !task.params.oai_prompt_cache_key.empty()) {
-            const std::string & key = task.params.oai_prompt_cache_key;
-            const bool key_explicit  = task.params.oai_prompt_cache_key_explicit;
-            const int64_t now = (int64_t) std::time(nullptr);
-            // Disk TTL expired before this request's touch: drop affinity KV so reuse cannot leak.
-            if (task.params.oai_prompt_cache_expired && key_explicit) {
-                for (server_slot & slot : slots) {
-                    if (slot.is_processing()) {
-                        continue;
-                    }
-                    if (slot.last_prompt_cache_key != key) {
-                        continue;
-                    }
-                    SLT_INF(slot, "prompt_cache_key disk-expired; clearing KV for key='%s'\n",
-                            key.c_str());
-                    slot.last_prompt_cache_key.clear();
-                    slot.last_prompt_cache_key_explicit = false;
-                    slot.prompt_cache_key_expires = 0;
-                    slot.prompt_clear();
-                }
-                // the level-2 cache must forget the key too, otherwise the cleared KV is
-                // restored from RAM on this very request
-                if (prompt_cache) {
-                    const size_t n_dropped = prompt_cache->drop_key(key);
-                    if (n_dropped > 0) {
-                        SRV_INF("%s: prompt_cache_key disk-expired; dropped %zu level-2 state(s) for key='%s'\n",
-                                __func__, n_dropped, key.c_str());
-                    }
-                }
-            }
-            for (server_slot & slot : slots) {
-                if (slot.is_processing()) {
-                    continue;
-                }
-                // an explicit key may cross only to the same explicit key (TTL / isolation);
-                // an implicit anchor may claim only the slot that carries the same anchor
-                const bool key_match = slot.last_prompt_cache_key == key ||
-                    (key_explicit && slot.last_prompt_cache_key_explicit &&
-                     server_oai_prompt_cache_keys_compatible(slot.last_prompt_cache_key, key));
-                if (!key_match) {
-                    continue;
-                }
-                if (key_explicit && slot.prompt_cache_key_expires > 0 && slot.prompt_cache_key_expires < now) {
-                    SLT_INF(slot, "prompt_cache_key expired; clearing KV for key='%s'\n",
-                            slot.last_prompt_cache_key.c_str());
-                    slot.last_prompt_cache_key.clear();
-                    slot.last_prompt_cache_key_explicit = false;
-                    slot.prompt_cache_key_expires = 0;
-                    slot.prompt_clear();
-                    continue;
-                }
-                if (key_explicit &&
-                        !server_prompt_cache_key_alive(key) &&
-                        !server_prompt_cache_key_alive(slot.last_prompt_cache_key)) {
-                    SLT_INF(slot, "prompt_cache_key not alive on disk; clearing KV for key='%s'\n",
-                            slot.last_prompt_cache_key.c_str());
-                    slot.last_prompt_cache_key.clear();
-                    slot.last_prompt_cache_key_explicit = false;
-                    slot.prompt_cache_key_expires = 0;
-                    slot.prompt_clear();
-                    continue;
-                }
-                ret = &slot;
-                SLT_INF(*ret, "selected slot by prompt_cache_key='%s' (slot had '%s')\n",
-                        key.c_str(), slot.last_prompt_cache_key.c_str());
-                // the key can outlive the KV (--cache-idle-slots parks and clears the slot),
-                // so an empty slot still has to try the level-2 restore below
-                if (ret->prompt.tokens.empty()) {
-                    update_cache = true;
-                }
-                break;
-            }
-        }
-
         // find the slot that has at least n% prompt similarity
         if (slot_prompt_similarity != 0.0f) {
             float f_sim_best = 0;
@@ -1711,17 +1550,6 @@ private:
                 // skip the slot if it is not available
                 if (slot.is_processing()) {
                     SLT_TRC(slot, " - skipping, is_processing = %d\n", slot.is_processing());
-                    continue;
-                }
-
-                // explicit prompt_cache_key affinity: do not LCP-reuse slots bound to a different
-                // explicit key (geo / profile isolation). Implicit anchors are a soft hint only -
-                // they change with the conversation head, so enforcing them would trash reuse.
-                if (task.params.oai_prompt_cache_key_explicit && slot.last_prompt_cache_key_explicit &&
-                        !server_oai_prompt_cache_keys_compatible(
-                            slot.last_prompt_cache_key, task.params.oai_prompt_cache_key)) {
-                    SLT_TRC(slot, " - skipping, prompt_cache_key mismatch ('%s' vs '%s')\n",
-                            slot.last_prompt_cache_key.c_str(), task.params.oai_prompt_cache_key.c_str());
                     continue;
                 }
 
@@ -1787,28 +1615,6 @@ private:
         }
 
         if (ret) {
-            // Drop KV across incompatible explicit keys (geo / profile isolation) before the
-            // prompt cache update below. Park the outgoing state under its own key first - it is
-            // still valid for that key, so a later request with it can restore. This must happen
-            // before the load: clearing after it threw away the KV that the load had just
-            // restored for the incoming key, so every key switch cost a full re-process.
-            // Implicit anchors are a soft hint: they change with the conversation head, so
-            // enforcing them here would wipe freshly restored KV on every turn of a growing
-            // conversation.
-            if (task.params.oai_prompt_cache_key_explicit && ret->last_prompt_cache_key_explicit &&
-                    !server_oai_prompt_cache_keys_compatible(
-                        ret->last_prompt_cache_key, task.params.oai_prompt_cache_key)) {
-                SLT_INF(*ret, "clearing prompt cache for key change ('%s' -> '%s')\n",
-                        ret->last_prompt_cache_key.c_str(), task.params.oai_prompt_cache_key.c_str());
-                if (prompt_cache && ret->prompt_save(*prompt_cache)) {
-                    prompt_cache->update();
-                }
-                ret->prompt_clear();
-                ret->last_prompt_cache_key.clear();
-                ret->last_prompt_cache_key_explicit = false;
-                ret->prompt_cache_key_expires = 0;
-            }
-
             update_cache = update_cache && prompt_cache;
 
             // cache prompts only for completion tasks
@@ -1821,9 +1627,7 @@ private:
 
                 ret->prompt_save(*prompt_cache);
 
-                // prompt-position logprobs need every prompt token decoded, so do not restore a cached prefix
-                if (!task.need_prompt_logprobs() &&
-                        !ret->prompt_load(*prompt_cache, task.tokens, { task.params.oai_prompt_cache_key, task.params.oai_prompt_cache_key_explicit })) {
+                if (!ret->prompt_load(*prompt_cache, task.tokens)) {
                     ret->prompt_clear();
                 }
 
@@ -1839,6 +1643,8 @@ private:
     // return true if at least one slot has been cleared
     // TODO: improve logic
     //       - smarter decision which slot to clear (LRU or longest prompt?)
+    //       - move slot to level 2 cache instead of removing?
+    //       - instead of purging, try to store and resume later?
     bool try_clear_idle_slots() {
         bool res = false;
 
@@ -1852,12 +1658,6 @@ private:
             }
 
             if (slot.prompt.n_tokens() > 0) {
-                // park the state to level 2 before purging so it can be restored later;
-                // a failed save only means the state is dropped as before
-                if (prompt_cache && slot.prompt_save(*prompt_cache)) {
-                    prompt_cache->update();
-                }
-
                 SRV_WRN("purging slot %d with %zu tokens\n", slot.id, slot.prompt.tokens.size());
 
                 slot.prompt_clear();
@@ -1975,10 +1775,6 @@ private:
             // TODO: getting pre sampling logits is not yet supported with backend sampling
             use_backend_sampling &= !need_pre_sample_logits;
 
-            // prompt-position logprobs need logits at every prompt position, which backend
-            // sampling rejects (one output per sequence there)
-            use_backend_sampling &= !task.need_prompt_logprobs();
-
             // TODO: tmp until backend sampling is fully implemented
             if (use_backend_sampling) {
                 llama_set_sampler(ctx_tgt, slot.id, common_sampler_get(slot.smpl.get()));
@@ -2003,22 +1799,6 @@ private:
         slot.n_predict_max = task.params.n_predict != -1 ? task.params.n_predict : params_base.n_predict;
 
         slot.task = std::make_unique<const server_task>(std::move(task));
-
-        if (!slot.task->params.oai_prompt_cache_key.empty()) {
-            slot.last_prompt_cache_key          = slot.task->params.oai_prompt_cache_key;
-            slot.last_prompt_cache_key_explicit = slot.task->params.oai_prompt_cache_key_explicit;
-            if (slot.task->params.oai_prompt_cache_ttl > 0) {
-                slot.prompt_cache_key_expires =
-                    (int64_t) std::time(nullptr) + slot.task->params.oai_prompt_cache_ttl;
-            } else {
-                slot.prompt_cache_key_expires = 0;
-            }
-            // explicit keys get a durable TTL entry; implicit anchors are local-only
-            if (slot.task->params.oai_prompt_cache_key_explicit) {
-                server_prompt_cache_key_touch(
-                    slot.task->params.oai_prompt_cache_key, slot.task->params.oai_prompt_cache_ttl);
-            }
-        }
 
         slot.state = slot.task->is_child()
             ? SLOT_STATE_WAIT_OTHER // wait for the parent to process prompt
@@ -2099,18 +1879,6 @@ private:
             slot.has_next_token = false;
 
             SLT_DBG(slot, "stopped by limit, n_gen = %d, n_predict = %d\n", (int) slot.stats.n_gen, slot.task->params.n_predict);
-        }
-
-        // WebSocket steering: a steer for this response asks to stop at the next
-        // safe boundary so a successor can carry the queued input. responses with
-        // tools are not interrupted here: steering waits for the terminal instead
-        if (slot.has_next_token && !slot.task->params.oaicompat_steer_hold &&
-                !slot.task->params.oaicompat_resp_id.empty() &&
-                server_responses_steer_flag_consume(slot.task->params.oaicompat_resp_id)) {
-            slot.stop           = STOP_TYPE_STEERED;
-            slot.has_next_token = false;
-
-            SLT_DBG(slot, "stopped by steering interrupt, resp_id = %s\n", slot.task->params.oaicompat_resp_id.c_str());
         }
 
         if (slot.has_new_line) {
@@ -2231,29 +1999,6 @@ private:
         }
     }
 
-    // prompt position p holds the logits that predict prompt token p+1, so row p+1 takes
-    // its logprobs from position p and the last prompt position is skipped
-    void extract_prompt_logprobs(const llama_batch & batch_view) {
-        for (int32_t i = 0; i < batch_view.n_tokens; i++) {
-            if (batch_view.logits[i] == 0) {
-                continue;
-            }
-
-            server_slot & slot = slots[batch_view.seq_id[i][0]];
-
-            if (!slot.need_prompt_logprobs()) {
-                continue;
-            }
-
-            const llama_pos pos = batch_view.pos[i];
-            if (pos < 0 || (size_t) pos + 1 >= slot.prompt_token_probs.size()) {
-                continue;
-            }
-
-            populate_token_probs(slot, slot.prompt_token_probs[pos + 1], false, params_base.special, i);
-        }
-    }
-
     void send_error(const server_task & task, const std::string & error, const enum error_type type = ERROR_TYPE_SERVER) {
         send_error(task.id, error, type);
     }
@@ -2296,32 +2041,7 @@ private:
             res->is_begin = true;
         } else {
             res->content = tkn.text_to_send;
-            res->tokens  = { tkn.tok };
-
-            // legacy /v1/completions logprobs: streamed rows share the offsets of the
-            // non-streamed response, so they count from the start of the full text
-            if (!is_progress && slot.task->params.sampling.n_probs > 0) {
-                const bool echo_first = slot.need_prompt_logprobs() && !slot.prompt_rows_sent;
-                if (echo_first) {
-                    // echo=true: the prompt text and its rows ride along the first chunk, so
-                    // that chunk starts over at 0 and the generated rows continue past them
-                    slot.prompt_rows_sent    = true;
-                    res->prompt              = slot.task->tokens.detokenize(ctx_tgt, true);
-                    res->prompt_probs_output = slot.prompt_token_probs;
-                    res->offset_base         = 0;
-                    slot.n_prompt_text_bytes = 0;
-                    for (const auto & row : slot.prompt_token_probs) {
-                        std::string txt(row.text_to_send);
-                        txt.resize(validate_utf8(txt));
-                        slot.n_prompt_text_bytes += (int32_t) txt.size();
-                    }
-                } else {
-                    if (slot.n_prompt_text_bytes < 0) {
-                        slot.n_prompt_text_bytes = (int32_t) slot.task->tokens.detokenize(ctx_tgt, true).size();
-                    }
-                    res->offset_base = slot.n_prompt_text_bytes + slot.n_sent_text - tkn.text_to_send.size();
-                }
-            }
+            res->tokens.assign(1, tkn.tok);
         }
 
         res->n_decoded             = slot.stats.n_gen;
@@ -2333,7 +2053,6 @@ private:
         res->res_type          = slot.task->params.res_type;
         res->oaicompat_model   = slot.task->params.oaicompat_model;
         res->oaicompat_cmpl_id = slot.task->params.oaicompat_cmpl_id;
-        res->generation_params = slot.task->params;
 
         // populate res.probs_output
         if (slot.task->params.sampling.n_probs > 0) {
@@ -2375,7 +2094,6 @@ private:
 
         res->truncated             = slot.truncated;
         res->n_decoded             = slot.stats.n_gen;
-        res->n_reasoning_tokens    = common_sampler_reasoning_budget_count(slot.smpl.get());
         res->n_prompt_tokens       = slot.task->n_tokens();
         res->n_prompt_tokens_cache = slot.stats.n_prompt_cached;
         res->n_tokens_cached       = slot.prompt.n_tokens();
@@ -2406,14 +2124,13 @@ private:
                         slot.generated_token_probs.end());
             }
         }
-        res->prompt_probs_output = slot.prompt_token_probs;
 
         res->generation_params = slot.task->params; // copy the parameters
 
         queue_results.send(std::move(res));
     }
 
-    void send_embedding(const server_slot & slot, const llama_batch & batch) {
+    void send_embedding(const server_slot & slot, const common_batch & batch) {
         auto res = std::make_unique<server_task_result_embd>();
         res->id        = slot.task->id;
         res->index     = slot.task->index;
@@ -2424,8 +2141,8 @@ private:
 
         std::vector<float> embd_res(n_embd_out, 0.0f);
 
-        for (int i = 0; i < batch.n_tokens; ++i) {
-            if (!batch.logits[i] || batch.seq_id[i][0] != slot.id) {
+        for (int i = 0; i < batch.size(); ++i) {
+            if (!batch.tokens[i].output || batch.tokens[i].seq_id != slot.id) {
                 continue;
             }
 
@@ -2433,11 +2150,11 @@ private:
             if (llama_pooling_type(slot.ctx_tgt) == LLAMA_POOLING_TYPE_NONE) {
                 embd = llama_get_embeddings_ith(slot.ctx_tgt, i);
             } else {
-                embd = llama_get_embeddings_seq(slot.ctx_tgt, batch.seq_id[i][0]);
+                embd = llama_get_embeddings_seq(slot.ctx_tgt, batch.tokens[i].seq_id);
             }
 
             if (embd == nullptr) {
-                SLT_ERR(slot, "failed to get embeddings, token = %d, seq_id = %d\n", batch.token[i], batch.seq_id[i][0]);
+                SLT_ERR(slot, "failed to get embeddings, token = %d, seq_id = %d\n", batch.tokens[i].id, batch.tokens[i].seq_id);
 
                 res->embedding.push_back(std::vector<float>(n_embd_out, 0.0f));
                 continue;
@@ -2458,24 +2175,24 @@ private:
         queue_results.send(std::move(res));
     }
 
-    void send_rerank(const server_slot & slot, const llama_batch & batch) {
+    void send_rerank(const server_slot & slot, const common_batch & batch) {
         auto res = std::make_unique<server_task_result_rerank>();
         res->id       = slot.task->id;
         res->index    = slot.task->index;
         res->n_tokens = slot.task->n_tokens();
 
-        for (int i = 0; i < batch.n_tokens; ++i) {
-            if (!batch.logits[i] || batch.seq_id[i][0] != slot.id) {
+        for (int i = 0; i < batch.size(); ++i) {
+            if (!batch.tokens[i].output || batch.tokens[i].seq_id != slot.id) {
                 continue;
             }
 
-            const float * embd = llama_get_embeddings_seq(ctx_tgt, batch.seq_id[i][0]);
+            const float * embd = llama_get_embeddings_seq(ctx_tgt, batch.tokens[i].seq_id);
             if (embd == NULL) {
                 embd = llama_get_embeddings_ith(ctx_tgt, i);
             }
 
             if (embd == NULL) {
-                SLT_ERR(slot, "failed to get embeddings, token = %d, seq_id = %d\n", batch.token[i], batch.seq_id[i][0]);
+                SLT_ERR(slot, "failed to get embeddings, token = %d, seq_id = %d\n", batch.tokens[i].id, batch.tokens[i].seq_id);
 
                 res->score = -1e6;
                 continue;
@@ -2659,13 +2376,6 @@ private:
 
                     const int id_task = task.id;
 
-                    // key-less clients: derive a stable anchor from the prompt head so a growing
-                    // conversation keeps slot affinity across turns
-                    if (task.params.oai_prompt_cache_key_implicit &&
-                            task.params.oai_prompt_cache_key.empty() && !task.tokens.empty()) {
-                        task.params.oai_prompt_cache_key = server_prompt_cache_anchor_key(task.tokens);
-                    }
-
                     server_slot * slot = get_available_slot(task);
 
                     //
@@ -2709,23 +2419,14 @@ private:
                             if (!slot.is_processing()) {
                                 SLT_TRC(slot, "%s", "saving idle slot to prompt cache\n");
 
-                                // a state that does not fit in --cache-ram is never cleared here:
-                                // dropping it would silently lose the whole context
-                                const bool parked = slot.prompt.tokens.size() > 0 &&
-                                    (slot.prompt_save(*prompt_cache) || prompt_cache->contains(slot.prompt.tokens));
-
-                                if (parked) {
+                                if (slot.prompt_save(*prompt_cache)) {
                                     SLT_DBG(slot, "%s", "__TEST_TAG_CACHE_IDLE_SLOT__\n");
                                     prompt_cache->update();
                                 }
 
                                 if (params_base.kv_unified) {
                                     // [TAG_IDLE_SLOT_CLEAR]
-                                    if (parked) {
-                                        slot.prompt_clear();
-                                    } else if (slot.prompt.tokens.size() > 0) {
-                                        SLT_WRN(slot, "idle slot does not fit in prompt cache, keeping KV (%zu tokens)\n", slot.prompt.tokens.size());
-                                    }
+                                    slot.prompt_clear();
                                 }
                             }
                         }
@@ -2794,8 +2495,6 @@ private:
                     res->n_processing_slots  = n_processing_slots;
                     res->n_tasks_deferred    = queue_tasks.queue_tasks_deferred_size();
                     res->metrics             = metrics;
-                    // size of the level-2 cache is only known to the main loop
-                    res->prompt_cache        = prompt_cache ? prompt_cache->stats() : server_prompt_cache_stats {};
 
                     if (task.metrics_reset_bucket) {
                         metrics.reset_bucket();
@@ -3116,7 +2815,6 @@ private:
         try {
             scoped_timer t(t_pre_decode, n_pre_decode);
             pre_decode();
-            batch.render();
         } catch (const std::exception & e) {
             SRV_ERR("pre_decode() failed: %s\n", e.what());
             abort_all_slots("pre_decode() failed: " + std::string(e.what()));
@@ -3146,7 +2844,6 @@ private:
             llama_set_embeddings(ctx_tgt, slot_batched->need_embd());
         }
 
-        llama_batch batch_view;
         int32_t off_next = 0;
         int32_t n_batch = llama_n_batch(ctx_tgt);
         for (int32_t off = 0; off < batch.size(); off = off_next) {
@@ -3155,8 +2852,8 @@ private:
                 scoped_timer t(t_decode, n_decode);
                 // TODO @ngxson : maybe handle n_batch == 1 here instead of inside decode()
 
-                batch_view = batch.get_view(off, n_tokens);
-                bool ok = decode(n_batch, off, batch_view);
+                batch.render(off, n_tokens);
+                bool ok = decode(n_batch, off);
 #ifdef DEBUG_TIMINGS
                 llama_synchronize(ctx_tgt);
 #endif
@@ -3167,9 +2864,6 @@ private:
 
                     // on successful decode, restore the original batch size
                     n_batch = llama_n_batch(ctx_tgt);
-
-                    // prompt-position logprobs: read them now, the next decode overwrites the logits
-                    extract_prompt_logprobs(batch_view);
                 } else {
                     // try again with the updated n_batch
                     continue;
@@ -3182,7 +2876,7 @@ private:
 
             try {
                 scoped_timer t(t_post_decode, n_post_decode);
-                post_decode(n_tokens, off, batch_view);
+                post_decode(n_tokens, off);
             } catch (const std::exception & e) {
                 SRV_ERR("post_decode() failed: %s\n", e.what());
                 abort_all_slots("post_decode() failed: " + std::string(e.what()));
@@ -3423,10 +3117,6 @@ private:
                     // used to determine the number of tokens added to the batch for the current slot
                     const auto n_tokens_prev = batch.size();
 
-                    // prompt-position logprobs need the logits of every prompt token,
-                    // so this request cannot reuse a cached prefix (full re-process)
-                    const bool need_prompt_logits = slot.need_prompt_logprobs();
-
                     // TODO: maybe move branch to outside of this loop in the future
                     if (slot.state == SLOT_STATE_STARTED) {
                         slot.stats.update_prompt_start();
@@ -3503,7 +3193,9 @@ private:
                                 return;
                             }
 
-                            if (slot.task->params.cache_prompt && !need_prompt_logits) {
+                            const bool is_stateless_task = slot.task->type == SERVER_TASK_TYPE_EMBEDDING || slot.task->type == SERVER_TASK_TYPE_RERANK;
+
+                            if (slot.task->params.cache_prompt && !is_stateless_task) {
                                 // reuse any previously computed tokens that are common with the new prompt
                                 n_past = slot.prompt.tokens.get_common_prefix(input_tokens);
 
@@ -3702,20 +3394,6 @@ private:
 
                         slot.prompt.tokens.keep_first(n_past);
 
-                        // prompt-position logprobs: one row per prompt token, text pieces taken
-                        // with the same helper as the generated tokens
-                        if (need_prompt_logits) {
-                            slot.prompt_token_probs.resize(slot.task->tokens.size());
-                            for (size_t i = 0; i < slot.task->tokens.size(); i++) {
-                                auto & row = slot.prompt_token_probs[i];
-                                row.tok  = slot.task->tokens[i];
-                                row.prob = 0.0f;
-                                if (row.tok != LLAMA_TOKEN_NULL) {
-                                    row.text_to_send = common_token_to_piece(ctx_tgt, row.tok, params_base.special);
-                                }
-                            }
-                        }
-
                         // this is to signal the client that the request has started processing
                         if (slot.task->params.stream) {
                             if (slot.task->params.return_progress) {
@@ -3842,11 +3520,10 @@ private:
                         // embedding requires all tokens in the batch to be output;
                         // MTP also wants logits at every prompt position so the
                         // streaming hook can mirror t_h_nextn into ctx_dft.
-                        // prompt-position logprobs need the same.
                         add_ok &= batch.add(slot.id,
                             cur_tok,
                             /* pos       = */ slot.prompt.tokens.pos_next(),
-                            /* output    = */ slot.need_embd() || need_prompt_logits,
+                            /* output    = */ slot.need_embd(),
                             /* is_prompt = */ true);
                         slot.prompt.tokens.push_back(cur_tok);
 
@@ -3858,15 +3535,6 @@ private:
                             if (pos == last_user_pos || checkpoints.empty() || pos > checkpoints.back().n_tokens + params_base.checkpoint_min_step) {
                                 break;
                             }
-                        }
-
-                        // stop at an explicit prompt cache breakpoint: the next batch starts
-                        // exactly there, so its checkpoint lands on the breakpoint (no rounding)
-                        if (do_checkpoint &&
-                                std::find(slot.task->params.oai_prompt_cache_breakpoints.begin(),
-                                          slot.task->params.oai_prompt_cache_breakpoints.end(),
-                                          slot.prompt.n_tokens()) != slot.task->params.oai_prompt_cache_breakpoints.end()) {
-                            break;
                         }
 
                         // process the last few tokens of the prompt separately in order to allow for a checkpoint to be created.
@@ -3900,10 +3568,6 @@ private:
 
                     const bool is_user_start = spans.is_user_start(n_tokens_start);
                     const bool is_last_user_message = n_tokens_start == last_user_pos;
-                    const bool is_cache_breakpoint = std::find(
-                            slot.task->params.oai_prompt_cache_breakpoints.begin(),
-                            slot.task->params.oai_prompt_cache_breakpoints.end(),
-                            n_tokens_start) != slot.task->params.oai_prompt_cache_breakpoints.end();
 
                     // entire prompt has been processed
                     if (slot.prompt.n_tokens() == slot.task->n_tokens()) {
@@ -3920,8 +3584,8 @@ private:
                         slot.init_sampler();
                     } else {
                         // skip ordinary mid-prompt checkpoints, unless the batch starts a user
-                        // message, an explicit cache breakpoint, or we are near the end of the prompt
-                        if (!is_user_start && !near_prompt_end && !is_cache_breakpoint) {
+                        // message or we are near the end of the prompt
+                        if (!is_user_start && !near_prompt_end) {
                             do_checkpoint = false;
                         }
                     }
@@ -3939,10 +3603,9 @@ private:
                     do_checkpoint = do_checkpoint && !has_mtmd;
 
                     // no need to create checkpoints that are too close together, unless it's the last user message
-                    // or an explicit cache breakpoint (which must land exactly, min-step does not apply)
                     do_checkpoint = do_checkpoint && (
                             slot.prompt.checkpoints.empty() ||
-                            is_last_user_message || near_prompt_end || is_cache_breakpoint ||
+                            is_last_user_message || near_prompt_end ||
                             n_tokens_start > slot.prompt.checkpoints.back().n_tokens + params_base.checkpoint_min_step);
                     SLT_DBG(slot, "main/do_checkpoint = %s, pos_min = %d, pos_max = %d\n", do_checkpoint ? "yes" : "no", pos_min, pos_max);
 
@@ -3962,7 +3625,7 @@ private:
 
     // returns true = success ; false = retry with smaller batch size
     // throw std::runtime_error on fatal error
-    bool decode(int32_t & n_batch, int32_t off, llama_batch & batch_view) {
+    bool decode(int32_t & n_batch, int32_t off) {
         SRV_DBG("n_batch (effective) = %d, off = %d\n", n_batch, off);
 
         metrics_pre_decode();
@@ -3989,7 +3652,7 @@ private:
         }
 
         bool has_output = false;
-        for (int i = off; i < off + batch_view.n_tokens; ++i) {
+        for (int i = off; i < off + batch.view.size(); ++i) {
             has_output |= batch.tokens[i].output;
         }
 
@@ -3997,7 +3660,7 @@ private:
         // note: the sync is done here too, so that the wait is also covered by the yield
         int ret = 0;
         queue_tasks.yield_to_queue([&]() {
-            ret = llama_decode(ctx_tgt, batch_view);
+            ret = llama_process(ctx_tgt, LLAMA_PROCESS_TYPE_DECODE, batch.view.get());
             if (ret == 0 && has_output) {
                 llama_synchronize(ctx_tgt);
             }
@@ -4053,7 +3716,7 @@ private:
             return false; // retry with the updated n_batch
         } else {
             // success, apply batch metrics
-            metrics_post_decode(off, batch_view.n_tokens, has_output);
+            metrics_post_decode(off, batch.view.size(), has_output);
         }
 
         // TODO: avoid restoring the draft context and re-evaluating the drafted tokens when not needed [TAG_SPEC_AVOID_DRAFT_REEVAL]
@@ -4062,7 +3725,7 @@ private:
         if (spec) {
             bool ok = true;
             queue_tasks.yield_to_queue([&]() {
-                ok = common_speculative_process(spec.get(), batch_view);
+                ok = common_speculative_process(spec.get(), batch.view);
             });
 
             if (!ok) {
@@ -4099,8 +3762,8 @@ private:
         return true;
     }
 
-    void post_decode(int32_t n_batch_tokens, int32_t off, llama_batch & batch_view) {
-        // for checking if a given batch index is inside batch_view
+    void post_decode(int32_t n_batch_tokens, int32_t off) {
+        // for checking if a given batch index is inside the current sub-batch
         auto is_inside_view = [&](int32_t idx) {
             return idx >= off && idx < off + n_batch_tokens;
         };
@@ -4136,14 +3799,14 @@ private:
             if (slot.state == SLOT_STATE_DONE_PROMPT) {
                 if (slot.task->type == SERVER_TASK_TYPE_EMBEDDING) {
                     // prompt evaluated for embedding
-                    send_embedding(slot, batch_view);
+                    send_embedding(slot, batch.view);
                     slot.release();
                     slot.i_batch = -1;
                     return;
                 }
 
                 if (slot.task->type == SERVER_TASK_TYPE_RERANK) {
-                    send_rerank(slot, batch_view);
+                    send_rerank(slot, batch.view);
                     slot.release();
                     slot.i_batch = -1;
                     return;
@@ -4203,10 +3866,7 @@ private:
             if (!process_token(result, slot)) {
                 // release slot because of stop condition
                 slot.print_timings();
-                if (!slot.oai_resp_stream_error_sent) {
-                    send_final_response(slot);
-                }
-                // the token stats are flushed by release(), see slot.callback_on_reset
+                send_final_response(slot);
                 slot.release();
 
                 return;
@@ -4331,10 +3991,7 @@ private:
 
                 if (!process_token(result, slot)) {
                     slot.print_timings();
-                    if (!slot.oai_resp_stream_error_sent) {
-                        send_final_response(slot);
-                    }
-                    // the token stats are flushed by release(), see slot.callback_on_reset
+                    send_final_response(slot);
                     slot.release();
 
                     return;
@@ -4502,10 +4159,6 @@ server_response_reader server_context::get_response_reader() {
     return impl->get_response_reader();
 }
 
-server_prompt_cache * server_context::get_prompt_cache() const {
-    return impl->prompt_cache.get();
-}
-
 server_context_meta server_context::get_meta() const {
     auto bos_id = llama_vocab_bos(impl->vocab);
     auto eos_id = llama_vocab_eos(impl->vocab);
@@ -4568,14 +4221,8 @@ struct server_res_generator : server_res_spipe {
         status = 200;
         data = safe_json_to_str(response_data);
     }
-    void error(const json & error_data, bool anthropic = false) {
-        if (anthropic) {
-            // Anthropic routes use the official envelope and type vocabulary
-            status = anthropic_error_status_from_body(error_data);
-            data = safe_json_to_str(format_anthropic_error_response(error_data));
-            return;
-        }
-        status = error_status_from_body(error_data);
+    void error(const json & error_data) {
+        status = json_value(error_data, "code", 500);
         data = safe_json_to_str({{ "error", error_data }});
     }
 };
@@ -4587,188 +4234,6 @@ void server_context::set_state_callback(server_state_callback_t callback) {
 //
 // server_routes
 //
-
-// surface request -> engine params; the surface-private data keys are still read here on
-// purpose, so this stays behaviour-preserving while the per-surface payload is lifted out
-static task_params surface_task_params(
-        const llama_vocab * vocab,
-        const common_params & params_base,
-        const std::vector<llama_logit_bias> & logit_bias_eog,
-        const json & data,
-        const common_chat_msg_delimiters & delimiters,
-        const server_tokens & tokens,
-        task_response_type res_type,
-        const std::string & completion_id,
-        const std::string & model_name) {
-    task_params params = server_schema::eval_llama_cmpl_schema(vocab, params_base, logit_bias_eog, data);
-
-    params.message_spans = tokens.find_message_spans(delimiters);
-
-    // explicit prompt cache breakpoints: map {role, ordinal} to the token position
-    // just past the end of that message span (the checkpoint boundary)
-    if (data.contains("__oai_prompt_cache_breakpoints") &&
-            data.at("__oai_prompt_cache_breakpoints").is_array()) {
-        for (const auto & bp : data.at("__oai_prompt_cache_breakpoints")) {
-            if (!bp.is_object()) {
-                continue;
-            }
-            const std::string role_str = json_value(bp, "role", std::string());
-            const int32_t ordinal = json_value(bp, "ordinal", 0);
-            const std::string anchor_str = json_value(bp, "anchor", std::string());
-
-            // tools anchor: the checkpoint sits at the start of the first message
-            // span, i.e. right after the tools section (not at a message end)
-            if (role_str == "tools" || anchor_str == "tools") {
-                if (params.message_spans.spans.empty()) {
-                    SRV_WRN("%s\n", "prompt_cache_breakpoint: tools anchor has no message spans, skipping");
-                    continue;
-                }
-                const size_t start = params.message_spans.spans.front().pos;
-                if (start > (size_t) INT32_MAX) {
-                    SRV_WRN("prompt_cache_breakpoint: message start %" PRIu64 " out of range, skipping\n", (uint64_t) start);
-                    continue;
-                }
-                const int32_t pos = (int32_t) start;
-                if (std::find(params.oai_prompt_cache_breakpoints.begin(),
-                            params.oai_prompt_cache_breakpoints.end(), pos) ==
-                        params.oai_prompt_cache_breakpoints.end()) {
-                    params.oai_prompt_cache_breakpoints.push_back(pos);
-                }
-                continue;
-            }
-
-            const common_chat_role role = common_chat_role_from_string(role_str);
-
-            if (role == COMMON_CHAT_ROLE_UNKNOWN) {
-                SRV_WRN("prompt_cache_breakpoint: role '%s' has no delimiters, skipping\n", role_str.c_str());
-                continue;
-            }
-            // count spans of this role in order; the ordinal is 1-based
-            int32_t seen = 0;
-            bool found = false;
-            for (const auto & span : params.message_spans.spans) {
-                if (span.role != role || ++seen != ordinal) {
-                    continue;
-                }
-                const size_t end = span.pos + span.len;
-                if (end > (size_t) INT32_MAX) {
-                    SRV_WRN("prompt_cache_breakpoint: message end %" PRIu64 " out of range, skipping\n", (uint64_t) end);
-                    break;
-                }
-                const int32_t pos = (int32_t) end;
-                if (std::find(params.oai_prompt_cache_breakpoints.begin(),
-                            params.oai_prompt_cache_breakpoints.end(), pos) ==
-                        params.oai_prompt_cache_breakpoints.end()) {
-                    params.oai_prompt_cache_breakpoints.push_back(pos);
-                }
-                found = true;
-                break;
-            }
-            if (!found) {
-                SRV_WRN("prompt_cache_breakpoint: %s message #%d not found in prompt, skipping\n",
-                        role_str.c_str(), ordinal);
-            }
-        }
-    }
-
-    // OAI-compat
-    params.res_type          = res_type;
-    params.oaicompat_cmpl_id = completion_id;
-    params.oaicompat_model   = model_name;
-
-    if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
-        params.oaicompat_resp_id = json_value(data, "__oai_resp_id", std::string());
-        if (data.contains("__oai_resp_input")) {
-            params.oaicompat_resp_input = data.at("__oai_resp_input");
-        }
-        if (data.contains("__oai_resp_instructions")) {
-            params.oaicompat_resp_instructions = data.at("__oai_resp_instructions");
-        }
-        if (data.contains("__oai_resp_request")) {
-            params.oaicompat_resp_request = data.at("__oai_resp_request");
-            // a response with tools may stop for client-owned tool output, so a
-            // steer must wait for the terminal instead of interrupting generation
-            const json & resp_req = params.oaicompat_resp_request;
-            if (resp_req.is_object() && resp_req.contains("tools") && resp_req.at("tools").is_array()) {
-                for (const auto & tool : resp_req.at("tools")) {
-                    if (tool.is_object()) {
-                        params.oaicompat_steer_hold = true;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
-        // thinking.display=omitted suppresses thinking text in the response body
-        params.anthropic_thinking_display_omitted =
-            json_value(data, "anthropic_thinking_display", std::string()) == "omitted";
-    }
-    if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT) {
-        params.oaicompat_chat_store = json_value(data, "__oai_chat_store", false);
-        if (data.contains("__oai_chat_metadata")) {
-            params.oaicompat_chat_metadata = data.at("__oai_chat_metadata");
-        }
-        params.oaicompat_chat_user =
-            json_value(data, "__oai_chat_user", std::string());
-        params.oaicompat_chat_safety_identifier =
-            json_value(data, "__oai_chat_safety_identifier", std::string());
-        params.oaicompat_chat_service_tier =
-            json_value(data, "__oai_chat_service_tier", std::string());
-    }
-    if (res_type == TASK_RESPONSE_TYPE_OAI_CMPL) {
-        // Completions may include request `user` for client correlation.
-        params.oaicompat_chat_user = json_value(data, "user", std::string());
-    }
-    // Shared OpenAI deepen flags (Chat / Completions / Responses via chat convert).
-    params.oai_prompt_cache_key =
-        json_value(data, "__oai_prompt_cache_key", std::string());
-    params.oai_prompt_cache_key_explicit =
-        json_value(data, "__oai_prompt_cache_key_explicit", false);
-    params.oai_prompt_cache_key_implicit =
-        json_value(data, "__oai_prompt_cache_key_implicit", false);
-    params.oai_prompt_cache_ttl =
-        json_value(data, "__oai_prompt_cache_ttl", 0);
-    params.oai_prompt_cache_expired =
-        json_value(data, "__oai_prompt_cache_expired", false);
-    params.oai_web_search_ran =
-        json_value(data, "__oai_web_search", false);
-    params.oai_web_search_query =
-        json_value(data, "__oai_web_search_query", std::string());
-    if (data.contains("__oai_web_search_results")) {
-        params.oai_web_search_results = data.at("__oai_web_search_results");
-    }
-    params.oai_web_search_n_requests =
-        json_value(data, "__oai_web_search_n_requests", 0);
-    if (data.contains("__oai_custom_tool_names") &&
-            data.at("__oai_custom_tool_names").is_array()) {
-        for (const auto & name : data.at("__oai_custom_tool_names")) {
-            if (name.is_string()) {
-                params.oai_custom_tool_names.push_back(name.get<std::string>());
-            }
-        }
-    }
-    if (res_type == TASK_RESPONSE_TYPE_OAI_CMPL) {
-        params.oaicompat_cmpl_echo = json_value(data, "echo", false);
-        const int n_val = json_value(data, "n", 1);
-        const int best_of = json_value(data, "best_of", n_val);
-        if (best_of > n_val) {
-            params.n_cmpl = best_of;
-            params.oaicompat_cmpl_return_n = n_val;
-            params.oaicompat_cmpl_rank_by_logprob = true;
-            const bool user_logprobs =
-                json_value(data, "logprobs", 0) > 0 ||
-                (data.contains("logprobs") && data.at("logprobs").is_boolean() &&
-                 data.at("logprobs").get<bool>());
-            if (params.sampling.n_probs < 1) {
-                params.sampling.n_probs = 1;
-                params.oaicompat_cmpl_hide_rank_logprobs = !user_logprobs;
-            }
-        }
-    }
-
-    return params;
-}
 
 std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             const server_http_req & req,
@@ -4784,12 +4249,6 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
     auto & params = this->params;
 
     res->set_req(&req); // will also set spipe if needed
-
-    // background Responses streams are resumable by response id: attach a session keyed by
-    // the id so GET /v1/responses/{id}?stream=true&starting_after=N can replay and follow
-    if (json_value(data, "__oai_resp_background", false) && json_value(data, "stream", false)) {
-        res->attach_conv_id(json_value(data, "__oai_resp_id", std::string()));
-    }
 
     int32_t sse_ping_interval = params.sse_ping_interval;
 
@@ -4813,12 +4272,11 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         // process prompt
         std::vector<server_tokens> inputs;
 
-        if (res_type != TASK_RESPONSE_TYPE_NONE && ctx_server.mctx != nullptr && prompt.is_string()) {
-            // OAI chat/completions with multimodal model + string prompt.
-            // Token-array prompts (e.g. Completions FIM) use tokenize_input_prompts below.
+        if (res_type != TASK_RESPONSE_TYPE_NONE && ctx_server.mctx != nullptr) {
+            // This is the case used by OAI compatible chat path with MTMD. TODO It can be moved to the path below.
             inputs.push_back(process_mtmd_prompt(ctx_server.mctx, prompt.get<std::string>(), files, ctx_server.init_opt));
         } else {
-            // Everything else, including multimodal completions and FIM token arrays.
+            // Everything else, including multimodal completions.
             inputs = tokenize_input_prompts(ctx_server.vocab, ctx_server.mctx, prompt, true, true, ctx_server.init_opt);
         }
 
@@ -4835,18 +4293,21 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             task.id = rd.get_new_id();
 
             task.tokens = std::move(inputs[i]);
-            task.params = surface_task_params(
+            task.params = server_schema::eval_llama_cmpl_schema(
                     ctx_server.vocab,
                     params,
                     meta->logit_bias_eog,
-                    data,
-                    delimiters,
-                    task.tokens,
-                    res_type,
-                    completion_id,
-                    meta->model_name);
+                    data);
+
+            task.params.message_spans = task.tokens.find_message_spans(delimiters);
+
             task.id_slot = json_value(data, "id_slot", -1);
             sse_ping_interval = task.params.sse_ping_interval;
+
+            // OAI-compat
+            task.params.res_type          = res_type;
+            task.params.oaicompat_cmpl_id = completion_id;
+            task.params.oaicompat_model   = meta->model_name;
 
             // prepare child tasks
             if (task.params.n_cmpl > 1) {
@@ -4861,8 +4322,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
 
         rd.post_tasks(std::move(tasks));
     } catch (const std::exception & e) {
-        res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST),
-                res_type == TASK_RESPONSE_TYPE_ANTHROPIC);
+        res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
         return res;
     }
 
@@ -4874,7 +4334,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         if (all_results.is_terminated) {
             return res; // connection is closed
         } else if (all_results.error) {
-            res->error(all_results.error->to_json(), res_type == TASK_RESPONSE_TYPE_ANTHROPIC);
+            res->error(all_results.error->to_json());
             return res;
         } else {
             json arr = json::array();
@@ -4888,64 +4348,11 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                 res->ok(arr[0]);
             } else if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT || res_type == TASK_RESPONSE_TYPE_OAI_CMPL) {
                 // if multiple results in OAI format, we need to re-format them
-                // best_of > n: rank by sum of token logprobs, keep top return_n.
-                std::vector<server_task_result_cmpl_final *> finals;
-                finals.reserve(all_results.results.size());
-                for (auto & rptr : all_results.results) {
-                    auto * f = dynamic_cast<server_task_result_cmpl_final *>(rptr.get());
-                    GGML_ASSERT(f != nullptr);
-                    finals.push_back(f);
+                json & choices = arr[0]["choices"];
+                for (size_t i = 1; i < arr.size(); i++) {
+                    choices.push_back(std::move(arr[i]["choices"][0]));
                 }
-                int return_n = -1;
-                bool rank = false;
-                bool hide_lp = false;
-                if (!finals.empty()) {
-                    return_n = finals[0]->generation_params.oaicompat_cmpl_return_n;
-                    rank = finals[0]->generation_params.oaicompat_cmpl_rank_by_logprob;
-                    hide_lp = finals[0]->generation_params.oaicompat_cmpl_hide_rank_logprobs;
-                }
-                if (return_n < 0) {
-                    return_n = json_value(data, "__oai_return_n", -1);
-                }
-                if (rank && finals.size() > 1) {
-                    std::vector<float> scores;
-                    scores.reserve(finals.size());
-                    for (auto * f : finals) {
-                        std::vector<float> ps;
-                        ps.reserve(f->probs_output.size());
-                        for (const auto & p : f->probs_output) {
-                            ps.push_back(p.prob);
-                        }
-                        scores.push_back(server_oaicompat_probs_score(ps));
-                    }
-                    std::vector<size_t> order(finals.size());
-                    std::iota(order.begin(), order.end(), 0);
-                    std::stable_sort(order.begin(), order.end(), [&](size_t i, size_t j) {
-                        return scores[i] > scores[j];
-                    });
-                    std::vector<server_task_result_cmpl_final *> ranked;
-                    ranked.reserve(finals.size());
-                    for (size_t idx : order) {
-                        ranked.push_back(finals[idx]);
-                    }
-                    finals.swap(ranked);
-                }
-                if (return_n >= 0 && (int) finals.size() > return_n) {
-                    finals.resize((size_t) return_n);
-                }
-                json arr0 = finals[0]->to_json();
-                json & choices = arr0["choices"];
-                choices = json::array();
-                for (size_t i = 0; i < finals.size(); i++) {
-                    json one = finals[i]->to_json();
-                    json ch = one["choices"][0];
-                    ch["index"] = (int) i;
-                    if (hide_lp) {
-                        ch["logprobs"] = nullptr;
-                    }
-                    choices.push_back(std::move(ch));
-                }
-                res->ok(arr0);
+                res->ok(arr[0]);
             } else {
                 // multi-results, non-OAI compat
                 res->ok(arr);
@@ -4962,7 +4369,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         }
 
         if (first_result->is_error()) {
-            res->error(first_result->to_json(), res_type == TASK_RESPONSE_TYPE_ANTHROPIC);
+            res->error(first_result->to_json());
             return res;
         }
 
@@ -4985,39 +4392,16 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         }
         res->status = 200;
         res->content_type = "text/event-stream";
-        const std::string oai_stream_resp_id = json_value(data, "__oai_resp_id", std::string());
-        const json oai_stream_request = data.contains("__oai_resp_request") && data.at("__oai_resp_request").is_object()
-            ? data.at("__oai_resp_request")
-            : json::object();
-        const std::string oai_stream_model = meta->model_name;
-        res->set_next([res_this = res.get(), res_type, sse_ping_interval,
-                       oai_stream_resp_id, oai_stream_request, oai_stream_model](std::string & output) -> bool {
-            auto format_error = [&](task_response_type res_type, const json & res_json) {
+        res->set_next([res_this = res.get(), res_type, sse_ping_interval](std::string & output) -> bool {
+            static auto format_error = [](task_response_type res_type, const json & res_json) {
                 if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
-                    // official error frame shape: {"type":"error","error":{...}}
                     return format_anthropic_sse({
                         {"event", "error"},
-                        {"data", {
-                            {"type", "error"},
-                            {"error", res_json},
-                        }},
+                        {"data", res_json},
                     });
+                } else {
+                    return format_oai_sse(json {{ "error", res_json }});
                 }
-                if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
-                    const std::string message = json_value(res_json, "message", std::string("error"));
-                    // Map llama error types onto Responses ResponseError.code literals.
-                    std::string code = "server_error";
-                    const std::string typ = json_value(res_json, "type", std::string());
-                    if (typ == "invalid_request_error") {
-                        code = "invalid_prompt";
-                    }
-                    const std::string rid = oai_stream_resp_id.empty()
-                        ? server_responses_new_id()
-                        : oai_stream_resp_id;
-                    return format_oai_resp_sse(server_responses_build_error_failed_sse_events(
-                        rid, oai_stream_model, oai_stream_request, message, code));
-                }
-                return format_oai_sse(json {{ "error", res_json }});
             };
 
             auto effective_should_stop = [&res_this]() {
@@ -5137,11 +4521,6 @@ server_routes::server_routes(const common_params & params, server_context & ctx_
     });
 }
 
-// accept the served model name and its aliases, as exposed via /v1/models
-static bool is_model_name_accepted(const server_context_meta & meta, const std::string & name) {
-    return name == meta.model_name || meta.model_aliases.count(name) > 0;
-}
-
 static json get_res_model_info(const server_context_meta & meta) {
     // note: do NOT use ctx_server here, otherwise it's not possible to use this during sleep
 
@@ -5152,8 +4531,6 @@ static json get_res_model_info(const server_context_meta & meta) {
         {"object",   "model"},
         {"created",  std::time(0)},
         {"owned_by", "llamacpp"},
-        // local models never shut down, so the official field stays null
-        {"shutdown_date", nullptr},
         {"meta",     {
             {"vocab_type",  meta.model_vocab_type},
             {"n_vocab",     meta.model_vocab_n_tokens},
@@ -5281,7 +4658,6 @@ void server_routes::init_routes() {
             res->headers["Process-Start-Time-Unix"] = std::to_string(cached_metrics.t_start);
             server_task_result_metrics tmp;
             tmp.metrics = cached_metrics;
-            tmp.prompt_cache = cached_prompt_cache;
             res->content_type = "text/plain; version=0.0.4";
             res->status = 200;
             res->data = tmp.to_metrics();
@@ -5408,61 +4784,13 @@ void server_routes::init_routes() {
 
     this->get_props = [this](const server_http_req &) {
         auto res = create_response(true);
-
-        // this endpoint can be accessed during sleeping
-        // the next LOC is to avoid someone accidentally use ctx_server
-        bool ctx_server; // do NOT delete this line
-        GGML_UNUSED(ctx_server);
-
-        task_params tparams;
-        tparams.sampling = params.sampling;
-        json default_generation_settings_for_props = json {
-            { "params", tparams.to_json(true) },
-            { "n_ctx",  meta->slot_n_ctx },
-        };
-
-        std::string tmpl_default = common_chat_templates_source(meta->chat_params.tmpls.get(), "");
-        std::string tmpl_tools   = common_chat_templates_source(meta->chat_params.tmpls.get(), "tool_use");
-
-        json props = {
-            { "default_generation_settings", default_generation_settings_for_props },
-            { "total_slots",                 params.n_parallel },
-            { "model_alias",                 meta->model_name },
-            { "model_ftype",                 meta->model_ftype },
-            { "model_path",                  meta->model_path },
-            { "modalities",                  json {
-                {"vision", meta->has_inp_image},
-                {"video",  meta->has_inp_video},
-                {"audio",  meta->has_inp_audio},
-            } },
-            { "media_marker",                get_media_marker() },
-            { "endpoint_slots",              params.endpoint_slots },
-            { "endpoint_props",              params.endpoint_props },
-            { "endpoint_metrics",            params.endpoint_metrics },
-            { "slot_save_path",              params.slot_save_path },
-            { "ui",                          params.ui },
-            { "ui_settings",                 meta->json_ui_settings },
-            { "chat_template",               tmpl_default },
-            { "chat_template_caps",          meta->chat_template_caps },
-            { "bos_token",                   meta->bos_token_str },
-            { "eos_token",                   meta->eos_token_str },
-            { "build_info",                  meta->build_info },
-            { "is_sleeping",                 queue_tasks.is_sleeping() },
-            { "cors_proxy_enabled",          params.ui_mcp_proxy },
-        };
-        if (params.use_jinja) {
-            if (!tmpl_tools.empty()) {
-                props["chat_template_tool_use"] = tmpl_tools;
-            }
+        // note: do NOT use ctx_server here, this endpoint must be accessible during sleep
+        if (queue_tasks.is_sleeping()) {
+            std::unique_lock<std::mutex> lock(mutex_cache);
+            res->ok(cached_props);
+        } else {
+            res->ok(get_res_props(*meta, params, false));
         }
-        if (prompt_cache) {
-            // hit/miss counters are atomic, so they can be read on the HTTP thread
-            json pc = prompt_cache->props_json();
-            pc["idle_slots"]  = params.cache_idle_slots;
-            pc["cache_reuse"] = params.n_cache_reuse;
-            props["prompt_cache"] = pc;
-        }
-        res->ok(props);
         return res;
     };
 
@@ -5571,48 +4899,7 @@ void server_routes::init_routes() {
     this->post_completions_oai = [this](const server_http_req & req) {
         auto res = create_response();
         std::vector<raw_buffer> files; // dummy
-        json body = json::parse(req.body);
-        // OpenAI Completions: `model` is required (do not silently default).
-        if (!body.contains("model") || body.at("model").is_null() ||
-            (body.at("model").is_string() && body.at("model").get<std::string>().empty())) {
-            res->error(format_error_response("'model' is required", ERROR_TYPE_INVALID_REQUEST));
-            return res;
-        }
-        try {
-            server_openai_validate_completions_create(body);
-            if (body.contains("best_of") && !body.at("best_of").is_null()) {
-                // each candidate keeps a slot until the best one is picked, so a ranking request
-                // cannot hold more candidates than the server has slots; OpenAI caps best_of at 20
-                const int best_of_max = std::min((int) params.n_parallel, 20);
-                const int best_of = body.at("best_of").get<int>();
-                if (best_of > best_of_max) {
-                    throw std::invalid_argument(string_format(
-                            "Field 'best_of': Value must be between 1 <= value <= %d, but got %d",
-                            best_of_max, best_of));
-                }
-            }
-            // official Completions clamps logprobs to 5; a larger value is not an error
-            if (body.contains("logprobs") && body.at("logprobs").is_number_integer() &&
-                    body.at("logprobs").get<int>() > 5) {
-                body["logprobs"] = 5;
-            }
-            server_openai_apply_prompt_cache_semantics(body);
-            body = server_openai_completions_apply_suffix(
-                ctx_server.vocab,
-                std::move(body),
-                params.n_batch,
-                params.n_predict,
-                meta->slot_n_ctx,
-                params.spm_infill);
-        } catch (const std::exception & e) {
-            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
-            return res;
-        }
-        // official default: max_tokens = 16 when the request omits it
-        if ((!body.contains("max_tokens") || body.at("max_tokens").is_null()) &&
-            (!body.contains("n_predict")  || body.at("n_predict").is_null())) {
-            body["max_tokens"] = 16;
-        }
+        const json body = json::parse(req.body);
         return handle_completions_impl(
             req,
             SERVER_TASK_TYPE_COMPLETION,
@@ -5625,39 +4912,10 @@ void server_routes::init_routes() {
         auto res = create_response();
         std::vector<raw_buffer> files;
         json body = json::parse(req.body);
-        // OpenAI Chat Completions: `model` is required (do not silently default).
-        if (!body.contains("model") || body.at("model").is_null() ||
-            (body.at("model").is_string() && body.at("model").get<std::string>().empty())) {
-            res->error(format_error_response("'model' is required", ERROR_TYPE_INVALID_REQUEST));
-            return res;
-        }
-        // OpenAI: an unknown model -> 404 with the official model_not_found body
-        const std::string req_model = body.at("model").is_string() ? body.at("model").get<std::string>() : std::string();
-        if (!req_model.empty() && !is_model_name_accepted(*meta, req_model)) {
-            res->status = 404;
-            res->data = safe_json_to_str(format_oai_model_not_found(req_model));
-            return res;
-        }
-
         json body_parsed = oaicompat_chat_params_parse(
             body,
             meta->chat_params,
-            files,
-            true);
-        // OpenAI Chat Completions store=true persistence
-        body_parsed["__oai_chat_store"] = json_value(body, "store", false);
-        if (body.contains("metadata")) {
-            body_parsed["__oai_chat_metadata"] = body.at("metadata");
-        }
-        if (body.contains("user") && body.at("user").is_string()) {
-            body_parsed["__oai_chat_user"] = body.at("user");
-        }
-        if (body.contains("safety_identifier") && body.at("safety_identifier").is_string()) {
-            body_parsed["__oai_chat_safety_identifier"] = body.at("safety_identifier");
-        }
-        if (body.contains("service_tier") && body.at("service_tier").is_string()) {
-            body_parsed["__oai_chat_service_tier"] = body.at("service_tier");
-        }
+            files);
         return handle_completions_impl(
             req,
             SERVER_TASK_TYPE_COMPLETION,
@@ -5667,178 +4925,7 @@ void server_routes::init_routes() {
     };
 
     this->post_chat_completions_tok = [this](const server_http_req & req) {
-        return handle_count_tokens(ctx_server.vocab, ctx_server.mctx, ctx_server.init_opt, req, TASK_RESPONSE_TYPE_OAI_CHAT);
-    };
-
-    this->get_chat_completions = [this](const server_http_req & req) {
-        auto res = create_response();
-        int limit = 20;
-        const std::string order = req.get_param("order", "asc");
-        if (order != "asc" && order != "desc") {
-            res->error(format_error_response("'order' must be 'asc' or 'desc'", ERROR_TYPE_INVALID_REQUEST));
-            return res;
-        }
-        const bool order_desc = order == "desc";
-        try {
-            limit = std::stoi(req.get_param("limit", "20"));
-        } catch (...) {}
-        // official list filter: metadata[key]=value pairs, combined with AND
-        std::vector<std::pair<std::string, std::string>> metadata_filter;
-        const std::string metadata_prefix = "metadata[";
-        for (const auto & param : req.params) {
-            if (param.first.size() > metadata_prefix.size() + 1 &&
-                    param.first.compare(0, metadata_prefix.size(), metadata_prefix) == 0 &&
-                    param.first.back() == ']') {
-                metadata_filter.emplace_back(
-                    param.first.substr(metadata_prefix.size(), param.first.size() - metadata_prefix.size() - 1),
-                    param.second);
-            }
-        }
-        res->ok(server_chat_completions_store::instance().list(
-            req.get_param("after"),
-            limit,
-            order_desc,
-            req.get_param("model"),
-            metadata_filter));
-        return res;
-    };
-
-    this->get_chat_completion = [this](const server_http_req & req) {
-        auto res = create_response();
-        const std::string id = req.get_param("completion_id");
-        if (id.empty()) {
-            res->error(format_error_response("missing completion id", ERROR_TYPE_INVALID_REQUEST));
-            return res;
-        }
-        auto entry = server_chat_completions_store::instance().get(id);
-        if (!entry.has_value()) {
-            res->error(format_error_response("No stored chat completion found for id: " + id, ERROR_TYPE_NOT_FOUND));
-            return res;
-        }
-        res->ok(entry->completion);
-        return res;
-    };
-
-    this->get_chat_completion_messages = [this](const server_http_req & req) {
-        auto res = create_response();
-        const std::string id = req.get_param("completion_id");
-        if (id.empty()) {
-            res->error(format_error_response("missing completion id", ERROR_TYPE_INVALID_REQUEST));
-            return res;
-        }
-        auto entry = server_chat_completions_store::instance().get(id);
-        if (!entry.has_value()) {
-            res->error(format_error_response("No stored chat completion found for id: " + id, ERROR_TYPE_NOT_FOUND));
-            return res;
-        }
-        int limit = 20;
-        const std::string order = req.get_param("order", "asc");
-        if (order != "asc" && order != "desc") {
-            res->error(format_error_response("'order' must be 'asc' or 'desc'", ERROR_TYPE_INVALID_REQUEST));
-            return res;
-        }
-        try {
-            limit = std::stoi(req.get_param("limit", "20"));
-        } catch (...) {}
-
-        // message rows: one per choice, ids stay stable across calls
-        std::vector<json> rows;
-        const json & choices = entry->completion.contains("choices") && entry->completion.at("choices").is_array()
-                             ? entry->completion.at("choices")
-                             : json::array();
-        for (size_t i = 0; i < choices.size(); i++) {
-            if (!choices.at(i).is_object() || !choices.at(i).contains("message") ||
-                    !choices.at(i).at("message").is_object()) {
-                continue;
-            }
-            json message = choices.at(i).at("message");
-            message["id"] = "msg_" + id + "_" + std::to_string(i);
-            if (!message.contains("content_parts")) {
-                message["content_parts"] = nullptr;
-            }
-            rows.push_back(std::move(message));
-        }
-        if (order == "desc") {
-            std::reverse(rows.begin(), rows.end());
-        }
-
-        size_t start = 0;
-        const std::string after = req.get_param("after");
-        if (!after.empty()) {
-            for (size_t i = 0; i < rows.size(); ++i) {
-                if (json_value(rows[i], "id", std::string()) == after) {
-                    start = i + 1;
-                    break;
-                }
-            }
-        }
-
-        if (limit <= 0) {
-            limit = 20;
-        }
-        if (limit > 100) {
-            limit = 100;
-        }
-        json data = json::array();
-        for (size_t i = start; i < rows.size() && (int) data.size() < limit; ++i) {
-            data.push_back(rows[i]);
-        }
-        json out = {
-            {"object",   "list"},
-            {"data",     data},
-            {"has_more", (start + (size_t) data.size()) < rows.size()},
-        };
-        if (!data.empty()) {
-            out["first_id"] = data.front().at("id");
-            out["last_id"]  = data.back().at("id");
-        }
-        res->ok(out);
-        return res;
-    };
-
-    this->post_chat_completion_update = [this](const server_http_req & req) {
-        auto res = create_response();
-        const std::string id = req.get_param("completion_id");
-        if (id.empty()) {
-            res->error(format_error_response("missing completion id", ERROR_TYPE_INVALID_REQUEST));
-            return res;
-        }
-        json body = json::parse(req.body.empty() ? "{}" : req.body);
-        if (!body.contains("metadata")) {
-            res->error(format_error_response("'metadata' is required", ERROR_TYPE_INVALID_REQUEST));
-            return res;
-        }
-        // official shape: Metadata object or null (null clears it)
-        if (!body.at("metadata").is_null()) {
-            server_openai_validate_metadata(body.at("metadata"));
-        }
-        auto updated = server_chat_completions_store::instance().update_metadata(id, body.at("metadata"));
-        if (!updated.has_value()) {
-            res->error(format_error_response("No stored chat completion found for id: " + id, ERROR_TYPE_NOT_FOUND));
-            return res;
-        }
-        res->ok(*updated);
-        return res;
-    };
-
-    this->delete_chat_completion = [this](const server_http_req & req) {
-        auto res = create_response();
-        const std::string id = req.get_param("completion_id");
-        if (id.empty()) {
-            res->error(format_error_response("missing completion id", ERROR_TYPE_INVALID_REQUEST));
-            return res;
-        }
-        const bool removed = server_chat_completions_store::instance().erase(id);
-        if (!removed) {
-            res->error(format_error_response("No stored chat completion found for id: " + id, ERROR_TYPE_NOT_FOUND));
-            return res;
-        }
-        res->ok(json{
-            {"id",      id},
-            {"object",  "chat.completion.deleted"},
-            {"deleted", true},
-        });
-        return res;
+        return handle_count_tokens(req, TASK_RESPONSE_TYPE_OAI_CHAT);
     };
 
     this->post_control = [this](const server_http_req & req) {
@@ -5879,218 +4966,15 @@ void server_routes::init_routes() {
     };
 
     this->post_responses_oai = [this](const server_http_req & req) {
+        auto res = create_response();
         std::vector<raw_buffer> files;
-        json raw_body = json::parse(req.body);
-        const int32_t n_ctx_slot = meta->slot_n_ctx;
-        json prepared;
-        try {
-            prepared = server_responses_prepare_request(std::move(raw_body), ctx_server.vocab, n_ctx_slot);
-        } catch (const std::invalid_argument & e) {
-            const std::string msg = e.what();
-            if (msg.rfind("previous_response_id not found or expired", 0) != 0) {
-                throw; // other validation failures keep the generic 400 mapping
-            }
-            // official error shape for a missing previous response (same wording as WebSocket)
-            auto res = create_response();
-            res->error(format_error_response(
-                server_responses_previous_not_found_message(msg),
-                ERROR_TYPE_INVALID_REQUEST, "previous_response_id", "previous_response_not_found"));
-            return res;
-        }
-
-        // OpenAI: an unknown model -> 400 with the official 'requested model' body
-        const std::string req_model = json_value(prepared, "model", std::string());
-        if (!req_model.empty() && !is_model_name_accepted(*meta, req_model)) {
-            auto res = create_response();
-            res->error(format_error_response(
-                string_format("The requested model '%s' does not exist.", req_model.c_str()),
-                ERROR_TYPE_INVALID_REQUEST, "model", "model_not_found"));
-            return res;
-        }
-
-        const std::string resp_id = server_responses_new_id();
-        const json prepared_input = prepared.contains("input") ? prepared.at("input") : json::array();
-        const json instructions = prepared.contains("instructions") ? prepared.at("instructions") : json(nullptr);
-        const bool want_stream = json_value(prepared, "stream", false);
-        const bool want_background = json_value(prepared, "background", false);
-
-        // generate:false warms up request state without model output (official WS guide);
-        // the flag must be a boolean when present
-        if (prepared.contains("generate") && !prepared.at("generate").is_boolean()) {
-            auto res = create_response();
-            res->error(format_error_response("'generate' must be a boolean", ERROR_TYPE_INVALID_REQUEST));
-            return res;
-        }
-        if (prepared.contains("generate") && !prepared.at("generate").get<bool>()) {
-            const std::string warmup_model = json_value(prepared, "model", meta->model_name);
-            auto res = create_response();
-            if (want_stream) {
-                // local contract: created + completed only, no in_progress phase
-                res->status = 200;
-                res->content_type = "text/event-stream";
-                std::string sse = format_oai_resp_sse(
-                    server_responses_build_warmup_sse_events(resp_id, warmup_model, prepared));
-                res->set_next([sse = std::move(sse)](std::string & out) mutable {
-                    if (sse.empty()) {
-                        return false;
-                    }
-                    out = std::move(sse);
-                    sse.clear();
-                    return true;
-                });
-                return res;
-            }
-            res->ok(server_responses_build_warmup_response(prepared, resp_id));
-            return res;
-        }
-
-        json body = server_chat_convert_responses_to_chatcmpl(prepared);
+        json body = server_chat_convert_responses_to_chatcmpl(json::parse(req.body));
         SRV_DBG("%s\n", "Request converted: OpenAI Responses -> OpenAI Chat Completions");
         SRV_DBG("converted request: %s\n", body.dump().c_str());
-        // stable web_search item ids across streaming events and the final response
-        prepared["__oai_resp_id"] = resp_id;
-
         json body_parsed = oaicompat_chat_params_parse(
             body,
             meta->chat_params,
-            files,
-            true);
-        body_parsed["__oai_resp_id"]           = resp_id;
-        body_parsed["__oai_resp_input"]        = prepared_input;
-        body_parsed["__oai_resp_instructions"] = instructions;
-        body_parsed["__oai_resp_request"]      = prepared;
-        body_parsed["__oai_resp_background"]   = want_background;
-
-        // Background responses must be retrievable and cancellable while they run, so persist
-        // an in_progress stub before any work starts. this covers the streaming variant too:
-        // its stream is resumable by response id and cancel must reach it
-        json stub = json::object();
-        if (want_background) {
-            const int64_t t = (int64_t) std::time(nullptr);
-            stub = {
-                {"id",         resp_id},
-                {"object",     "response"},
-                {"created_at", t},
-                {"model",      json_value(prepared, "model", meta->model_name)},
-                {"status",     "in_progress"},
-                {"background", true},
-                {"output",     json::array()},
-                {"error",      nullptr},
-                {"incomplete_details", nullptr},
-            };
-            stub = server_responses_enrich_response(std::move(stub), prepared);
-            // persist the stub so cancel / retrieve work before the result lands
-            server_responses_remember(stub, prepared_input, instructions);
-        }
-
-        // Background, non-streaming: return in_progress immediately; complete asynchronously.
-        if (want_background && !want_stream) {
-            auto res = create_response();
-
-            json body_parsed_copy = body_parsed;
-            body_parsed_copy["stream"] = false;
-            std::vector<raw_buffer> files_copy = files;
-            auto headers_copy = req.headers;
-            json prepared_input_copy = prepared_input;
-            json instructions_copy = instructions;
-
-            std::thread([this, body_parsed_copy, files_copy, headers_copy, resp_id,
-                         prepared_input_copy, instructions_copy]() mutable {
-                try {
-                    std::function<bool()> stop_if_cancelled = [resp_id]() {
-                        auto cur = server_responses_store::instance().get(resp_id);
-                        if (!cur.has_value()) {
-                            return false;
-                        }
-                        const std::string st = json_value(cur->response, "status", std::string());
-                        return st == "cancelled" || st == "cancelling";
-                    };
-                    server_http_req fake_req {
-                        {},
-                        headers_copy,
-                        "/v1/responses",
-                        "",
-                        "",
-                        {},
-                        stop_if_cancelled,
-                    };
-                    auto gen = handle_completions_impl(
-                        fake_req,
-                        SERVER_TASK_TYPE_COMPLETION,
-                        body_parsed_copy,
-                        files_copy,
-                        TASK_RESPONSE_TYPE_OAI_RESP);
-                    if (!gen) {
-                        return;
-                    }
-                    // If cancelled while running, keep cancelled.
-                    auto cur = server_responses_store::instance().get(resp_id);
-                    if (cur.has_value()) {
-                        const std::string st = json_value(cur->response, "status", std::string());
-                        if (st == "cancelled") {
-                            return;
-                        }
-                    }
-                    if (gen->status >= 400 || gen->data.empty()) {
-                        // If cancelled while running, keep cancelled.
-                        auto cur_fail = server_responses_store::instance().get(resp_id);
-                        if (cur_fail.has_value()) {
-                            const std::string st = json_value(cur_fail->response, "status", std::string());
-                            if (st == "cancelled") {
-                                return;
-                            }
-                        }
-                        json failed = {
-                            {"id",         resp_id},
-                            {"object",     "response"},
-                            {"status",     "failed"},
-                            {"background", true},
-                            {"output",     json::array()},
-                            {"error",      json::parse(gen->data.empty() ? "{}" : gen->data)},
-                        };
-                        server_responses_remember(failed, prepared_input_copy, instructions_copy);
-                        return;
-                    }
-                    json final_obj = json::parse(gen->data);
-                    final_obj["background"] = true;
-                    if (!final_obj.contains("id")) {
-                        final_obj["id"] = resp_id;
-                    }
-                    // Don't clobber an intervening cancel.
-                    cur = server_responses_store::instance().get(resp_id);
-                    if (cur.has_value()) {
-                        const std::string st = json_value(cur->response, "status", std::string());
-                        if (st == "cancelled") {
-                            return;
-                        }
-                    }
-                } catch (const std::exception & e) {
-                    SRV_ERR("background responses task failed: %s\n", e.what());
-                    // Don't clobber an intervening cancel (same guard as success path).
-                    auto cur = server_responses_store::instance().get(resp_id);
-                    if (cur.has_value()) {
-                        const std::string st = json_value(cur->response, "status", std::string());
-                        if (st == "cancelled") {
-                            return;
-                        }
-                    }
-                    json failed = {
-                        {"id",         resp_id},
-                        {"object",     "response"},
-                        {"status",     "failed"},
-                        {"background", true},
-                        {"output",     json::array()},
-                        // official ResponseError shape: code + message
-                        {"error",      {{"code", "server_error"}, {"message", e.what()}}},
-                    };
-                    server_responses_remember(failed, prepared_input_copy, instructions_copy);
-                }
-            }).detach();
-
-            res->ok(std::move(stub));
-            return res;
-        }
-
+            files);
         return handle_completions_impl(
             req,
             SERVER_TASK_TYPE_COMPLETION,
@@ -6099,238 +4983,9 @@ void server_routes::init_routes() {
             TASK_RESPONSE_TYPE_OAI_RESP);
     };
 
-    this->get_responses_oai = [this](const server_http_req & req) {
-        auto res = create_response();
-        const std::string resp_id = req.get_param("response_id");
-        if (resp_id.empty()) {
-            res->error(format_error_response("missing response id", ERROR_TYPE_INVALID_REQUEST));
-            return res;
-        }
-        auto entry = server_responses_store::instance().get(resp_id);
-        if (!entry.has_value()) {
-            res->error(format_error_response(
-                "response not found or expired: " + resp_id, ERROR_TYPE_NOT_FOUND));
-            return res;
-        }
-        // official retrieve query params: include gates optional output fields
-        json include;
-        try {
-            include = server_conversations_include_from_param(req.get_param("include"));
-        } catch (const std::exception & e) {
-            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
-            return res;
-        }
-        // resumable streaming: GET /v1/responses/{id}?stream=true[&starting_after=N]
-        // replays the stored stream after the client cursor and follows live bytes
-        if (req.get_param("stream") == "true") {
-            int64_t starting_after = -1;
-            const std::string starting_after_str = req.get_param("starting_after");
-            if (!starting_after_str.empty()) {
-                if (!parse_int64_param(starting_after_str, starting_after)) {
-                    res->error(format_error_response("invalid 'starting_after' value", ERROR_TYPE_INVALID_REQUEST));
-                    return res;
-                }
-            }
-            // official include_obfuscation=false drops the obfuscation fields on replay
-            const std::string obf_str = req.get_param("include_obfuscation");
-            if (!obf_str.empty() && obf_str != "true" && obf_str != "false") {
-                res->error(format_error_response("invalid 'include_obfuscation' value", ERROR_TYPE_INVALID_REQUEST));
-                return res;
-            }
-            const bool include_obfuscation = obf_str != "false";
-            std::function<bool(std::string &)> next;
-            const server_stream_resume_status status = server_stream_make_response_resume(
-                resp_id, starting_after, req.should_stop,
-                [resp_id]() { return server_responses_next_seq(resp_id); },
-                next);
-            if (status == SERVER_STREAM_RESUME_NOT_FOUND) {
-                res->error(format_error_response(
-                    "no resumable stream for response (only background streams can be resumed): " + resp_id,
-                    ERROR_TYPE_NOT_FOUND));
-                return res;
-            }
-            if (status == SERVER_STREAM_RESUME_OFFSET_LOST) {
-                res->error(format_error_response(
-                    "stream replay cursor was dropped, restart without starting_after",
-                    ERROR_TYPE_INVALID_REQUEST));
-                return res;
-            }
-            if (!include_obfuscation) {
-                next = server_responses_strip_obfuscation_from_stream(std::move(next));
-            }
-            res->status = 200;
-            res->content_type = "text/event-stream";
-            res->next = std::move(next);
-            return res;
-        }
-        json body = entry->response.is_object() && !entry->response.empty()
-                        ? entry->response
-                        : json {
-                              {"id",         entry->id},
-                              {"object",     "response"},
-                              {"created_at", entry->created_at},
-                              {"model",      entry->model},
-                              {"output",     entry->output},
-                              {"usage",      entry->usage},
-                              {"status",     "completed"},
-                          };
-        body = server_responses_enrich_response(std::move(body), json::object());
-        body = server_responses_apply_output_include(std::move(body), include);
-        res->ok(std::move(body));
-        return res;
-    };
-
-    this->delete_responses_oai = [this](const server_http_req & req) {
-        auto res = create_response();
-        const std::string resp_id = req.get_param("response_id");
-        if (resp_id.empty()) {
-            res->error(format_error_response("missing response id", ERROR_TYPE_INVALID_REQUEST));
-            return res;
-        }
-        const bool removed = server_responses_store::instance().erase(resp_id);
-        if (!removed) {
-            res->error(format_error_response(
-                "response not found or expired: " + resp_id, ERROR_TYPE_NOT_FOUND));
-            return res;
-        }
-        res->ok(json {
-            {"id",      resp_id},
-            {"object",  "response"}, // official delete example uses "response"
-            {"deleted", true},
-        });
-        return res;
-    };
-
-    this->post_responses_cancel_oai = [this](const server_http_req & req) {
-        auto res = create_response();
-        const std::string resp_id = req.get_param("response_id");
-        if (resp_id.empty()) {
-            res->error(format_error_response("missing response id", ERROR_TYPE_INVALID_REQUEST));
-            return res;
-        }
-        if (!server_responses_store::instance().get(resp_id).has_value()) {
-            res->error(format_error_response(
-                "response not found or expired: " + resp_id, ERROR_TYPE_NOT_FOUND));
-            return res;
-        }
-        try {
-            json out = server_responses_cancel(resp_id);
-            // also cancel the resumable stream attached to this response, if any
-            server_stream_cancel_response(resp_id);
-            res->ok(std::move(out));
-        } catch (const std::exception & e) {
-            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
-        }
-        return res;
-    };
-
-    this->post_responses_compact_oai = [this](const server_http_req & req) {
-        auto res = create_response();
-        try {
-            json body = json::parse(req.body);
-            const int32_t n_ctx_slot = meta->slot_n_ctx;
-            res->ok(server_responses_compact(std::move(body), ctx_server.vocab, n_ctx_slot));
-        } catch (const std::exception & e) {
-            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
-        }
-        return res;
-    };
-
-    this->get_responses_input_items_oai = [this](const server_http_req & req) {
-        auto res = create_response();
-        const std::string resp_id = req.get_param("response_id");
-        if (resp_id.empty()) {
-            res->error(format_error_response("missing response id", ERROR_TYPE_INVALID_REQUEST));
-            return res;
-        }
-        if (!server_responses_store::instance().get(resp_id).has_value()) {
-            res->error(format_error_response(
-                "response not found or expired: " + resp_id, ERROR_TYPE_NOT_FOUND));
-            return res;
-        }
-        try {
-            int64_t limit = 20; // official default
-            const std::string limit_str = req.get_param("limit");
-            if (!limit_str.empty()) {
-                if (!parse_int64_param(limit_str, limit)) {
-                    throw std::invalid_argument("'limit' must be an integer");
-                }
-            }
-            res->ok(server_responses_list_input_items(
-                resp_id,
-                req.get_param("after"),
-                req.get_param("order", "desc"),
-                limit,
-                server_conversations_include_from_param(req.get_param("include"))));
-        } catch (const std::exception & e) {
-            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
-        }
-        return res;
-    };
-
     this->post_responses_tok_oai = [this](const server_http_req & req) {
-        return handle_count_tokens(ctx_server.vocab, ctx_server.mctx, ctx_server.init_opt, req, TASK_RESPONSE_TYPE_OAI_RESP);
+        return handle_count_tokens(req, TASK_RESPONSE_TYPE_OAI_RESP);
     };
-
-    // Official Conversations API: a conversation holds ordered response items.
-    auto conversations_handler = [this](const std::function<json(const server_http_req &)> & fn) {
-        return server_http_context::handler_t([this, fn](const server_http_req & req) {
-            auto res = create_response();
-            try {
-                res->ok(fn(req));
-            } catch (const server_conversations_error & e) {
-                res->error(format_error_response(e.what(), e.type));
-            } catch (const std::exception & e) {
-                res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
-            }
-            return res;
-        });
-    };
-
-    this->post_conversations_oai = conversations_handler([](const server_http_req & req) {
-        return server_conversations_create(json::parse(req.body.empty() ? "{}" : req.body));
-    });
-
-    this->get_conversation_oai = conversations_handler([](const server_http_req & req) {
-        return server_conversations_get(req.get_param("conversation_id"));
-    });
-
-    this->post_conversation_update_oai = conversations_handler([](const server_http_req & req) {
-        return server_conversations_update(req.get_param("conversation_id"),
-                                           json::parse(req.body.empty() ? "{}" : req.body));
-    });
-
-    this->delete_conversation_oai = conversations_handler([](const server_http_req & req) {
-        return server_conversations_delete(req.get_param("conversation_id"));
-    });
-
-    this->post_conversation_items_oai = conversations_handler([](const server_http_req & req) {
-        return server_conversations_add_items(req.get_param("conversation_id"),
-                                              json::parse(req.body.empty() ? "{}" : req.body),
-                                              server_conversations_include_from_param(req.get_param("include")));
-    });
-
-    this->get_conversation_items_oai = conversations_handler([](const server_http_req & req) {
-        int64_t limit = 20; // official default
-        const std::string limit_str = req.get_param("limit");
-        if (!limit_str.empty()) {
-            if (!parse_int64_param(limit_str, limit)) {
-                throw std::invalid_argument("'limit' must be an integer");
-            }
-        }
-        return server_conversations_list_items(req.get_param("conversation_id"), req.get_param("after"),
-                                               req.get_param("order", "desc"), limit,
-                                               server_conversations_include_from_param(req.get_param("include")));
-    });
-
-    this->get_conversation_item_oai = conversations_handler([](const server_http_req & req) {
-        return server_conversations_get_item(req.get_param("conversation_id"), req.get_param("item_id"),
-                                             server_conversations_include_from_param(req.get_param("include")));
-    });
-
-    this->delete_conversation_item_oai = conversations_handler([](const server_http_req & req) {
-        return server_conversations_delete_item(req.get_param("conversation_id"), req.get_param("item_id"));
-    });
 
     this->post_transcriptions_oai = [this](const server_http_req & req) {
         auto res = create_response();
@@ -6351,8 +5006,7 @@ void server_routes::init_routes() {
         json body_parsed = oaicompat_chat_params_parse(
             body,
             meta->chat_params,
-            files,
-            false);
+            files);
         return handle_completions_impl(
             req,
             SERVER_TASK_TYPE_COMPLETION,
@@ -6370,12 +5024,7 @@ void server_routes::init_routes() {
         json body_parsed = oaicompat_chat_params_parse(
             body,
             meta->chat_params,
-            files,
-            false);
-        // carry the thinking display flag through to the Anthropic serializers
-        if (body.contains("anthropic_thinking_display")) {
-            body_parsed["anthropic_thinking_display"] = body.at("anthropic_thinking_display");
-        }
+            files);
         return handle_completions_impl(
             req,
             SERVER_TASK_TYPE_COMPLETION,
@@ -6385,7 +5034,7 @@ void server_routes::init_routes() {
     };
 
     this->post_anthropic_count_tokens = [this](const server_http_req & req) {
-        return handle_count_tokens(ctx_server.vocab, ctx_server.mctx, ctx_server.init_opt, req, TASK_RESPONSE_TYPE_ANTHROPIC);
+        return handle_count_tokens(req, TASK_RESPONSE_TYPE_ANTHROPIC);
     };
 
     // same with handle_chat_completions, but without inference part
@@ -6396,8 +5045,7 @@ void server_routes::init_routes() {
         json data = oaicompat_chat_params_parse(
             body,
             meta->chat_params,
-            files,
-            false);
+            files);
         res->ok({{ "prompt", std::move(data.at("prompt")) }});
         return res;
     };
@@ -6411,32 +5059,6 @@ void server_routes::init_routes() {
         } else {
             res->ok(get_res_models(*meta));
         }
-        return res;
-    };
-
-    this->get_model = [this](const server_http_req & req) {
-        auto res = create_response(true);
-        // note: do NOT use ctx_server here, this endpoint must be accessible during sleep
-        const std::string id = req.get_param("model");
-        if (id.empty()) {
-            res->error(format_error_response("missing model id", ERROR_TYPE_INVALID_REQUEST));
-            return res;
-        }
-        if (queue_tasks.is_sleeping()) {
-            std::unique_lock<std::mutex> lock(mutex_cache);
-            if (cached_models.contains("data") && cached_models.at("data").is_array()) {
-                for (const auto & model : cached_models.at("data")) {
-                    if (json_value(model, "id", std::string()) == id) {
-                        res->ok(model);
-                        return res;
-                    }
-                }
-            }
-        } else if (id == meta->model_name) {
-            res->ok(get_res_model_info(*meta));
-            return res;
-        }
-        res->error(format_error_response("The model '" + id + "' does not exist", ERROR_TYPE_NOT_FOUND));
         return res;
     };
 
@@ -6758,60 +5380,58 @@ std::unique_ptr<server_res_generator> server_routes::handle_embeddings_impl(cons
         return res;
     }
 
-    json body;
-    bool use_base64 = false;
-    std::vector<server_tokens> tokenized_prompts;
-    try {
-        body = json::parse(req.body);
-        // OpenAI: an unknown model on /v1/embeddings -> 404 with the official model_not_found body
-        const std::string req_model = json_value(body, "model", std::string());
-        if (res_type == TASK_RESPONSE_TYPE_OAI_EMBD && !req_model.empty() &&
-                !is_model_name_accepted(*meta, req_model)) {
-            res->status = 404;
-            res->data = safe_json_to_str(format_oai_model_not_found(req_model));
-            return res;
-        }
+    const json body = json::parse(req.body);
 
-        // for the shape of input/content, see tokenize_input_prompts()
-        json prompt;
-        if (body.count("input") != 0) {
-            prompt = body.at("input");
-        } else if (body.contains("content")) {
-            res_type = TASK_RESPONSE_TYPE_NONE; // "content" field is not OAI compatible
-            prompt = body.at("content");
-        } else {
-            res->error(format_error_response("\"input\" or \"content\" must be provided", ERROR_TYPE_INVALID_REQUEST));
-            return res;
-        }
-
-        if (body.count("encoding_format") != 0) {
-            // official schema allows only the strings "float" / "base64"; a non-string value
-            // is rejected with the same clean message instead of a raw nlohmann type_error
-            if (!body.at("encoding_format").is_string()) {
-                res->error(format_error_response("The format to return the embeddings in. Can be either float or base64", ERROR_TYPE_INVALID_REQUEST));
-                return res;
-            }
-            const std::string & format = body.at("encoding_format");
-            if (format == "base64") {
-                use_base64 = true;
-            } else if (format != "float") {
-                res->error(format_error_response("The format to return the embeddings in. Can be either float or base64", ERROR_TYPE_INVALID_REQUEST));
-                return res;
-            }
-        }
-
-        tokenized_prompts = tokenize_input_prompts(ctx_server.vocab, ctx_server.mctx, prompt, true, true, ctx_server.init_opt);
-        for (const auto & tokens : tokenized_prompts) {
-            // this check is necessary for models that do not add BOS token to the input
-            if (tokens.empty()) {
-                res->error(format_error_response("Input content cannot be empty", ERROR_TYPE_INVALID_REQUEST));
-                return res;
-            }
-        }
-    } catch (const std::exception & e) {
-        // malformed request body or invalid input/encoding_format: 400, not 500
-        res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+    // for the shape of input/content, see tokenize_input_prompts()
+    json prompt;
+    if (body.count("input") != 0) {
+        prompt = body.at("input");
+    } else if (body.contains("content")) {
+        res_type = TASK_RESPONSE_TYPE_NONE; // "content" field is not OAI compatible
+        prompt = body.at("content");
+    } else {
+        res->error(format_error_response("\"input\" or \"content\" must be provided", ERROR_TYPE_INVALID_REQUEST));
         return res;
+    }
+
+    bool use_base64 = false;
+    if (body.count("encoding_format") != 0) {
+        const std::string & format = body.at("encoding_format");
+        if (format == "base64") {
+            use_base64 = true;
+        } else if (format != "float") {
+            res->error(format_error_response("The format to return the embeddings in. Can be either float or base64", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+    }
+
+    // same shapes as tokenize_input_prompts(), plus OAI content: { "content": [ { "type": "text"|"image_url"|"input_audio"|"input_video", ... } ] }
+    auto tokenize_entry = [&](const json & p) {
+        if (p.is_object() && p.contains("content")) {
+            return tokenize_oai_content_array(ctx_server.vocab, ctx_server.mctx, meta->chat_params, p.at("content"), true, true, ctx_server.init_opt);
+        }
+        return tokenize_input_subprompt(ctx_server.vocab, ctx_server.mctx, p, true, true, ctx_server.init_opt);
+    };
+
+    std::vector<server_tokens> tokenized_prompts;
+    if (prompt.is_array() && !json_is_array_and_contains_numbers(prompt)) {
+        for (const auto & p : prompt) {
+            tokenized_prompts.push_back(tokenize_entry(p));
+        }
+    } else {
+        tokenized_prompts.push_back(tokenize_entry(prompt));
+    }
+    if (tokenized_prompts.empty()) {
+        res->error(format_error_response("\"input\" must not be empty", ERROR_TYPE_INVALID_REQUEST));
+        return res;
+    }
+
+    for (const auto & tokens : tokenized_prompts) {
+        // this check is necessary for models that do not add BOS token to the input
+        if (tokens.empty()) {
+            res->error(format_error_response("Input content cannot be empty", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
     }
 
     int embd_normalize = params.embd_normalize;
@@ -6866,7 +5486,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_embeddings_impl(cons
     return res;
 }
 
-std::unique_ptr<server_res_generator> server_routes::handle_count_tokens(const llama_vocab * vocab, mtmd_context * mctx, const mtmd_helper_init_opt & init_opt, const server_http_req & req, task_response_type res_type) {
+std::unique_ptr<server_res_generator> server_routes::handle_count_tokens(const server_http_req & req, task_response_type res_type) {
     auto res = create_response();
     std::vector<raw_buffer> files;
     json body = json::parse(req.body);
@@ -6884,7 +5504,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_count_tokens(const l
             } break;
         case TASK_RESPONSE_TYPE_ANTHROPIC:
             {
-                body = server_chat_convert_anthropic_to_oai(body, true);
+                body = server_chat_convert_anthropic_to_oai(body);
             } break;
         default:
             res->error(format_error_response("invalid res_type", ERROR_TYPE_INVALID_REQUEST));
@@ -6894,20 +5514,19 @@ std::unique_ptr<server_res_generator> server_routes::handle_count_tokens(const l
     json body_parsed = oaicompat_chat_params_parse(
             body,
             meta->chat_params,
-            files,
-            false);
+            files);
     json prompt = body_parsed.at("prompt");
     // SRV_DBG("prompt = %s\n", prompt.dump().c_str());
 
     // TODO @ngxson : refactor this code block, move this to server-common and reuse it in other places
     size_t n_tokens;
-    if (mctx != nullptr) {
+    if (ctx_server.mctx != nullptr) {
         if (!prompt.is_string()) {
             throw std::runtime_error("for mtmd, input prompt must be a string.");
         }
-        n_tokens = process_mtmd_prompt(mctx, prompt.get<std::string>(), files, init_opt, true).size();
+        n_tokens = process_mtmd_prompt(ctx_server.mctx, prompt.get<std::string>(), files, ctx_server.init_opt, true).size();
     } else {
-        n_tokens = tokenize_mixed(vocab, prompt, true, true).size();
+        n_tokens = tokenize_mixed(ctx_server.vocab, prompt, true, true).size();
     }
 
     json response = {{"input_tokens", static_cast<int64_t>(n_tokens)}};
@@ -6926,7 +5545,6 @@ void server_routes::update_cached_responses(bool is_sleeping) {
         cached_models  = get_res_models(*meta);
         cached_props   = get_res_props(*meta, params, true);
         cached_metrics = ctx_server.get_metrics();
-        cached_prompt_cache = ctx_server.get_prompt_cache_stats();
 
         should_reset_buckets = false;
 

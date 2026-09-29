@@ -8,25 +8,13 @@
 #include "base64.hpp"
 
 #include "server-common.h"
-#include "server-web-search.h"
-#include "server-openai-persist.h"
 
-#include <cctype>
-#include <cmath>
-#include <cstdio>
-#include <cstdlib>
-#include <ctime>
-#include <filesystem>
-#include <fstream>
 #include <random>
 #include <sstream>
+#include <fstream>
 #include <limits>
 #include <cstring>
 #include <type_traits>
-#include <exception>
-#include <stdexcept>
-#include <unordered_map>
-#include <unordered_set>
 #include <chrono>
 #include <thread>
 
@@ -45,865 +33,48 @@
 #include <unistd.h>
 #endif
 
-json format_error_response(const std::string & message, const enum error_type type, const std::string & param, const std::string & code) {
+json format_error_response(const std::string & message, const enum error_type type) {
     std::string type_str;
+    int code = 500;
     switch (type) {
         case ERROR_TYPE_INVALID_REQUEST:
             type_str = "invalid_request_error";
+            code = 400;
             break;
         case ERROR_TYPE_AUTHENTICATION:
-            // official 401 body type is invalid_request_error (probed)
-            type_str = "invalid_request_error";
+            type_str = "authentication_error";
+            code = 401;
             break;
         case ERROR_TYPE_NOT_FOUND:
             type_str = "not_found_error";
+            code = 404;
             break;
         case ERROR_TYPE_SERVER:
             type_str = "server_error";
+            code = 500;
             break;
         case ERROR_TYPE_PERMISSION:
             type_str = "permission_error";
+            code = 403;
             break;
         case ERROR_TYPE_NOT_SUPPORTED:
             type_str = "not_supported_error";
+            code = 501;
             break;
         case ERROR_TYPE_UNAVAILABLE:
-            // official 503 body type is service_unavailable_error (api reference)
-            type_str = "service_unavailable_error";
+            type_str = "unavailable_error";
+            code = 503;
             break;
         case ERROR_TYPE_EXCEED_CONTEXT_SIZE:
             type_str = "exceed_context_size_error";
+            code = 400;
             break;
     }
-    // empty param/code become null, as the official error shape wants
     return json {
-        {"code",    code.empty()  ? json(nullptr) : json(code)},
+        {"code", code},
         {"message", message},
-        {"param",   param.empty() ? json(nullptr) : json(param)},
-        {"type",    type_str},
+        {"type", type_str},
     };
-}
-
-// HTTP status code for an error body, from its "type"; keep in sync with format_error_response
-int error_status_from_body(const json & error_data, int fallback) {
-    static const std::unordered_map<std::string, int> status_by_type = {
-        {"invalid_request_error",     400},
-        {"authentication_error",      401},
-        {"not_found_error",           404},
-        {"server_error",              500},
-        {"permission_error",          403},
-        {"not_supported_error",       501},
-        {"service_unavailable_error", 503},
-        {"exceed_context_size_error", 400},
-    };
-    const auto it = status_by_type.find(json_value(error_data, "type", std::string()));
-    return it == status_by_type.end() ? fallback : it->second;
-}
-
-// map a local error type onto the official Anthropic vocabulary and its HTTP status; local-only
-// types fold into invalid_request_error
-static std::pair<const char *, int> anthropic_error_from_local_type(const std::string & local_type) {
-    if (local_type == "invalid_request_error" || local_type == "exceed_context_size_error" ||
-            local_type == "not_supported_error") {
-        return {"invalid_request_error", 400};
-    }
-    if (local_type == "authentication_error") {
-        return {"authentication_error", 401};
-    }
-    if (local_type == "permission_error") {
-        return {"permission_error", 403};
-    }
-    if (local_type == "not_found_error") {
-        return {"not_found_error", 404};
-    }
-    if (local_type == "service_unavailable_error") {
-        // local capacity/loading error is the closest match to the official 529 overloaded
-        return {"overloaded_error", 529};
-    }
-    return {"api_error", 500};
-}
-
-json format_anthropic_error(const std::string & official_type, const std::string & message) {
-    return json {
-        {"type", "error"},
-        {"error", {
-            {"type",    official_type},
-            {"message", message},
-        }},
-        // no per-request id exists locally
-        {"request_id", nullptr},
-    };
-}
-
-int anthropic_error_status_from_body(const json & local_error_body) {
-    return anthropic_error_from_local_type(
-            json_value(local_error_body, "type", std::string())).second;
-}
-
-json format_anthropic_error_response(const json & local_error_body) {
-    return format_anthropic_error(
-            anthropic_error_from_local_type(json_value(local_error_body, "type", std::string())).first,
-            json_value(local_error_body, "message", std::string()));
-}
-
-bool is_anthropic_api_path(const std::string & path) {
-    static const std::string prefix = "/v1/messages";
-    return path == prefix || path.rfind(prefix + "/", 0) == 0;
-}
-
-json format_oai_model_not_found(const std::string & model_name) {
-    return json {{"error", format_error_response(
-        string_format("The model `%s` does not exist or you do not have access to it.", model_name.c_str()),
-        ERROR_TYPE_INVALID_REQUEST, "", "model_not_found")}};
-}
-
-bool server_openai_is_reasoning_effort(const std::string & effort) {
-    static const std::unordered_set<std::string> k_efforts = {
-        "none", "minimal", "low", "medium", "high", "xhigh", "max",
-    };
-    return k_efforts.find(effort) != k_efforts.end();
-}
-
-void server_openai_validate_reasoning_effort_field(const json & value, const char * field_name) {
-    if (value.is_null()) {
-        return;
-    }
-    if (!value.is_string()) {
-        throw std::invalid_argument(std::string("'") + field_name + "' must be a string");
-    }
-    const std::string effort = value.get<std::string>();
-    if (!server_openai_is_reasoning_effort(effort)) {
-        throw std::invalid_argument(
-            std::string("'") + field_name +
-            "' must be one of: none, minimal, low, medium, high, xhigh, max");
-    }
-}
-
-void server_openai_validate_reasoning_object(const json & body) {
-    if (!body.contains("reasoning") || body.at("reasoning").is_null()) {
-        return;
-    }
-    if (!body.at("reasoning").is_object()) {
-        throw std::invalid_argument("'reasoning' must be an object");
-    }
-    const json & reasoning = body.at("reasoning");
-
-    if (reasoning.contains("effort")) {
-        server_openai_validate_reasoning_effort_field(reasoning.at("effort"), "reasoning.effort");
-    }
-
-    if (reasoning.contains("context") && !reasoning.at("context").is_null()) {
-        if (!reasoning.at("context").is_string()) {
-            throw std::invalid_argument(
-                "'reasoning.context' must be 'auto', 'current_turn', or 'all_turns'");
-        }
-        const std::string ctx = reasoning.at("context").get<std::string>();
-        if (ctx != "auto" && ctx != "current_turn" && ctx != "all_turns") {
-            throw std::invalid_argument(
-                "'reasoning.context' must be 'auto', 'current_turn', or 'all_turns'");
-        }
-    }
-
-    auto validate_summary_like = [&](const char * field_name) {
-        if (!reasoning.contains(field_name) || reasoning.at(field_name).is_null()) {
-            return;
-        }
-        if (!reasoning.at(field_name).is_string()) {
-            throw std::invalid_argument(
-                std::string("'reasoning.") + field_name +
-                "' must be 'auto', 'concise', or 'detailed'");
-        }
-        const std::string v = reasoning.at(field_name).get<std::string>();
-        if (v != "auto" && v != "concise" && v != "detailed") {
-            throw std::invalid_argument(
-                std::string("'reasoning.") + field_name +
-                "' must be 'auto', 'concise', or 'detailed'");
-        }
-    };
-    validate_summary_like("summary");
-    validate_summary_like("generate_summary");
-
-    // OpenAI "mode" string; documented values include standard|pro. pro boosts thinking.
-    if (reasoning.contains("mode") && !reasoning.at("mode").is_null()) {
-        if (!reasoning.at("mode").is_string()) {
-            throw std::invalid_argument("'reasoning.mode' must be a string");
-        }
-    }
-}
-
-// Validate Responses `text` object including optional verbosity.
-static void server_openai_validate_responses_text_object(const json & body) {
-    if (!body.contains("text") || body.at("text").is_null()) {
-        return;
-    }
-    if (!body.at("text").is_object()) {
-        throw std::invalid_argument("'text' must be an object");
-    }
-    const json & text = body.at("text");
-    if (text.contains("verbosity") && !text.at("verbosity").is_null()) {
-        if (!text.at("verbosity").is_string()) {
-            throw std::invalid_argument("'text.verbosity' must be 'low', 'medium', or 'high'");
-        }
-        const std::string v = text.at("verbosity").get<std::string>();
-        if (v != "low" && v != "medium" && v != "high") {
-            throw std::invalid_argument("'text.verbosity' must be 'low', 'medium', or 'high'");
-        }
-    }
-    if (text.contains("format") && !text.at("format").is_null()) {
-        if (!text.at("format").is_object()) {
-            throw std::invalid_argument("'text.format' must be an object");
-        }
-        const json & fmt = text.at("format");
-        if (!fmt.contains("type") || !fmt.at("type").is_string()) {
-            throw std::invalid_argument("'text.format.type' is required");
-        }
-        const std::string ftype = fmt.at("type").get<std::string>();
-        if (ftype != "text" && ftype != "json_object" && ftype != "json_schema") {
-            throw std::invalid_argument(
-                "'text.format.type' must be one of: text, json_object, json_schema");
-        }
-        if (ftype == "json_schema") {
-            if (!fmt.contains("schema") || !fmt.at("schema").is_object()) {
-                throw std::invalid_argument("'text.format.schema' is required for type=json_schema");
-            }
-        }
-    }
-}
-
-// Validate the shared Chat/Responses `service_tier` enum. Official Responses compact
-// documents a narrower enum than the create/chat paths.
-static void server_openai_validate_service_tier(const json & body, bool compact = false) {
-    if (!body.contains("service_tier") || body.at("service_tier").is_null()) {
-        return;
-    }
-    const char * msg = compact
-        ? "'service_tier' must be one of: auto, default, flex, fast, priority"
-        : "'service_tier' must be one of: auto, default, flex, scale, priority, fast, ultrafast";
-    if (!body.at("service_tier").is_string()) {
-        throw std::invalid_argument(msg);
-    }
-    const std::string tier = body.at("service_tier").get<std::string>();
-    if (tier == "auto" || tier == "default" || tier == "flex" || tier == "priority" || tier == "fast") {
-        return;
-    }
-    if (!compact && (tier == "scale" || tier == "ultrafast")) {
-        return;
-    }
-    throw std::invalid_argument(msg);
-}
-
-// official compact enum: no scale/ultrafast
-void server_openai_validate_compact_service_tier(const json & body) {
-    server_openai_validate_service_tier(body, /*compact=*/true);
-}
-
-// Validate the official Metadata object: <=16 pairs, keys <=64 chars, string values <=512 chars.
-void server_openai_validate_metadata(const json & metadata) {
-    if (!metadata.is_object()) {
-        throw std::invalid_argument("'metadata' must be an object");
-    }
-    if (metadata.size() > 16) {
-        throw std::invalid_argument("'metadata' must have at most 16 key-value pairs");
-    }
-    for (const auto & el : metadata.items()) {
-        if (!el.value().is_string()) {
-            throw std::invalid_argument("'metadata' values must be strings");
-        }
-        if (el.key().size() > 64) {
-            throw std::invalid_argument("'metadata' keys must be at most 64 characters");
-        }
-        if (el.value().get<std::string>().size() > 512) {
-            throw std::invalid_argument("'metadata' values must be at most 512 characters");
-        }
-    }
-}
-
-void server_openai_validate_cloud_shaped_fields(const json & body, bool allow_prompt) {
-    if (allow_prompt && body.contains("prompt") && !body.at("prompt").is_null()) {
-        if (!body.at("prompt").is_object()) {
-            throw std::invalid_argument("'prompt' must be an object with string 'id'");
-        }
-        const json & prompt = body.at("prompt");
-        if (!prompt.contains("id") || !prompt.at("id").is_string() ||
-                prompt.at("id").get<std::string>().empty()) {
-            throw std::invalid_argument("'prompt.id' is required and must be a non-empty string");
-        }
-        if (prompt.contains("variables") && !prompt.at("variables").is_null() &&
-                !prompt.at("variables").is_object()) {
-            throw std::invalid_argument("'prompt.variables' must be an object");
-        }
-        if (prompt.contains("version") && !prompt.at("version").is_null() &&
-                !prompt.at("version").is_string()) {
-            throw std::invalid_argument("'prompt.version' must be a string");
-        }
-    }
-    if (body.contains("prompt_cache_key") && !body.at("prompt_cache_key").is_null()) {
-        if (!body.at("prompt_cache_key").is_string()) {
-            throw std::invalid_argument("'prompt_cache_key' must be a string");
-        }
-    }
-    if (body.contains("prompt_cache_retention") && !body.at("prompt_cache_retention").is_null()) {
-        if (!body.at("prompt_cache_retention").is_string()) {
-            throw std::invalid_argument(
-                "'prompt_cache_retention' must be 'in_memory' or '24h'");
-        }
-        const std::string ret = body.at("prompt_cache_retention").get<std::string>();
-        if (ret != "in_memory" && ret != "24h") {
-            throw std::invalid_argument(
-                "'prompt_cache_retention' must be 'in_memory' or '24h'");
-        }
-    }
-    if (body.contains("prompt_cache_options") && !body.at("prompt_cache_options").is_null()) {
-        if (!body.at("prompt_cache_options").is_object()) {
-            throw std::invalid_argument("'prompt_cache_options' must be an object");
-        }
-        const json & opts = body.at("prompt_cache_options");
-        if (opts.contains("mode") && !opts.at("mode").is_null()) {
-            if (!opts.at("mode").is_string()) {
-                throw std::invalid_argument(
-                    "'prompt_cache_options.mode' must be 'implicit' or 'explicit'");
-            }
-            const std::string mode = opts.at("mode").get<std::string>();
-            if (mode != "implicit" && mode != "explicit") {
-                throw std::invalid_argument(
-                    "'prompt_cache_options.mode' must be 'implicit' or 'explicit'");
-            }
-        }
-        if (opts.contains("ttl") && !opts.at("ttl").is_null()) {
-            if (!opts.at("ttl").is_string()) {
-                throw std::invalid_argument("'prompt_cache_options.ttl' must be a string");
-            }
-            // Official: 30m is currently the only supported value.
-            const std::string ttl = opts.at("ttl").get<std::string>();
-            if (ttl != "30m") {
-                throw std::invalid_argument("'prompt_cache_options.ttl' must be '30m'");
-            }
-        }
-        // comparison_response_id is a Responses diagnostics hint; an unknown id is not an
-        // error (the response reports comparison_response_not_found), so only check the shape.
-        if (opts.contains("comparison_response_id") && !opts.at("comparison_response_id").is_null()) {
-            if (!opts.at("comparison_response_id").is_string()) {
-                throw std::invalid_argument(
-                    "'prompt_cache_options.comparison_response_id' must be a string");
-            }
-        }
-        // explicit mode requires a prompt_cache_key (local affinity key).
-        if (opts.contains("mode") && opts.at("mode").is_string() &&
-                opts.at("mode").get<std::string>() == "explicit") {
-            if (!body.contains("prompt_cache_key") || body.at("prompt_cache_key").is_null() ||
-                    !body.at("prompt_cache_key").is_string() ||
-                    body.at("prompt_cache_key").get<std::string>().empty()) {
-                throw std::invalid_argument(
-                    "'prompt_cache_key' is required when prompt_cache_options.mode is 'explicit'");
-            }
-        }
-    }
-    if (allow_prompt) {
-        // Responses-only fields: the chatcmpl conversion strips these before the
-        // chat path could validate them, so check the official shape here.
-        if (body.contains("metadata") && !body.at("metadata").is_null()) {
-            server_openai_validate_metadata(body.at("metadata"));
-        }
-        if (body.contains("safety_identifier") && !body.at("safety_identifier").is_null()) {
-            if (!body.at("safety_identifier").is_string()) {
-                throw std::invalid_argument("'safety_identifier' must be a string");
-            }
-            if (body.at("safety_identifier").get<std::string>().size() > 64) {
-                throw std::invalid_argument("'safety_identifier' must be at most 64 characters");
-            }
-        }
-        server_openai_validate_service_tier(body);
-        if (body.contains("include") && !body.at("include").is_null()) {
-            if (!body.at("include").is_array()) {
-                throw std::invalid_argument("'include' must be an array");
-            }
-            for (const auto & item : body.at("include")) {
-                if (!item.is_string()) {
-                    throw std::invalid_argument("'include' entries must be strings");
-                }
-                const std::string inc = item.get<std::string>();
-                if (inc != "web_search_call.action.sources" &&
-                        inc != "code_interpreter_call.outputs" &&
-                        inc != "computer_call_output.output.image_url" &&
-                        inc != "file_search_call.results" &&
-                        inc != "message.input_image.image_url" &&
-                        inc != "message.output_text.logprobs" &&
-                        inc != "reasoning.encrypted_content" &&
-                        inc != "web_search_call.results") {
-                    throw std::invalid_argument("Unknown 'include' value: " + inc);
-                }
-            }
-        }
-        server_openai_validate_responses_text_object(body);
-    }
-}
-
-std::string server_openai_short_hash(const std::string & s) {
-    // FNV-1a 64-bit → 16 hex chars (stable local cache key, not crypto).
-    uint64_t h = 14695981039346656037ull;
-    for (unsigned char c : s) {
-        h ^= (uint64_t) c;
-        h *= 1099511628211ull;
-    }
-    char buf[17];
-    std::snprintf(buf, sizeof(buf), "%016llx", (unsigned long long) h);
-    return std::string(buf);
-}
-
-bool server_oai_prompt_cache_keys_compatible(const std::string & a, const std::string & b) {
-    // Exact match only: a slot warmed for one prefix must not be reused for another.
-    return a == b;
-}
-
-std::string server_prompt_cache_anchor_key(const server_tokens & tokens) {
-    // enough tokens to tell conversations apart, short enough to survive prompt edits
-    constexpr size_t n_anchor_max = 64;
-
-    const size_t n_anchor = std::min(n_anchor_max, tokens.size());
-
-    std::string material;
-    material.reserve(n_anchor * 8);
-    for (size_t i = 0; i < n_anchor; ++i) {
-        material += std::to_string(tokens[i]);
-        material += ',';
-    }
-
-    return "anch-" + server_openai_short_hash(material);
-}
-
-void server_openai_apply_prompt_cache_semantics(json & body) {
-    const bool has_key = body.contains("prompt_cache_key") && body.at("prompt_cache_key").is_string() &&
-                         !body.at("prompt_cache_key").get<std::string>().empty();
-    const bool has_ret = body.contains("prompt_cache_retention") && !body.at("prompt_cache_retention").is_null();
-    const bool has_opts = body.contains("prompt_cache_options") && body.at("prompt_cache_options").is_object();
-    // Internal TTL channel: the Anthropic layer writes cache_control.ttl here, so 5m/1h stay
-    // usable without widening the official prompt_cache_options.ttl enum.
-    const bool has_local_ttl = body.contains("__prompt_cache_ttl") && body.at("__prompt_cache_ttl").is_string();
-    if (!has_key && !has_ret && !has_opts && !has_local_ttl) {
-        return;
-    }
-
-    body["cache_prompt"] = true;
-
-    std::string key = has_key ? body.at("prompt_cache_key").get<std::string>() : std::string();
-    if (key.empty()) {
-        // No client key: mark the request so the server derives a local anchor from the
-        // prompt tokens. Do NOT hash the request body here - it changes on every turn of a
-        // growing conversation, and a rotating key would invalidate the KV state (and the
-        // disk registry entry) right after it was restored.
-        body["__oai_prompt_cache_implicit"] = true;
-    }
-
-    int32_t ttl = 0; // 0 = process lifetime (in_memory)
-    if (has_ret && body.at("prompt_cache_retention").is_string()) {
-        const std::string ret = body.at("prompt_cache_retention").get<std::string>();
-        if (ret == "24h") {
-            ttl = 24 * 3600;
-        }
-    }
-    if (has_opts && body.at("prompt_cache_options").contains("ttl") &&
-            body.at("prompt_cache_options").at("ttl").is_string()) {
-        // Options TTL is more specific when present; official supports only 30m.
-        const std::string opt_ttl = body.at("prompt_cache_options").at("ttl").get<std::string>();
-        if (opt_ttl != "30m") {
-            throw std::invalid_argument("'prompt_cache_options.ttl' must be '30m'");
-        }
-        ttl = 30 * 60;
-    }
-    if (has_local_ttl) {
-        // Internal channel (Anthropic cache_control.ttl). It feeds the same local cache TTL
-        // as prompt_cache_options.ttl, but keeps the local 5m/1h values off the wire.
-        const std::string local_ttl = body.at("__prompt_cache_ttl").get<std::string>();
-        if (local_ttl == "5m") {
-            ttl = 5 * 60;
-        } else if (local_ttl == "30m") {
-            ttl = 30 * 60;
-        } else if (local_ttl == "1h") {
-            ttl = 60 * 60;
-        } else {
-            throw std::invalid_argument("'__prompt_cache_ttl' must be one of: 5m, 30m, 1h");
-        }
-    }
-
-    if (!key.empty()) {
-        // Check disk TTL *before* touch — otherwise every request refreshes expires_at
-        // and server_prompt_cache_key_alive() can never observe expiry mid-process.
-        const bool alive_before = server_prompt_cache_key_alive(key);
-        if (!alive_before) {
-            body["__oai_prompt_cache_expired"] = true;
-        }
-        body["__oai_prompt_cache_key"] = key;
-        body["__oai_prompt_cache_key_explicit"] = true;
-        server_prompt_cache_key_touch(key, ttl);
-    }
-    body["__oai_prompt_cache_ttl"] = ttl;
-}
-
-void server_prompt_cache_key_touch(const std::string & key, int32_t ttl_seconds) {
-    if (key.empty()) {
-        return;
-    }
-    std::string root = openai_persist::root();
-    if (root.empty()) {
-        return;
-    }
-    while (!root.empty() && (root.back() == '/' || root.back() == '\\')) {
-        root.pop_back();
-    }
-    const std::string dir = root + "/prompt_cache_keys";
-    std::error_code ec;
-    std::filesystem::create_directories(dir, ec);
-    // Filename-safe (no '.' → cannot form ".." segments). Reuse persist helper.
-    std::string safe = openai_persist::safe_id(key);
-    if (safe.size() > 120) {
-        safe = safe.substr(0, 100) + "_" + server_openai_short_hash(key);
-    }
-    const int64_t now = (int64_t) std::time(nullptr);
-    json rec = {
-        {"key", key},
-        {"updated_at", now},
-        {"expires_at", ttl_seconds > 0 ? (now + ttl_seconds) : 0},
-        {"ttl_seconds", ttl_seconds},
-    };
-    std::ofstream out(dir + "/" + safe + ".json");
-    if (out) {
-        out << rec.dump();
-    }
-}
-
-static std::string server_prompt_cache_key_filename(const std::string & key) {
-    std::string safe = openai_persist::safe_id(key);
-    if (safe.size() > 120) {
-        safe = safe.substr(0, 100) + "_" + server_openai_short_hash(key);
-    }
-    return safe;
-}
-
-bool server_prompt_cache_key_alive(const std::string & key) {
-    if (key.empty()) {
-        return true;
-    }
-    std::string root = openai_persist::root();
-    if (root.empty()) {
-        return true; // memory-only: treat as alive for process lifetime
-    }
-    while (!root.empty() && (root.back() == '/' || root.back() == '\\')) {
-        root.pop_back();
-    }
-    const std::string dir = root + "/prompt_cache_keys";
-    const std::string safe = server_prompt_cache_key_filename(key);
-    std::ifstream in(dir + "/" + safe + ".json");
-    if (!in) {
-        // Older underscore-subst filenames (pre hex encoding).
-        const std::string legacy = openai_persist::safe_id_legacy(key);
-        if (legacy != safe) {
-            std::string leg = legacy;
-            if (leg.size() > 120) {
-                leg = leg.substr(0, 100) + "_" + server_openai_short_hash(key);
-            }
-            in.open(dir + "/" + leg + ".json");
-        }
-    }
-    if (!in) {
-        // No durable record yet — allow (first request will touch).
-        return true;
-    }
-    try {
-        json rec;
-        std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        rec = json::parse(content);
-        const int64_t exp = json_value(rec, "expires_at", (int64_t) 0);
-        if (exp <= 0) {
-            return true;
-        }
-        return exp > (int64_t) std::time(nullptr);
-    } catch (...) {
-        return true;
-    }
-}
-
-bool server_is_local_web_search_tool_type(const std::string & type) {
-    return server_web_search_is_tool_type(type);
-}
-
-void server_openai_apply_web_search_semantics(json & body) {
-    server_web_search_apply(body);
-}
-
-double server_oaicompat_probs_score(const std::vector<float> & token_probs) {
-    if (token_probs.empty()) {
-        return -1e300;
-    }
-    double s = 0.0;
-    for (float p : token_probs) {
-        s += std::log(std::max((double) p, 1e-12));
-    }
-    return s;
-}
-
-json server_openai_completions_apply_suffix(
-        const llama_vocab * vocab,
-        json body,
-        int n_batch,
-        int n_predict,
-        int n_ctx,
-        bool spm_infill) {
-    if (!body.contains("suffix") || body.at("suffix").is_null() || !body.at("suffix").is_string()) {
-        return body;
-    }
-    const std::string suffix = body.at("suffix").get<std::string>();
-    if (suffix.empty()) {
-        return body;
-    }
-    if (!body.contains("prompt")) {
-        throw std::invalid_argument("'prompt' is required when 'suffix' is set");
-    }
-
-    const bool has_fim =
-        vocab != nullptr &&
-        llama_vocab_fim_pre(vocab) != LLAMA_TOKEN_NULL &&
-        llama_vocab_fim_suf(vocab) != LLAMA_TOKEN_NULL &&
-        llama_vocab_fim_mid(vocab) != LLAMA_TOKEN_NULL;
-
-    json prompt_j = body.at("prompt");
-    std::string prefix;
-    if (prompt_j.is_string()) {
-        prefix = prompt_j.get<std::string>();
-    } else if (prompt_j.is_array() && !prompt_j.empty() && prompt_j.at(0).is_string()) {
-        // Multi-prompt: FIM only the first for local Completions parity.
-        prefix = prompt_j.at(0).get<std::string>();
-    } else {
-        throw std::invalid_argument("'suffix' requires string 'prompt' (or array of strings)");
-    }
-
-    if (has_fim) {
-        const llama_tokens tokens_prompt; // empty mid prompt
-        body["prompt"] = format_prompt_infill(
-            vocab, prefix, suffix, json::array(), n_batch, n_predict, n_ctx, spm_infill, tokens_prompt);
-    } else {
-        // Soft FIM for models without dedicated FIM tokens.
-        body["prompt"] =
-            std::string("Fill in the missing middle text.\nPREFIX:\n") + prefix +
-            "\nSUFFIX:\n" + suffix + "\nMIDDLE:\n";
-    }
-    // Keep suffix on body for echo/debug; generation uses rewritten prompt.
-    return body;
-}
-
-void server_openai_validate_completions_create(const json & body) {
-    if (!body.contains("prompt")) {
-        throw std::invalid_argument("'prompt' is required");
-    }
-    if (body.contains("echo") && !body.at("echo").is_null()) {
-        if (!body.at("echo").is_boolean()) {
-            throw std::invalid_argument("'echo' must be a boolean");
-        }
-        // echo=true is supported: choice text includes the prompt prefix.
-    }
-    if (body.contains("suffix") && !body.at("suffix").is_null()) {
-        if (!body.at("suffix").is_string()) {
-            throw std::invalid_argument("'suffix' must be a string");
-        }
-        // nonempty suffix → FIM (applied in completions route before generation).
-    }
-    int n_val = 1;
-    if (body.contains("n") && !body.at("n").is_null()) {
-        if (!body.at("n").is_number_integer()) {
-            throw std::invalid_argument("'n' must be an integer");
-        }
-        n_val = body.at("n").get<int>();
-        if (n_val < 1) {
-            throw std::invalid_argument("'n' must be >= 1");
-        }
-    }
-    if (body.contains("best_of") && !body.at("best_of").is_null()) {
-        if (!body.at("best_of").is_number_integer()) {
-            throw std::invalid_argument("'best_of' must be an integer");
-        }
-        const int best_of = body.at("best_of").get<int>();
-        if (best_of < 1) {
-            throw std::invalid_argument("'best_of' must be >= 1");
-        }
-        // Official prose says best_of must be greater than n, but the schema default is
-        // best_of = 1 with n = 1, so equality is legal; only best_of < n is rejected.
-        // Local ranks candidates by token logprob sum.
-        if (best_of < n_val) {
-            throw std::invalid_argument("'best_of' must be greater than or equal to 'n'");
-        }
-        // OpenAI: best_of is not compatible with stream (ranking needs all candidates).
-        const bool stream = body.contains("stream") && body.at("stream").is_boolean() &&
-                            body.at("stream").get<bool>();
-        if (stream && best_of > n_val) {
-            throw std::invalid_argument("'best_of' > 'n' is not supported with stream=true");
-        }
-    }
-    if (body.contains("user") && !body.at("user").is_null() && !body.at("user").is_string()) {
-        throw std::invalid_argument("'user' must be a string");
-    }
-    if (body.contains("stream_options") && !body.at("stream_options").is_null()) {
-        if (!body.at("stream_options").is_object()) {
-            throw std::invalid_argument("'stream_options' must be an object");
-        }
-    }
-    auto check_penalty = [](const json & body, const char * key) {
-        if (!body.contains(key) || body.at(key).is_null()) {
-            return;
-        }
-        if (!body.at(key).is_number()) {
-            throw std::invalid_argument(std::string("'") + key + "' must be a number");
-        }
-        const double v = body.at(key).get<double>();
-        if (v < -2.0 || v > 2.0) {
-            throw std::invalid_argument(std::string("'") + key + "' must be in [-2, 2]");
-        }
-    };
-    check_penalty(body, "frequency_penalty");
-    check_penalty(body, "presence_penalty");
-    if (body.contains("logit_bias") && !body.at("logit_bias").is_null() &&
-            !body.at("logit_bias").is_object() && !body.at("logit_bias").is_array()) {
-        throw std::invalid_argument("'logit_bias' must be an object or array");
-    }
-    if (body.contains("seed") && !body.at("seed").is_null() && !body.at("seed").is_number_integer()) {
-        throw std::invalid_argument("'seed' must be an integer");
-    }
-    // Official Completions: logprobs is a non-negative integer (null/omitted = disabled);
-    // values above 5 are clamped to 5 by the official API instead of being rejected.
-    if (body.contains("logprobs") && !body.at("logprobs").is_null()) {
-        if (!body.at("logprobs").is_number_integer() || body.at("logprobs").get<int>() < 0) {
-            throw std::invalid_argument("'logprobs' must be a non-negative integer");
-        }
-    }
-    // Official Completions: stop is a string or an array of up to 4 strings.
-    if (body.contains("stop") && !body.at("stop").is_null()) {
-        if (!body.at("stop").is_string() && !body.at("stop").is_array()) {
-            throw std::invalid_argument("'stop' must be a string or an array of strings");
-        }
-        if (body.at("stop").is_array()) {
-            if (body.at("stop").size() > 4) {
-                throw std::invalid_argument("'stop' must contain at most 4 sequences");
-            }
-            for (const auto & item : body.at("stop")) {
-                if (!item.is_string()) {
-                    throw std::invalid_argument("'stop' must be a string or an array of strings");
-                }
-            }
-        }
-    }
-}
-
-void server_openai_validate_chat_create_fields(const json & body) {
-    if (body.contains("verbosity") && !body.at("verbosity").is_null()) {
-        if (!body.at("verbosity").is_string()) {
-            throw std::invalid_argument("'verbosity' must be 'low', 'medium', or 'high'");
-        }
-        const std::string v = body.at("verbosity").get<std::string>();
-        if (v != "low" && v != "medium" && v != "high") {
-            throw std::invalid_argument("'verbosity' must be 'low', 'medium', or 'high'");
-        }
-    }
-    bool want_audio_out = false;
-    if (body.contains("modalities") && !body.at("modalities").is_null()) {
-        if (!body.at("modalities").is_array()) {
-            throw std::invalid_argument("'modalities' must be an array of 'text' and/or 'audio'");
-        }
-        for (const auto & m : body.at("modalities")) {
-            if (!m.is_string()) {
-                throw std::invalid_argument("'modalities' entries must be strings");
-            }
-            const std::string ms = m.get<std::string>();
-            if (ms != "text" && ms != "audio") {
-                throw std::invalid_argument("'modalities' entries must be 'text' or 'audio'");
-            }
-            if (ms == "audio") {
-                want_audio_out = true;
-            }
-        }
-    }
-    if (body.contains("audio") && !body.at("audio").is_null()) {
-        want_audio_out = true;
-        if (!body.at("audio").is_object()) {
-            throw std::invalid_argument("'audio' must be an object");
-        }
-    }
-    if (want_audio_out) {
-        throw std::invalid_argument(
-            "audio output (modalities/audio) is not supported on this server");
-    }
-    if (body.contains("prediction") && !body.at("prediction").is_null()) {
-        if (!body.at("prediction").is_object()) {
-            throw std::invalid_argument("'prediction' must be an object");
-        }
-        const json & pred = body.at("prediction");
-        if (!pred.contains("type") || !pred.at("type").is_string() ||
-                pred.at("type").get<std::string>() != "content") {
-            throw std::invalid_argument("'prediction.type' must be 'content'");
-        }
-        if (!pred.contains("content") ||
-                !(pred.at("content").is_string() || pred.at("content").is_array())) {
-            throw std::invalid_argument("'prediction.content' must be a string or array");
-        }
-    }
-    auto check_penalty = [](const json & body, const char * key) {
-        if (!body.contains(key) || body.at(key).is_null()) {
-            return;
-        }
-        if (!body.at(key).is_number()) {
-            throw std::invalid_argument(std::string("'") + key + "' must be a number");
-        }
-        const double v = body.at(key).get<double>();
-        if (v < -2.0 || v > 2.0) {
-            throw std::invalid_argument(std::string("'") + key + "' must be in [-2, 2]");
-        }
-    };
-    check_penalty(body, "frequency_penalty");
-    check_penalty(body, "presence_penalty");
-    if (body.contains("n") && !body.at("n").is_null()) {
-        if (!body.at("n").is_number_integer()) {
-            throw std::invalid_argument("'n' must be an integer");
-        }
-        if (body.at("n").get<int>() < 1) {
-            throw std::invalid_argument("'n' must be >= 1");
-        }
-    }
-    if (body.contains("metadata") && !body.at("metadata").is_null()) {
-        server_openai_validate_metadata(body.at("metadata"));
-    }
-    if (body.contains("user") && !body.at("user").is_null() && !body.at("user").is_string()) {
-        throw std::invalid_argument("'user' must be a string");
-    }
-    if (body.contains("safety_identifier") && !body.at("safety_identifier").is_null() &&
-            !body.at("safety_identifier").is_string()) {
-        throw std::invalid_argument("'safety_identifier' must be a string");
-    }
-    server_openai_validate_service_tier(body);
-    if (body.contains("logit_bias") && !body.at("logit_bias").is_null() &&
-            !body.at("logit_bias").is_object() && !body.at("logit_bias").is_array()) {
-        throw std::invalid_argument("'logit_bias' must be an object or array");
-    }
-    if (body.contains("stream_options") && !body.at("stream_options").is_null()) {
-        if (!body.at("stream_options").is_object()) {
-            throw std::invalid_argument("'stream_options' must be an object");
-        }
-    }
-    if (body.contains("reasoning_effort")) {
-        server_openai_validate_reasoning_effort_field(body.at("reasoning_effort"), "reasoning_effort");
-    }
-    // Official Chat Completions: stop is a string or an array of up to 4 strings.
-    if (body.contains("stop") && !body.at("stop").is_null()) {
-        if (!body.at("stop").is_string() && !body.at("stop").is_array()) {
-            throw std::invalid_argument("'stop' must be a string or an array of strings");
-        }
-        if (body.at("stop").is_array()) {
-            if (body.at("stop").size() > 4) {
-                throw std::invalid_argument("'stop' must contain at most 4 sequences");
-            }
-            for (const auto & item : body.at("stop")) {
-                if (!item.is_string()) {
-                    throw std::invalid_argument("'stop' must be a string or an array of strings");
-                }
-            }
-        }
-    }
 }
 
 //
@@ -1799,7 +970,7 @@ server_tokens process_mtmd_prompt(
 }
 
 /**
- * break the input "prompt" object into multiple prompt if needed, then tokenize them
+ * tokenize a single input "prompt" object
  * use tokenize_input_prompts() if the input could be an array.
  * this supports these cases:
  * - "prompt": "string"
@@ -1807,7 +978,7 @@ server_tokens process_mtmd_prompt(
  * - "prompt": [12, 34, "string", 56, 78]
  * - "prompt": { "prompt_string": "string", "multimodal_data": [ "base64" ] }
  */
-static server_tokens tokenize_input_subprompt(const llama_vocab * vocab, mtmd_context * mctx, const json & json_prompt, bool add_special, bool parse_special, const mtmd_helper_init_opt & init_opt) {
+server_tokens tokenize_input_subprompt(const llama_vocab * vocab, mtmd_context * mctx, const json & json_prompt, bool add_special, bool parse_special, const mtmd_helper_init_opt & init_opt) {
     constexpr char JSON_STRING_PROMPT_KEY[] = "prompt_string";
     constexpr char JSON_MTMD_DATA_KEY[] = "multimodal_data";
     const bool has_mtmd = mctx != nullptr;
@@ -1865,7 +1036,9 @@ std::vector<server_tokens> tokenize_input_prompts(const llama_vocab * vocab, mtm
 json oaicompat_completion_params_parse(const json & body) {
     json llama_params;
 
-    server_openai_validate_completions_create(body);
+    if (!body.contains("prompt")) {
+        throw std::runtime_error("\"prompt\" is required");
+    }
 
     // Handle "stop" field
     if (body.contains("stop") && body.at("stop").is_string()) {
@@ -1874,28 +1047,24 @@ json oaicompat_completion_params_parse(const json & body) {
         llama_params["stop"] = json_value(body, "stop", json::array());
     }
 
+    // Handle "echo" field
+    if (json_value(body, "echo", false)) {
+        throw std::runtime_error("Only no echo is supported");
+    }
+
+    // Params supported by OAI but unsupported by llama.cpp
+    static const std::vector<std::string> unsupported_params { "best_of", "suffix" };
+    for (const auto & param : unsupported_params) {
+        if (body.contains(param)) {
+            throw std::runtime_error("Unsupported param: " + param);
+        }
+    }
+
     // Copy remaining properties to llama_params
     for (const auto & item : body.items()) {
         // Exception: if "n_predict" is present, we overwrite the value specified earlier by "max_tokens"
         if (!llama_params.contains(item.key()) || item.key() == "n_predict") {
             llama_params[item.key()] = item.value();
-        }
-    }
-
-    // best_of: generate best_of candidates; return only n choices (ranked in handle_completions_impl).
-    {
-        int n_val = 1;
-        if (body.contains("n") && !body.at("n").is_null() && body.at("n").is_number_integer()) {
-            n_val = body.at("n").get<int>();
-        }
-        int best_of = n_val;
-        if (body.contains("best_of") && !body.at("best_of").is_null() &&
-                body.at("best_of").is_number_integer()) {
-            best_of = body.at("best_of").get<int>();
-        }
-        if (best_of > n_val) {
-            llama_params["n"] = best_of;
-            llama_params["__oai_return_n"] = n_val;
         }
     }
 
@@ -1978,252 +1147,91 @@ static void handle_media(
     }
 }
 
-// Nearest official reasoning_effort levels, for templates that accept only a subset.
-// Ordered by rank distance, higher level first on ties; "none" is never a candidate
-// because it disables thinking.
-static std::vector<std::string> server_openai_reasoning_effort_fallbacks(const std::string & effort) {
-    static const char * levels[] = { "minimal", "low", "medium", "high", "xhigh", "max" };
-    const int n_levels = (int) (sizeof(levels) / sizeof(levels[0]));
-    int rank = -1;
-    for (int i = 0; i < n_levels; ++i) {
-        if (effort == levels[i]) {
-            rank = i;
-            break;
+// load media files from an OAI content array, then replace each media part with a media marker text part
+static void oaicompat_content_load_media(json & content, const server_chat_params & opt, std::vector<raw_buffer> & out_files) {
+    for (auto & p : content) {
+        std::string type = json_value(p, "type", std::string());
+        if (type == "image_url") {
+            if (!opt.allow_image) {
+                throw std::runtime_error("image input is not supported - hint: if this is unexpected, you may need to provide the mmproj");
+            }
+
+            json image_url = json_value(p, "image_url", json::object());
+            std::string url = json_value(image_url, "url", std::string());
+            handle_media(out_files, url, opt.media_path);
+
+            p["type"] = "media_marker";
+            p["text"] = get_media_marker();
+            p.erase("image_url");
+
+        } else if (type == "input_audio") {
+            if (!opt.allow_audio) {
+                throw std::runtime_error("audio input is not supported - hint: if this is unexpected, you may need to provide the mmproj");
+            }
+
+            // note: don't need to validate "format", it's redundant
+            json input_audio = json_value(p, "input_audio", json::object());
+            std::string url  = json_value(input_audio, "data",
+                                    json_value(input_audio, "url", std::string()));
+            handle_media(out_files, url, opt.media_path);
+
+            p["type"] = "media_marker";
+            p["text"] = get_media_marker();
+            p.erase("input_audio");
+
+        } else if (type == "input_video" || type == "video_url") {
+            if (!opt.allow_video) {
+                throw std::runtime_error("video input is not supported - hint: if this is unexpected, you may need to provide the mmproj");
+            }
+
+            // accept the OpenAI-style "video_url" key as an alias of "input_video"
+            json input_video = json_value(p, type, json::object());
+            std::string url  = json_value(input_video, "data",
+                                    json_value(input_video, "url", std::string()));
+            handle_media(out_files, url, opt.media_path);
+
+            p["type"] = "media_marker";
+            p["text"] = get_media_marker();
+            p.erase("input_video");
+            p.erase("video_url");
+
+        } else if (type != "text") {
+            throw std::invalid_argument("unsupported content[].type");
         }
     }
-    std::vector<std::string> fallbacks;
-    if (rank < 0) {
-        return fallbacks;
-    }
-    for (int dist = 1; dist < n_levels && (int) fallbacks.size() < 3; ++dist) {
-        if (rank + dist < n_levels) {
-            fallbacks.push_back(levels[rank + dist]);
-        }
-        if ((int) fallbacks.size() < 3 && rank - dist >= 0) {
-            fallbacks.push_back(levels[rank - dist]);
-        }
-    }
-    return fallbacks;
 }
 
-// Name of a tool entry, accepting Chat (function/custom nested) and flat Responses shapes.
-static std::string oai_tool_entry_name(const json & tool) {
-    if (!tool.is_object()) {
-        return {};
+server_tokens tokenize_oai_content_array(const llama_vocab * vocab, mtmd_context * mctx, const server_chat_params & opt, json content, bool add_special, bool parse_special, const mtmd_helper_init_opt & init_opt) {
+    if (!content.is_array()) {
+        throw std::invalid_argument("\"content\" must be an array");
     }
-    if (tool.contains("function") && tool.at("function").is_object()) {
-        return json_value(tool.at("function"), "name", std::string());
+
+    std::vector<raw_buffer> files;
+    oaicompat_content_load_media(content, opt, files);
+
+    std::string prompt;
+    for (const auto & p : content) {
+        prompt += json_value(p, "text", std::string());
     }
-    if (tool.contains("custom") && tool.at("custom").is_object()) {
-        return json_value(tool.at("custom"), "name", std::string());
+
+    if (files.empty()) {
+        return server_tokens(common_tokenize(vocab, prompt, add_special, parse_special), false);
     }
-    return json_value(tool, "name", std::string());
+    return process_mtmd_prompt(mctx, prompt, files, init_opt);
 }
 
 // used by /chat/completions endpoint
 json oaicompat_chat_params_parse(
     json & body, /* openai api json semantics */
     const server_chat_params & opt,
-    std::vector<raw_buffer> & out_files,
-    bool openai_defaults)
+    std::vector<raw_buffer> & out_files)
 {
     json llama_params;
 
-    // Shared OpenAI-shaped field validation (prompt_cache_*).
-    server_openai_validate_cloud_shaped_fields(body, /*allow_prompt=*/false);
-    server_openai_validate_chat_create_fields(body);
-    server_openai_apply_prompt_cache_semantics(body);
-
-    // Local deepen: Chat Completions web_search_options → search + inject system context.
-    server_openai_apply_web_search_semantics(body);
-
-    // Legacy Chat Completions functions / function_call → tools / tool_choice (1:1 behavior).
-    if (body.contains("functions") && !body.at("functions").is_null()) {
-        if (!body.at("functions").is_array()) {
-            throw std::invalid_argument("'functions' must be an array");
-        }
-        if (body.contains("tools") && body.at("tools").is_array() && !body.at("tools").empty()) {
-            throw std::invalid_argument("Cannot set both 'functions' and 'tools'");
-        }
-        json tools_from_fn = json::array();
-        for (const auto & fn : body.at("functions")) {
-            if (!fn.is_object()) {
-                throw std::invalid_argument("'functions' entries must be objects");
-            }
-            tools_from_fn.push_back(json{
-                {"type", "function"},
-                {"function", fn},
-            });
-        }
-        body["tools"] = std::move(tools_from_fn);
-    }
-    if (body.contains("function_call") && !body.at("function_call").is_null()) {
-        if (body.contains("tool_choice") && !body.at("tool_choice").is_null()) {
-            throw std::invalid_argument("Cannot set both 'function_call' and 'tool_choice'");
-        }
-        const json & fc = body.at("function_call");
-        if (fc.is_string()) {
-            const std::string s = fc.get<std::string>();
-            if (s == "none" || s == "auto") {
-                body["tool_choice"] = s;
-            } else {
-                throw std::invalid_argument("'function_call' string must be 'none' or 'auto'");
-            }
-        } else if (fc.is_object()) {
-            const std::string name = json_value(fc, "name", std::string());
-            if (name.empty()) {
-                throw std::invalid_argument("'function_call.name' is required");
-            }
-            body["tool_choice"] = json{
-                {"type", "function"},
-                {"function", {{"name", name}}},
-            };
-        } else {
-            throw std::invalid_argument("'function_call' must be a string or object");
-        }
-    }
-
-    json tools = json_value(body, "tools", json());
+    auto tools = json_value(body, "tools", json());
     auto has_tools = tools.is_array() && !tools.empty();
     auto stream = json_value(body, "stream", false);
-    // OpenAI Chat Completions: tool_choice string or
-    // {"type":"function","function":{"name":"..."}}.
-    // Responses: {"type":"function","name":"..."}.
-    // Anthropic convert: {"type":"function","function":{"name":"..."}} from type=tool.
-    // Named force must restrict tools to that name (behavior == method), not only "required".
-    std::string tool_choice = "auto";
-    std::string forced_tool_name;
-    if (body.contains("tool_choice") && !body.at("tool_choice").is_null()) {
-        const json & tc = body.at("tool_choice");
-        if (tc.is_string()) {
-            tool_choice = tc.get<std::string>();
-        } else if (tc.is_object()) {
-            const std::string tc_type = json_value(tc, "type", std::string("auto"));
-            if (tc_type == "none" || tc_type == "auto" || tc_type == "required") {
-                tool_choice = tc_type;
-            } else if (tc_type == "allowed_tools") {
-                // Restrict callable tools to the listed subset (official ToolChoiceAllowed).
-                // Official shape nests under 'allowed_tools'; the flat local shape stays supported.
-                const json & allowed = tc.contains("allowed_tools") && tc.at("allowed_tools").is_object()
-                    ? tc.at("allowed_tools") : tc;
-                const std::string mode = json_value(allowed, "mode", std::string("auto"));
-                if (mode != "auto" && mode != "required") {
-                    throw std::invalid_argument("'tool_choice.mode' must be 'auto' or 'required'");
-                }
-                if (!allowed.contains("tools") || !allowed.at("tools").is_array()) {
-                    throw std::invalid_argument("'tool_choice.tools' must be an array");
-                }
-                std::unordered_set<std::string> allowed_names;
-                for (const auto & entry : allowed.at("tools")) {
-                    if (!entry.is_object()) {
-                        throw std::invalid_argument("'tool_choice.tools' entries must be objects");
-                    }
-                    const std::string entry_type = json_value(entry, "type", std::string());
-                    if (entry_type == "function" || entry_type == "custom") {
-                        const std::string name = oai_tool_entry_name(entry);
-                        if (!name.empty()) {
-                            allowed_names.insert(name);
-                        }
-                    }
-                }
-                bool filtered_out = false;
-                if (has_tools) {
-                    json filtered = json::array();
-                    for (const auto & tool : tools) {
-                        if (!tool.is_object()) {
-                            continue;
-                        }
-                        if (allowed_names.count(oai_tool_entry_name(tool))) {
-                            filtered.push_back(tool);
-                        }
-                    }
-                    filtered_out = filtered.empty();
-                    tools = std::move(filtered);
-                    has_tools = !tools.empty();
-                }
-                if (mode == "required" && !has_tools) {
-                    throw std::invalid_argument(
-                        "tool_choice requires at least one allowed tool present in 'tools'");
-                }
-                if (mode == "auto" && filtered_out) {
-                    throw std::invalid_argument(
-                        "tool_choice allowed_tools with mode 'auto' matched no tools in 'tools'");
-                }
-                tool_choice = mode;
-            } else if (tc_type == "function" || tc_type == "tool") {
-                if (tc.contains("function") && tc.at("function").is_object()) {
-                    forced_tool_name = json_value(tc.at("function"), "name", std::string());
-                } else {
-                    forced_tool_name = json_value(tc, "name", std::string());
-                }
-                if (forced_tool_name.empty()) {
-                    throw std::invalid_argument("tool_choice function name is required");
-                }
-                tool_choice = "required";
-            } else if (tc_type == "custom") {
-                // Official Chat/Responses: force one custom tool by name.
-                if (tc.contains("custom") && tc.at("custom").is_object()) {
-                    forced_tool_name = json_value(tc.at("custom"), "name", std::string());
-                } else {
-                    forced_tool_name = json_value(tc, "name", std::string());
-                }
-                if (forced_tool_name.empty()) {
-                    throw std::invalid_argument("tool_choice custom name is required");
-                }
-                tool_choice = "required";
-            } else {
-                throw std::invalid_argument("Invalid tool_choice.type: " + tc_type);
-            }
-        } else {
-            throw std::invalid_argument("tool_choice must be a string or object");
-        }
-    }
-
-    // Chat custom tool names: serializers pick the official custom tool_call output shape
-    // by name (everything else stays function-shaped).
-    std::vector<std::string> oai_custom_tool_names;
-    if (has_tools) {
-        for (const auto & tool : tools) {
-            if (!tool.is_object()) {
-                continue;
-            }
-            const std::string type = json_value(tool, "type", std::string("function"));
-            if (type == "function") {
-                continue;
-            }
-            if (type == "custom") {
-                const std::string name = oai_tool_entry_name(tool);
-                if (name.empty()) {
-                    throw std::invalid_argument("'tools' entry of type 'custom' requires a name");
-                }
-                oai_custom_tool_names.push_back(name);
-                continue;
-            }
-            throw std::invalid_argument(
-                "Chat Completions tool type '" + type + "' is not supported on this server "
-                "(only type=function and type=custom). Cloud tool execution is unavailable locally.");
-        }
-    }
-
-    if (!forced_tool_name.empty()) {
-        if (!has_tools) {
-            throw std::invalid_argument("tool_choice requires tools");
-        }
-        json filtered = json::array();
-        for (const auto & tool : tools) {
-            if (!tool.is_object()) {
-                continue;
-            }
-            if (oai_tool_entry_name(tool) == forced_tool_name) {
-                filtered.push_back(tool);
-            }
-        }
-        if (filtered.empty()) {
-            throw std::invalid_argument("Unknown tool_choice tool: " + forced_tool_name);
-        }
-        tools = std::move(filtered);
-        has_tools = true;
-    }
+    auto tool_choice = json_value(body, "tool_choice", std::string("auto"));
 
     if (!opt.use_jinja) {
         if (has_tools) {
@@ -2276,98 +1284,8 @@ json oaicompat_chat_params_parse(
     if (!messages.is_array()) {
         throw std::invalid_argument("Expected 'messages' to be an array");
     }
-
-    // prompt_cache_breakpoint: validate on the raw parts (the media rewrite below mutates
-    // them). Breakpoints are located later as {role, message ordinal}; 4 per request max.
-    std::vector<std::pair<std::string, int32_t>> oai_prompt_cache_breakpoints;
-    {
-        std::map<std::string, int32_t> role_counts;
-        size_t n_breakpoints = 0;
-        for (const auto & msg : messages) {
-            const std::string role = json_value(msg, "role", std::string());
-            const int32_t ordinal = ++role_counts[role];
-
-            bool msg_has_breakpoint = false;
-            bool is_tools_anchor = false;
-
-            // message-level breakpoint; a tool_use or tool_result block maps here, since
-            // such a block has no part of its own after the conversion
-            if (msg.contains("prompt_cache_breakpoint") && !msg.at("prompt_cache_breakpoint").is_null()) {
-                msg_has_breakpoint = true;
-                n_breakpoints++;
-                const json & bp = msg.at("prompt_cache_breakpoint");
-                if (!bp.is_object()) {
-                    throw std::invalid_argument("'prompt_cache_breakpoint' must be an object");
-                }
-                if (!bp.contains("mode") || !bp.at("mode").is_string() ||
-                        bp.at("mode").get<std::string>() != "explicit") {
-                    throw std::invalid_argument("'prompt_cache_breakpoint.mode' must be 'explicit'");
-                }
-                if (bp.contains("anchor") && !bp.at("anchor").is_null()) {
-                    if (!bp.at("anchor").is_string() || bp.at("anchor").get<std::string>() != "tools") {
-                        throw std::invalid_argument("'prompt_cache_breakpoint.anchor' must be 'tools'");
-                    }
-                    is_tools_anchor = true;
-                }
-            }
-
-            if (msg.contains("content") && msg.at("content").is_array()) {
-                for (const auto & p : msg.at("content")) {
-                    if (!p.is_object() || !p.contains("prompt_cache_breakpoint") ||
-                            p.at("prompt_cache_breakpoint").is_null()) {
-                        continue;
-                    }
-                    msg_has_breakpoint = true;
-                    n_breakpoints++;
-                    const json & bp = p.at("prompt_cache_breakpoint");
-                    if (!bp.is_object()) {
-                        throw std::invalid_argument("'prompt_cache_breakpoint' must be an object");
-                    }
-                    if (!bp.contains("mode") || !bp.at("mode").is_string() ||
-                            bp.at("mode").get<std::string>() != "explicit") {
-                        throw std::invalid_argument("'prompt_cache_breakpoint.mode' must be 'explicit'");
-                    }
-                }
-            }
-            // locate a message once, even if several of its parts carry a breakpoint
-            if (msg_has_breakpoint) {
-                if (is_tools_anchor) {
-                    // the "tools" anchor is located at the start of the first message
-                    oai_prompt_cache_breakpoints.emplace_back("tools", 0);
-                } else {
-                    oai_prompt_cache_breakpoints.emplace_back(role, ordinal);
-                }
-            }
-        }
-        if (n_breakpoints > 4) {
-            throw std::invalid_argument("'prompt_cache_breakpoint' is allowed at most 4 times per request");
-        }
-    }
-
     for (auto & msg : messages) {
         std::string role = json_value(msg, "role", std::string());
-        if (role == "assistant" && msg.contains("function_call") && !msg.at("function_call").is_null()) {
-            // Legacy single function_call is deprecated but accepted; normalize it to tool_calls.
-            const json & fc = msg.at("function_call");
-            if (!fc.is_object()) {
-                throw std::invalid_argument("'function_call' must be an object");
-            }
-            if (msg.contains("tool_calls") && msg.at("tool_calls").is_array() && !msg.at("tool_calls").empty()) {
-                throw std::invalid_argument("Cannot set both 'function_call' and 'tool_calls'");
-            }
-            const std::string name = json_value(fc, "name", std::string());
-            if (name.empty()) {
-                throw std::invalid_argument("'function_call.name' is required");
-            }
-            msg["tool_calls"] = json::array({ json {
-                {"type", "function"},
-                {"function", json {
-                    {"name",      name},
-                    {"arguments", json_value(fc, "arguments", std::string())},
-                }},
-            }});
-            msg.erase("function_call");
-        }
         if (role != "assistant" && !msg.contains("content")) {
             throw std::invalid_argument("All non-assistant messages must contain 'content'");
         }
@@ -2388,153 +1306,7 @@ json oaicompat_chat_params_parse(
             throw std::invalid_argument("Expected 'content' to be a string or an array");
         }
 
-        for (size_t i = 0; i < content.size(); ) {
-            json & p = content[i];
-            std::string type = json_value(p, "type", std::string());
-            if (type == "image_url") {
-                if (!opt.allow_image) {
-                    throw std::runtime_error("image input is not supported - hint: if this is unexpected, you may need to provide the mmproj");
-                }
-
-                json image_url = json_value(p, "image_url", json::object());
-                std::string url = json_value(image_url, "url", std::string());
-                handle_media(out_files, url, opt.media_path);
-
-                p["type"] = "media_marker";
-                p["text"] = get_media_marker();
-                p.erase("image_url");
-
-            } else if (type == "input_audio") {
-                // shape check first: id requires a file store this server does not have,
-                // reject it as an invalid request regardless of audio support
-                json input_audio = json_value(p, "input_audio", json::object());
-                if (input_audio.contains("id") && !input_audio.at("id").is_null()) {
-                    throw std::invalid_argument("'input_audio.id' is not supported on this server (no file storage); pass 'input_audio.data' instead");
-                }
-                if (!opt.allow_audio) {
-                    throw std::runtime_error("audio input is not supported - hint: if this is unexpected, you may need to provide the mmproj");
-                }
-
-                // note: don't need to validate "format", it's redundant
-                std::string url  = json_value(input_audio, "data",
-                                        json_value(input_audio, "url", std::string()));
-                handle_media(out_files, url, opt.media_path);
-
-                p["type"] = "media_marker";
-                p["text"] = get_media_marker();
-                p.erase("input_audio");
-
-            } else if (type == "input_video") {
-                if (!opt.allow_video) {
-                    throw std::runtime_error("video input is not supported - hint: if this is unexpected, you may need to provide the mmproj");
-                }
-
-                json input_video = json_value(p, "input_video", json::object());
-                std::string url  = json_value(input_video, "data",
-                                        json_value(input_video, "url", std::string()));
-                handle_media(out_files, url, opt.media_path);
-
-                p["type"] = "media_marker";
-                p["text"] = get_media_marker();
-                p.erase("input_video");
-
-            } else if (type == "file") {
-                // Official FileContentPart: file_data is decoded into the prompt as text,
-                // file_id would need a file store this server does not have.
-                json file = json_value(p, "file", json::object());
-                if (file.contains("file_id") && !file.at("file_id").is_null()) {
-                    throw std::invalid_argument("'file.file_id' is not supported on this server (no file storage); pass 'file.file_data' instead");
-                }
-                std::string data = json_value(file, "file_data", std::string());
-                if (data.empty()) {
-                    throw std::invalid_argument("'file' content part requires 'file.file_data'");
-                }
-                // accept both a data URI and plain base64
-                const size_t comma = data.find(',');
-                if (data.rfind("data:", 0) == 0 && comma != std::string::npos) {
-                    data = data.substr(comma + 1);
-                }
-                const raw_buffer decoded = base64_decode(data);
-                if (decoded.empty()) {
-                    throw std::invalid_argument("'file.file_data' is not valid base64");
-                }
-                p = json {
-                    {"type", "text"},
-                    {"text", std::string(decoded.begin(), decoded.end())},
-                };
-
-            } else if (type == "refusal") {
-                // Official assistant refusal part; replayed with text semantics.
-                if (!p.contains("refusal") || !p.at("refusal").is_string()) {
-                    throw std::invalid_argument("'refusal' content part requires a string 'refusal'");
-                }
-                const std::string refusal = p.at("refusal").get<std::string>();
-                p = json {
-                    {"type", "text"},
-                    {"text", refusal},
-                };
-
-            } else if (type == "moderation") {
-                // Moderation parts are not produced locally: accept and drop on replay.
-                content.erase(i);
-                continue;
-
-            } else if (type != "text") {
-                throw std::invalid_argument("unsupported content[].type");
-            }
-            ++i;
-        }
-    }
-
-    // --reasoning-preserve: when the jinja template lacks supports_preserve_reasoning,
-    // fold prior assistant reasoning_content into content as <think>…</think> so history
-    // thinking remains in the prompt (local complete semantics for Qwen/etc.).
-    {
-        auto it_pr = opt.chat_template_kwargs.find("preserve_reasoning");
-        bool preserve_on = false;
-        if (it_pr != opt.chat_template_kwargs.end()) {
-            try {
-                json v = json::parse(it_pr->second);
-                preserve_on = v.is_boolean() && v.get<bool>();
-            } catch (...) {
-                preserve_on = (it_pr->second == "true");
-            }
-        }
-        if (preserve_on) {
-            auto tmpl_caps = common_chat_templates_get_caps(opt.tmpls.get());
-            const bool tmpl_ok = tmpl_caps.count("supports_preserve_reasoning") &&
-                                 tmpl_caps.at("supports_preserve_reasoning");
-            if (!tmpl_ok) {
-                for (auto & msg : messages) {
-                    if (!msg.is_object()) {
-                        continue;
-                    }
-                    if (json_value(msg, "role", std::string()) != "assistant") {
-                        continue;
-                    }
-                    if (!msg.contains("reasoning_content") || !msg.at("reasoning_content").is_string()) {
-                        continue;
-                    }
-                    const std::string reasoning = msg.at("reasoning_content").get<std::string>();
-                    if (reasoning.empty()) {
-                        continue;
-                    }
-                    if (!msg.contains("content") || msg.at("content").is_null()) {
-                        msg["content"] = "<think>\n" + reasoning + "\n</think>\n";
-                        continue;
-                    }
-                    if (!msg.at("content").is_string()) {
-                        continue; // multipart content: leave to template
-                    }
-                    std::string content = msg.at("content").get<std::string>();
-                    if (content.find("<think>") != std::string::npos ||
-                        content.find("</think>") != std::string::npos) {
-                        continue;
-                    }
-                    msg["content"] = "<think>\n" + reasoning + "\n</think>\n\n" + content;
-                }
-            }
-        }
+        oaicompat_content_load_media(content, opt, out_files);
     }
 
     auto caps = common_chat_templates_get_caps(opt.tmpls.get());
@@ -2597,149 +1369,21 @@ json oaicompat_chat_params_parse(
         throw std::invalid_argument("invalid type for \"enable_thinking\" (expected boolean, got string)");
     }
 
-    // OpenAI "reasoning_effort": none disables thinking; other official levels enable
-    // thinking and map to a local thinking_budget_tokens ladder when unset.
-    // Enum already validated in server_openai_validate_chat_create_fields /
-    // server_openai_validate_reasoning_object (Responses → chatcmpl conversion).
-    // Omitted effort follows the official default (medium) on OpenAI endpoints unless the
-    // value was already picked via chat_template_kwargs (client) or --reasoning-effort (server).
-    const bool has_body_effort = body.contains("reasoning_effort") && !body.at("reasoning_effort").is_null();
-    const bool use_default_effort = openai_defaults && !has_body_effort && inputs.enable_thinking &&
-        inputs.chat_template_kwargs.find("reasoning_effort") == inputs.chat_template_kwargs.end();
-    std::string oai_injected_effort;
-    if (has_body_effort || use_default_effort) {
-        std::string reasoning_effort = "medium";
-        if (has_body_effort) {
-            server_openai_validate_reasoning_effort_field(body.at("reasoning_effort"), "reasoning_effort");
-            reasoning_effort = body.at("reasoning_effort").get<std::string>();
-        }
+    // Parse the OAI "reasoning_effort" field; "none" disables reasoning.
+    if (body.contains("reasoning_effort")) {
+        auto reasoning_effort = json_value(body, "reasoning_effort", std::string(""));
         if (reasoning_effort == "none") {
             inputs.enable_thinking = false;
-            inputs.chat_template_kwargs["enable_thinking"] = "false";
-        } else {
-            inputs.enable_thinking = true;
-            inputs.chat_template_kwargs["enable_thinking"] = "true";
-            // Same encoding as request chat_template_kwargs merge (.dump() of JSON string).
+            inputs.chat_template_kwargs.erase("reasoning_effort");
+        } else if (!reasoning_effort.empty()) {
             inputs.chat_template_kwargs["reasoning_effort"] = json(reasoning_effort).dump();
-            if (openai_defaults) {
-                // fallback retry applies to OpenAI endpoints only
-                oai_injected_effort = reasoning_effort;
-            }
-            // Local deepen: effort → budget when client did not set an explicit budget field.
-            if (!body.contains("thinking_budget_tokens") && !body.contains("reasoning_budget_tokens")) {
-                int budget = 1024;
-                if (reasoning_effort == "minimal") {
-                    budget = 64;
-                } else if (reasoning_effort == "low") {
-                    budget = 256;
-                } else if (reasoning_effort == "medium") {
-                    budget = 1024;
-                } else if (reasoning_effort == "high") {
-                    budget = 4096;
-                } else if (reasoning_effort == "xhigh" || reasoning_effort == "max") {
-                    budget = 8192;
-                }
-                body["thinking_budget_tokens"] = budget;
-            }
-        }
-    }
-
-    // verbosity: inject a concise/detailed system hint (local observable behavior).
-    // An omitted or null verbosity follows the official default (medium) on OpenAI endpoints.
-    std::string v = openai_defaults ? "medium" : std::string();
-    if (body.contains("verbosity") && !body.at("verbosity").is_null()) {
-        // non-string shapes are rejected by server_openai_validate_chat_create_fields
-        v = body.at("verbosity").is_string() ? body.at("verbosity").get<std::string>() : std::string();
-    }
-    std::string hint;
-    if (v == "low") {
-        hint = "Respond very concisely. Prefer short answers with minimal prose.";
-    } else if (v == "medium") {
-        hint = "Respond with a balanced amount of detail. Prefer clear, moderately sized answers.";
-    } else if (v == "high") {
-        hint = "Respond thoroughly and in detail. Prefer expansive explanations.";
-    }
-    if (!hint.empty()) {
-        // System messages must stay first: many templates reject a system message that is
-        // not leading. Extend the leading system/developer message instead of adding one.
-        if (!inputs.messages.empty() &&
-                (inputs.messages[0].role == "system" || inputs.messages[0].role == "developer")) {
-            if (!inputs.messages[0].content_parts.empty()) {
-                inputs.messages[0].content_parts.push_back({ "text", hint });
-            } else if (inputs.messages[0].content.empty()) {
-                inputs.messages[0].content = hint;
-            } else {
-                inputs.messages[0].content += "\n\n" + hint;
-            }
-        } else {
-            common_chat_msg sys;
-            sys.role = "system";
-            sys.content = hint;
-            inputs.messages.insert(inputs.messages.begin(), std::move(sys));
-        }
-    }
-
-    // prediction: prefill assistant with predicted content (local Predicted Outputs stand-in).
-    if (body.contains("prediction") && body.at("prediction").is_object()) {
-        const json & pred = body.at("prediction");
-        std::string pred_text;
-        if (pred.contains("content") && pred.at("content").is_string()) {
-            pred_text = pred.at("content").get<std::string>();
-        } else if (pred.contains("content") && pred.at("content").is_array()) {
-            for (const auto & part : pred.at("content")) {
-                if (part.is_string()) {
-                    pred_text += part.get<std::string>();
-                } else if (part.is_object() && part.contains("text") && part.at("text").is_string()) {
-                    pred_text += part.at("text").get<std::string>();
-                }
-            }
-        }
-        if (!pred_text.empty()) {
-            common_chat_msg asst;
-            asst.role = "assistant";
-            asst.content = pred_text;
-            inputs.messages.push_back(std::move(asst));
-            inputs.continue_final_message = COMMON_CHAT_CONTINUATION_AUTO;
-            inputs.add_generation_prompt = false;
-            // Include prefilled prediction in streamed/final content (OpenAI-shaped continuity).
-            inputs.chat_template_kwargs["__prediction_prefill"] = "true";
-            llama_params["continue_final_message"] = true;
-            // chat_parser echo so clients see the predicted prefix when it matches.
-            llama_params["echo"] = true;
         }
     }
 
     inputs.force_pure_content = opt.force_pure_content;
 
-    // Apply chat template to the list of messages. Some templates accept only a subset of
-    // the official reasoning_effort levels; when the server injected the value, retry with
-    // the nearest accepted level instead of failing the request. The original exception is
-    // rethrown when no fallback applies.
-    common_chat_params chat_params;
-    try {
-        chat_params = common_chat_templates_apply(opt.tmpls.get(), inputs);
-    } catch (...) {
-        const std::exception_ptr original = std::current_exception();
-        bool applied = false;
-        if (!oai_injected_effort.empty()) {
-            const std::vector<std::string> fallbacks = server_openai_reasoning_effort_fallbacks(oai_injected_effort);
-            for (const auto & fallback : fallbacks) {
-                inputs.chat_template_kwargs["reasoning_effort"] = json(fallback).dump();
-                try {
-                    chat_params = common_chat_templates_apply(opt.tmpls.get(), inputs);
-                    SRV_INF("reasoning_effort '%s' rejected by chat template, using nearest level '%s'\n",
-                            oai_injected_effort.c_str(), fallback.c_str());
-                    applied = true;
-                    break;
-                } catch (...) {
-                    // try the next candidate
-                }
-            }
-        }
-        if (!applied) {
-            std::rethrow_exception(original);
-        }
-    }
+    // Apply chat template to the list of messages
+    auto chat_params = common_chat_templates_apply(opt.tmpls.get(), inputs);
 
     llama_params["chat_format"] = static_cast<int>(chat_params.format);
     llama_params["prompt"]      = chat_params.prompt;
@@ -2765,60 +1409,12 @@ json oaicompat_chat_params_parse(
 
     llama_params["message_delimiters"] = chat_params.message_delimiters.to_json();
 
-    // explicit prompt cache breakpoints: message anchors resolved to token positions by
-    // server-context (per-request checkpoint positions). Empty = no extra checkpoints.
-    if (!oai_prompt_cache_breakpoints.empty()) {
-        json bps = json::array();
-        for (const auto & bp : oai_prompt_cache_breakpoints) {
-            bps.push_back({ {"role", bp.first}, {"ordinal", bp.second} });
-        }
-        llama_params["__oai_prompt_cache_breakpoints"] = std::move(bps);
-    }
-
-    // custom tool names are resolved by name when serializing tool calls (custom shape)
-    if (!oai_custom_tool_names.empty()) {
-        llama_params["__oai_custom_tool_names"] = oai_custom_tool_names;
-    }
-
     // Reasoning budget: pass parameters through to sampling layer
     {
-        const bool client_set_reasoning_budget =
-            (body.contains("reasoning_budget_tokens") && !body.at("reasoning_budget_tokens").is_null()) ||
-            (body.contains("thinking_budget_tokens") && !body.at("thinking_budget_tokens").is_null());
         int reasoning_budget = json_value(body, "reasoning_budget_tokens",
                                json_value(body, "thinking_budget_tokens", -1));
         if (reasoning_budget == -1) {
             reasoning_budget = opt.reasoning_budget;
-        }
-
-        // Local deepen only when the client did not set a budget field: unlimited
-        // reasoning often fills a finite max_tokens with only thinking. Never rewrite
-        // an explicit thinking_budget_tokens / reasoning_budget_tokens (1:1 with field).
-        if (inputs.enable_thinking && !client_set_reasoning_budget) {
-            int max_tok = -1;
-            if (body.contains("n_predict") && body.at("n_predict").is_number_integer()) {
-                max_tok = body.at("n_predict").get<int>();
-            } else if (body.contains("max_tokens") && body.at("max_tokens").is_number_integer()) {
-                max_tok = body.at("max_tokens").get<int>();
-            } else if (body.contains("max_completion_tokens") && body.at("max_completion_tokens").is_number_integer()) {
-                max_tok = body.at("max_completion_tokens").get<int>();
-            }
-            if (max_tok < 0) {
-                if (reasoning_budget < 0) {
-                    reasoning_budget = 8192;
-                }
-            } else if (max_tok > 0) {
-                const int mt = max_tok;
-                int reserve = std::max(1, mt / 4);
-                if (mt >= 512) {
-                    reserve = std::max(256, mt / 4);
-                }
-                reserve = std::min(reserve, mt - 1);
-                const int cap = std::max(0, mt - reserve);
-                if (reasoning_budget < 0 || reasoning_budget > cap) {
-                    reasoning_budget = cap;
-                }
-            }
         }
 
         if (!chat_params.thinking_end_tags.empty()) {
@@ -2830,23 +1426,13 @@ json oaicompat_chat_params_parse(
         }
     }
 
-    // Handle "logprobs" field (Chat Completions shape uses content[]).
+    // Handle "logprobs" field
+    // TODO: The response format of this option is not yet OAI-compatible, but seems like no one really using it; We may need to fix it in the future
     if (json_value(body, "logprobs", false)) {
         if (has_tools && stream) {
-            // Local streaming tool-call path emits no content logprobs, so reject this combo.
             throw std::invalid_argument("logprobs is not supported with tools + stream");
         }
-        int top_lp = 20;
-        if (body.contains("top_logprobs") && !body.at("top_logprobs").is_null()) {
-            if (!body.at("top_logprobs").is_number_integer()) {
-                throw std::invalid_argument("'top_logprobs' must be an integer between 0 and 20");
-            }
-            top_lp = body.at("top_logprobs").get<int>();
-            if (top_lp < 0 || top_lp > 20) {
-                throw std::invalid_argument("'top_logprobs' must be an integer between 0 and 20");
-            }
-        }
-        llama_params["n_probs"] = top_lp;
+        llama_params["n_probs"] = json_value(body, "top_logprobs", 20);
     } else if (body.contains("top_logprobs") && !body.at("top_logprobs").is_null()) {
         throw std::invalid_argument("top_logprobs requires logprobs to be set to true");
     }
@@ -2882,7 +1468,8 @@ json format_embeddings_response_oaicompat(
             embedding_obj = {
                 {"embedding", base64::encode(data_ptr, data_size)},
                 {"index", i++},
-                {"object", "embedding"}
+                {"object", "embedding"},
+                {"encoding_format", "base64"}
             };
         } else {
             embedding_obj = {
