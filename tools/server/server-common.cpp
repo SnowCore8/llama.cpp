@@ -8,6 +8,7 @@
 #include "base64.hpp"
 
 #include "server-common.h"
+#include "server-task.h"
 #include "server-chat.h"
 #include "server-responses.h"
 
@@ -2296,6 +2297,18 @@ std::string format_anthropic_sse(const json & data) {
     }
 
     return ss.str();
+}
+
+// S6: get SSE formatter for response type
+sse_formatter_fn get_sse_formatter(int res_type) {
+    switch (res_type) {
+        case TASK_RESPONSE_TYPE_ANTHROPIC:
+            return format_anthropic_sse;
+        case TASK_RESPONSE_TYPE_OAI_RESP:
+            return format_oai_resp_sse;
+        default:
+            return format_oai_sse;
+    }
 }
 
 bool is_valid_utf8(const std::string & str) {

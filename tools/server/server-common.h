@@ -633,6 +633,10 @@ std::string format_oai_resp_sse(const json & data);
 // format Anthropic-style SSE with event types
 std::string format_anthropic_sse(const json & data);
 
+// S6: get SSE formatter function for a response type
+using sse_formatter_fn = std::string(*)(const json & data);
+sse_formatter_fn get_sse_formatter(int res_type);
+
 bool is_valid_utf8(const std::string & str);
 
 //
