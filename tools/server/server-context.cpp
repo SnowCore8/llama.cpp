@@ -6,6 +6,7 @@
 #include "server-queue.h"
 #include "server-schema.h"
 #include "server-stream.h"
+#include "server-responses.h"
 
 #include "build-info.h"
 #include "common.h"
@@ -5010,6 +5011,33 @@ void server_routes::init_routes() {
 
     this->post_responses_tok_oai = [this](const server_http_req & req) {
         return handle_count_tokens(req, TASK_RESPONSE_TYPE_OAI_RESP);
+    };
+
+    this->post_responses_compact_oai = [this](const server_http_req & req) {
+        auto res = create_response();
+        json body;
+        try {
+            body = json::parse(req.body);
+        } catch (const std::exception &) {
+            res->error(format_error_response("Invalid JSON", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        if (!body.contains("model")) {
+            res->error(format_error_response("'model' is required", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        json result;
+        try {
+            result = server_responses_compact(std::move(body), ctx_server.vocab, meta->slot_n_ctx);
+        } catch (const std::exception & e) {
+            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        res->ok(result);
+        return res;
     };
 
     this->post_transcriptions_oai = [this](const server_http_req & req) {
