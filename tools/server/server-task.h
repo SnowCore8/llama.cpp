@@ -95,10 +95,18 @@ struct task_params {
     json        oaicompat_resp_request      = nullptr; // original/prepared Responses request body
     bool        oaicompat_steer_hold        = false; // WebSocket steering: request has tools, steering waits for the terminal
 
-    // S4: Responses surface-private fields (moved from __oai_* keys)
+    // Responses surface-private fields
     std::string oaicompat_resp_prev_id;    // previous_response_id for response echo
     json        oaicompat_resp_conv_input   = nullptr; // conversation input for Response Store
     std::string oaicompat_resp_ws_local;   // WebSocket local token for connection cache
+
+    // Web search fields
+    bool        oaicompat_web_search_enabled = false;
+    std::string oaicompat_web_search_query;
+    json        oaicompat_web_search_results = nullptr;
+    json        oaicompat_web_search_actions = nullptr;
+    int32_t     oaicompat_web_search_n_requests = 0;
+    json        oaicompat_web_search_echo_tools = nullptr;
 
     // Anthropic Messages: thinking.display == "omitted" hides thinking text but keeps the
     // thinking block, its (empty) signature and the signature_delta
@@ -152,7 +160,7 @@ struct task_params {
     json to_json(bool only_metrics = false) const;
 };
 
-// S3: server_surface_request - the single entry point from surface to kernel
+// server_surface_request - the single entry point from surface to kernel
 // Kernel only accepts this structure; surface-specific data goes into `surface` field
 struct server_surface_request {
     json                    prompt;   // template output (with injected tool grammar)
@@ -200,10 +208,18 @@ struct task_result_state {
     json oaicompat_resp_instructions = nullptr;
     json oaicompat_resp_request      = nullptr;
 
-    // S4: Responses surface-private fields (moved from __oai_* keys)
+    // Responses surface-private fields (moved from __oai_* keys)
     std::string oaicompat_resp_prev_id;
     json        oaicompat_resp_conv_input   = nullptr;
     std::string oaicompat_resp_ws_local;
+
+    // Web search fields
+    bool        oaicompat_web_search_enabled = false;
+    std::string oaicompat_web_search_query;
+    json        oaicompat_web_search_results = nullptr;
+    json        oaicompat_web_search_actions = nullptr;
+    int32_t     oaicompat_web_search_n_requests = 0;
+    json        oaicompat_web_search_echo_tools = nullptr;
 
     task_result_state(const common_chat_parser_params & chat_parser_params, const std::string & resp_id = "");
 
@@ -343,10 +359,17 @@ struct server_task {
         st.oaicompat_resp_instructions = params.oaicompat_resp_instructions;
         st.oaicompat_resp_request      = params.oaicompat_resp_request;
         st.oai_custom_tool_names       = params.oai_custom_tool_names;
-        // S4: Copy surface-private fields
+        // Copy surface-private fields
         st.oaicompat_resp_prev_id    = params.oaicompat_resp_prev_id;
         st.oaicompat_resp_conv_input = params.oaicompat_resp_conv_input;
         st.oaicompat_resp_ws_local   = params.oaicompat_resp_ws_local;
+        // Copy web search fields
+        st.oaicompat_web_search_enabled    = params.oaicompat_web_search_enabled;
+        st.oaicompat_web_search_query      = params.oaicompat_web_search_query;
+        st.oaicompat_web_search_results    = params.oaicompat_web_search_results;
+        st.oaicompat_web_search_actions    = params.oaicompat_web_search_actions;
+        st.oaicompat_web_search_n_requests = params.oaicompat_web_search_n_requests;
+        st.oaicompat_web_search_echo_tools = params.oaicompat_web_search_echo_tools;
         return st;
     }
 
@@ -469,10 +492,18 @@ struct server_task_result_cmpl_final : server_task_result {
     json oaicompat_resp_instructions = nullptr;
     json oaicompat_resp_request      = nullptr;
 
-    // S4: Responses surface-private fields (moved from __oai_* keys)
+    // Responses surface-private fields (moved from __oai_* keys)
     std::string oaicompat_resp_prev_id;
     json        oaicompat_resp_conv_input   = nullptr;
     std::string oaicompat_resp_ws_local;
+
+    // Web search fields
+    bool        oaicompat_web_search_enabled = false;
+    std::string oaicompat_web_search_query;
+    json        oaicompat_web_search_results = nullptr;
+    json        oaicompat_web_search_actions = nullptr;
+    int32_t     oaicompat_web_search_n_requests = 0;
+    json        oaicompat_web_search_echo_tools = nullptr;
 
     virtual bool is_stop() override {
         return true; // in stream mode, final responses are considered stop
@@ -490,10 +521,17 @@ struct server_task_result_cmpl_final : server_task_result {
         oaicompat_resp_input        = state.oaicompat_resp_input;
         oaicompat_resp_instructions = state.oaicompat_resp_instructions;
         oaicompat_resp_request      = state.oaicompat_resp_request;
-        // S4: Copy surface-private fields
+        // Copy surface-private fields
         oaicompat_resp_prev_id    = state.oaicompat_resp_prev_id;
         oaicompat_resp_conv_input = state.oaicompat_resp_conv_input;
         oaicompat_resp_ws_local   = state.oaicompat_resp_ws_local;
+        // Copy web search fields
+        oaicompat_web_search_enabled    = state.oaicompat_web_search_enabled;
+        oaicompat_web_search_query      = state.oaicompat_web_search_query;
+        oaicompat_web_search_results    = state.oaicompat_web_search_results;
+        oaicompat_web_search_actions    = state.oaicompat_web_search_actions;
+        oaicompat_web_search_n_requests = state.oaicompat_web_search_n_requests;
+        oaicompat_web_search_echo_tools = state.oaicompat_web_search_echo_tools;
     }
 
     json to_json_non_oaicompat();

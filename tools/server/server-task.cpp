@@ -948,7 +948,12 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
     const bool want_lp = server_responses_wants_output_logprobs(req_stream);
     // web_search_call items are emitted once at stream start; enrich prepends them to the
     // final output, so both index spaces count them
-    const int ws_off = (int) server_web_search_responses_output_items(req_stream).size();
+    const int ws_off = (int) server_web_search_responses_output_items(
+        req_stream,
+        generation_params.oaicompat_web_search_query,
+        generation_params.oaicompat_web_search_results != nullptr ? generation_params.oaicompat_web_search_results : json::array(),
+        generation_params.oaicompat_web_search_actions != nullptr ? generation_params.oaicompat_web_search_actions : json::array()
+    ).size();
 
     auto push_evt = [&](const std::string & event_name, json data) {
         data["type"] = event_name;
@@ -1035,9 +1040,11 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
         json raw_item = output_item; // enrich annotates the final response once
         // web_search: enrich annotates the final output later, annotate a copy here so the
         // done events carry the same url_citations as response.completed
-        if (json_value(req_stream, "__oai_web_search", false)) {
+        if (generation_params.oaicompat_web_search_enabled) {
             json copy = json { {"output", json::array({ output_item })} };
-            server_web_search_annotate_responses_output(copy, req_stream);
+            server_web_search_annotate_responses_output(
+                copy,
+                generation_params.oaicompat_web_search_results != nullptr ? generation_params.oaicompat_web_search_results : json::array());
             output_item  = copy.at("output").at(0);
             content_part = output_item.at("content").at(0);
         }
@@ -1508,8 +1515,12 @@ void server_task_result_cmpl_partial::update(task_result_state & state) {
         state.oai_resp_created = true;
     }
     if (res_type == TASK_RESPONSE_TYPE_OAI_RESP && !state.oai_web_search_streamed &&
-            json_value(state.oaicompat_resp_request, "__oai_web_search", false)) {
-        json prefix = server_web_search_responses_output_items(state.oaicompat_resp_request);
+            state.oaicompat_web_search_enabled) {
+        json prefix = server_web_search_responses_output_items(
+            state.oaicompat_resp_request,
+            state.oaicompat_web_search_query,
+            state.oaicompat_web_search_results != nullptr ? state.oaicompat_web_search_results : json::array(),
+            state.oaicompat_web_search_actions != nullptr ? state.oaicompat_web_search_actions : json::array());
         state.oai_web_search_output_offset = (int) prefix.size();
         state.oai_web_search_streamed = true;
         // partial will emit using copied offset; mark streamed so we emit once in to_json
@@ -1750,8 +1761,12 @@ json server_task_result_cmpl_partial::to_json_oaicompat_resp() {
     const int ws_off = oai_web_search_output_offset;
     // Emit web_search_call items once at stream start (after created/in_progress).
     if (!oai_web_search_streamed &&
-            json_value(req_partial, "__oai_web_search", false)) {
-        json prefix = server_web_search_responses_output_items(req_partial);
+            generation_params.oaicompat_web_search_enabled) {
+        json prefix = server_web_search_responses_output_items(
+            req_partial,
+            generation_params.oaicompat_web_search_query,
+            generation_params.oaicompat_web_search_results != nullptr ? generation_params.oaicompat_web_search_results : json::array(),
+            generation_params.oaicompat_web_search_actions != nullptr ? generation_params.oaicompat_web_search_actions : json::array());
         int idx = 0;
         for (auto & item : prefix) {
             const std::string item_id = json_value(item, "id", std::string());

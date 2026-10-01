@@ -38,10 +38,16 @@ json server_web_search_run(const server_web_search_options & opt);
 void server_web_search_apply(json & body);
 
 // Build Responses output items (web_search_call[+open_page...]) honoring include[].
-json server_web_search_responses_output_items(const json & request_body);
+json server_web_search_responses_output_items(
+    const json & request_body,
+    const std::string & ws_query,
+    const json & ws_results,
+    const json & ws_actions);
 
 // Attach url_citation annotations (+ optional Sources footer) on message output_text parts.
-void server_web_search_annotate_responses_output(json & response_obj, const json & request_body);
+void server_web_search_annotate_responses_output(
+    json & response_obj,
+    const json & ws_results);
 
 // Chat Completions: add message.annotations url_citation list when search ran.
 void server_web_search_annotate_chat_message(json & message_obj, const json & web_results);

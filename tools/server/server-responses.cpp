@@ -796,6 +796,7 @@ json server_responses_prepare_request(
     server_openai_apply_prompt_cache_semantics(body);
     // Local web_search deepen (strip hosted web_search tools, inject results, emit later).
     server_openai_apply_web_search_semantics(body);
+    server_web_search_apply(body);
     // Official Responses `reasoning` object (effort/context/summary/generate_summary/mode).
     server_openai_validate_reasoning_object(body);
 
@@ -1024,9 +1025,10 @@ static json server_responses_tools_for_compare(const json & request_body) {
     if (request_body.contains("tools") && request_body.at("tools").is_array()) {
         tools = request_body.at("tools");
     }
-    if (request_body.contains("__oai_web_search_echo_tools") &&
-            request_body.at("__oai_web_search_echo_tools").is_array()) {
-        for (const auto & t : request_body.at("__oai_web_search_echo_tools")) {
+    const json & surface = request_body.contains("_surface") ? request_body.at("_surface") : json::object();
+    if (surface.contains("web_search_echo_tools") &&
+            surface.at("web_search_echo_tools").is_array()) {
+        for (const auto & t : surface.at("web_search_echo_tools")) {
             tools.push_back(t);
         }
     }
@@ -1205,10 +1207,13 @@ json server_responses_enrich_response(json response_obj, const json & request_bo
         response_obj["tools"] = json::array();
     }
     // Restore web_search tools stripped during local deepen so Response echoes request shape.
-    if (request_body.contains("__oai_web_search_echo_tools") &&
-            request_body.at("__oai_web_search_echo_tools").is_array()) {
-        for (const auto & t : request_body.at("__oai_web_search_echo_tools")) {
-            response_obj["tools"].push_back(t);
+    {
+        const json & surface = request_body.contains("_surface") ? request_body.at("_surface") : json::object();
+        if (surface.contains("web_search_echo_tools") &&
+                surface.at("web_search_echo_tools").is_array()) {
+            for (const auto & t : surface.at("web_search_echo_tools")) {
+                response_obj["tools"].push_back(t);
+            }
         }
     }
     if (!response_obj.contains("tool_choice") || response_obj.at("tool_choice").is_null()) {
@@ -1286,20 +1291,26 @@ json server_responses_enrich_response(json response_obj, const json & request_bo
     }
 
     // Local web_search deepen: prepend hosted-shaped web_search_call / open_page items.
-    if (json_value(request_body, "__oai_web_search", false) &&
-            response_obj.contains("output") && response_obj.at("output").is_array()) {
-        json prefix = server_web_search_responses_output_items(request_body);
-        if (!prefix.empty()) {
-            json new_output = json::array();
-            for (auto & item : prefix) {
-                new_output.push_back(std::move(item));
+    {
+        const json & surface = request_body.contains("_surface") ? request_body.at("_surface") : json::object();
+        const bool ws_enabled = surface.contains("web_search_enabled") && surface.at("web_search_enabled").get<bool>();
+        if (ws_enabled && response_obj.contains("output") && response_obj.at("output").is_array()) {
+            const std::string ws_query = surface.contains("web_search_query") ? surface.at("web_search_query").get<std::string>() : std::string();
+            const json & ws_results = surface.contains("web_search_results") ? surface.at("web_search_results") : json::array();
+            const json & ws_actions = surface.contains("web_search_actions") ? surface.at("web_search_actions") : json::array();
+            json prefix = server_web_search_responses_output_items(request_body, ws_query, ws_results, ws_actions);
+            if (!prefix.empty()) {
+                json new_output = json::array();
+                for (auto & item : prefix) {
+                    new_output.push_back(std::move(item));
+                }
+                for (auto & item : response_obj.at("output")) {
+                    new_output.push_back(std::move(item));
+                }
+                response_obj["output"] = std::move(new_output);
             }
-            for (auto & item : response_obj.at("output")) {
-                new_output.push_back(std::move(item));
-            }
-            response_obj["output"] = std::move(new_output);
+            server_web_search_annotate_responses_output(response_obj, ws_results);
         }
-        server_web_search_annotate_responses_output(response_obj, request_body);
     }
 
     return response_obj;

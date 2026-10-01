@@ -1304,29 +1304,26 @@ json convert_transcriptions_to_chatcmpl(
     return chatcmpl_body;
 }
 
-// S3: Parse Anthropic request directly to server_surface_request
+// Parse Anthropic request to server_surface_request
 // This is a placeholder that wraps the existing conversion + parse flow.
 // TODO: Integrate conversion logic to eliminate __oai_* intermediate keys.
 server_surface_request parse_anthropic_to_surface_request(
     const json & body,
     const server_chat_params & opt) {
     server_surface_request result;
-    // Phase 1: Use existing conversion + parse (same as parse_anthropic_request)
     json converted = server_chat_convert_anthropic_to_oai(body);
-    // TODO Phase 2: Directly fill result.prompt, result.params without intermediate JSON
-    // For now, we return a placeholder that the caller can process
-    result.surface = converted; // Store converted JSON in surface for now
+    // TODO: Directly fill result.prompt, result.params without intermediate JSON
+    result.surface = converted;
     return result;
 }
 
-// S3: Parse Responses request directly to server_surface_request
+// Parse Responses request to server_surface_request
 server_surface_request parse_responses_to_surface_request(
     const json & body,
     const server_chat_params & opt) {
     server_surface_request result;
 
-    // S4: Capture Responses-specific fields before conversion
-    // These go into surface payload instead of __oai_* keys
+    // Capture Responses-specific fields into surface payload
     json surface_data;
     if (body.contains("input")) {
         surface_data["resp_input"] = body.at("input");
@@ -1334,7 +1331,6 @@ server_surface_request parse_responses_to_surface_request(
     if (body.contains("instructions")) {
         surface_data["resp_instructions"] = body.at("instructions");
     }
-    // S4 Phase 2: Also capture prev_response_id and conv_input
     if (body.contains("__oai_prev_response_id")) {
         surface_data["prev_response_id"] = body.at("__oai_prev_response_id");
     }
@@ -1344,12 +1340,28 @@ server_surface_request parse_responses_to_surface_request(
     if (body.contains("__oai_ws_local")) {
         surface_data["ws_local"] = body.at("__oai_ws_local");
     }
+    if (json_value(body, "__oai_web_search", false)) {
+        surface_data["web_search_enabled"] = true;
+        if (body.contains("__oai_web_search_query")) {
+            surface_data["web_search_query"] = body.at("__oai_web_search_query");
+        }
+        if (body.contains("__oai_web_search_results")) {
+            surface_data["web_search_results"] = body.at("__oai_web_search_results");
+        }
+        if (body.contains("__oai_web_search_actions")) {
+            surface_data["web_search_actions"] = body.at("__oai_web_search_actions");
+        }
+        if (body.contains("__oai_web_search_n_requests")) {
+            surface_data["web_search_n_requests"] = body.at("__oai_web_search_n_requests");
+        }
+        if (body.contains("__oai_web_search_echo_tools")) {
+            surface_data["web_search_echo_tools"] = body.at("__oai_web_search_echo_tools");
+        }
+    }
 
-    // Phase 1: Use existing conversion + parse (same as parse_responses_request)
     json converted = server_chat_convert_responses_to_chatcmpl(body);
-    // TODO Phase 2: Directly fill result.prompt, result.params without intermediate JSON
+    // TODO: Directly fill result.prompt, result.params without intermediate JSON
 
-    // S4: Store surface payload (eliminates __oai_* keys)
     result.surface = surface_data;
     return result;
 }

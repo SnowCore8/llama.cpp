@@ -11,13 +11,13 @@
 
 #include <unordered_set>
 
-// S3: Parse Anthropic request directly to server_surface_request
-// Eliminates the chatcmpl intermediate format; surface-private data goes into result.surface
+// Parse Anthropic request to server_surface_request
+// Surface-private data goes into result.surface
 server_surface_request parse_anthropic_to_surface_request(
     const json & body,
     const server_chat_params & opt);
 
-// S3: Parse Responses request directly to server_surface_request
+// Parse Responses request to server_surface_request
 server_surface_request parse_responses_to_surface_request(
     const json & body,
     const server_chat_params & opt);

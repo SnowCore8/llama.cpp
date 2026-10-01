@@ -1246,24 +1246,24 @@ void server_web_search_apply(json & body) {
             packed.at("n_requests").get<int>());
 }
 
-json server_web_search_responses_output_items(const json & request_body) {
+json server_web_search_responses_output_items(
+        const json & request_body,
+        const std::string & ws_query,
+        const json & ws_results,
+        const json & ws_actions) {
     json out = json::array();
-    if (!json_value(request_body, "__oai_web_search", false)) {
-        return out;
-    }
     const bool want_sources =
         server_responses_include_contains(request_body, "web_search_call.action.sources");
     const bool want_results =
         server_responses_include_contains(request_body, "web_search_call.results");
 
     json actions = json::array();
-    if (request_body.contains("__oai_web_search_actions") &&
-            request_body.at("__oai_web_search_actions").is_array()) {
-        actions = request_body.at("__oai_web_search_actions");
+    if (ws_actions.is_array() && !ws_actions.empty()) {
+        actions = ws_actions;
     } else {
         actions.push_back(json{
             {"type",  "search"},
-            {"query", json_value(request_body, "__oai_web_search_query", std::string())},
+            {"query", ws_query},
         });
     }
 
@@ -1280,10 +1280,9 @@ json server_web_search_responses_output_items(const json & request_body) {
             } else {
                 bool empty_sources = !action.contains("sources") ||
                     !action.at("sources").is_array() || action.at("sources").empty();
-                if (empty_sources && request_body.contains("__oai_web_search_results") &&
-                        request_body.at("__oai_web_search_results").is_array()) {
+                if (empty_sources && ws_results.is_array()) {
                     json sources = json::array();
-                    for (const auto & item : request_body.at("__oai_web_search_results")) {
+                    for (const auto & item : ws_results) {
                         sources.push_back(json{
                             {"type", "url"},
                             {"url",  json_value(item, "url", std::string())},
@@ -1305,27 +1304,22 @@ json server_web_search_responses_output_items(const json & request_body) {
             {"status", "completed"},
             {"action", action},
         };
-        if (want_results && atype == "search" &&
-                request_body.contains("__oai_web_search_results")) {
-            item["results"] = request_body.at("__oai_web_search_results");
+        if (want_results && atype == "search" && ws_results.is_array()) {
+            item["results"] = ws_results;
         }
         out.push_back(std::move(item));
     }
     return out;
 }
 
-void server_web_search_annotate_responses_output(json & response_obj, const json & request_body) {
-    if (!json_value(request_body, "__oai_web_search", false)) {
-        return;
-    }
+void server_web_search_annotate_responses_output(json & response_obj, const json & ws_results) {
     if (!response_obj.contains("output") || !response_obj.at("output").is_array()) {
         return;
     }
-    if (!request_body.contains("__oai_web_search_results") ||
-            !request_body.at("__oai_web_search_results").is_array()) {
+    if (!ws_results.is_array()) {
         return;
     }
-    const json & results = request_body.at("__oai_web_search_results");
+    const json & results = ws_results;
 
     for (auto & item : response_obj.at("output")) {
         if (!item.is_object() || json_value(item, "type", std::string()) != "message") {

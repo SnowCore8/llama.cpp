@@ -4331,8 +4331,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             task.id_slot = json_value(data, "id_slot", -1);
             sse_ping_interval = task.params.sse_ping_interval;
 
-            // Fill surface-specific fields (S1: extracted to fill_surface_params)
-            // S4: Use surface-aware version if _surface field is present
+            // Fill surface-specific fields (extracted to fill_surface_params)
+            // Use surface-aware version if _surface field is present
             if (data.contains("_surface") && data.at("_surface").is_object()) {
                 server_schema::fill_surface_params(task.params, res_type, data, data.at("_surface"), completion_id, meta->model_name);
             } else {
@@ -5162,17 +5162,16 @@ void server_routes::init_routes() {
         // First prepare the request (expand previous_response_id, etc.)
         json body = server_responses_prepare_request(json::parse(req.body), ctx_server.vocab, meta->slot_n_ctx);
 
-        // S4: Use parse_responses_to_surface_request to capture surface data
-        // This eliminates __oai_resp_input/__oai_resp_instructions private keys
+        // Capture surface data from Responses request
         server_surface_request surface_req = parse_responses_to_surface_request(body, meta->chat_params);
 
-        // S2: use surface-specific parser (includes conversion)
+        // use surface-specific parser (includes conversion)
         json body_parsed = parse_responses_request(
             body,
             meta->chat_params,
             files);
 
-        // S4: Attach surface payload to parsed body for fill_surface_params
+        // Attach surface payload to parsed body for fill_surface_params
         body_parsed["_surface"] = surface_req.surface;
 
         return handle_completions_impl(
