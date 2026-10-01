@@ -7,6 +7,7 @@
 #include "server-schema.h"
 #include "server-stream.h"
 #include "server-responses.h"
+#include "server-chat-completions-store.h"
 
 #include "build-info.h"
 #include "common.h"
@@ -4951,6 +4952,166 @@ void server_routes::init_routes() {
 
     this->post_chat_completions_tok = [this](const server_http_req & req) {
         return handle_count_tokens(req, TASK_RESPONSE_TYPE_OAI_CHAT);
+    };
+
+    // Chat completions store CRUD
+    this->get_chat_completions = [this](const server_http_req & req) {
+        auto res = create_response();
+        if (server_chat_completions_store::instance().max_entries() <= 0) {
+            res->error(format_error_response("Chat completions store is disabled", ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+
+        const std::string after = req.get_param("after");
+        const std::string limit_str = req.get_param("limit");
+        const int limit = limit_str.empty() ? 20 : std::stoi(limit_str);
+        const std::string order = req.get_param("order");
+        const bool order_desc = (order == "desc");
+        const std::string model_filter = req.get_param("model");
+
+        std::vector<std::pair<std::string, std::string>> metadata_filter;
+        // Parse metadata filter from query params (e.g., metadata[user]=xxx)
+
+        json result = server_chat_completions_store::instance().list(
+            after, limit, order_desc, model_filter, metadata_filter);
+        res->ok(result);
+        return res;
+    };
+
+    this->get_chat_completion = [this](const server_http_req & req) {
+        auto res = create_response();
+        if (server_chat_completions_store::instance().max_entries() <= 0) {
+            res->error(format_error_response("Chat completions store is disabled", ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+
+        const std::string completion_id = req.get_param("completion_id");
+        auto entry = server_chat_completions_store::instance().get(completion_id);
+        if (!entry) {
+            res->error(format_error_response("Chat completion not found: " + completion_id, ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+
+        // Build response from entry
+        json result = {
+            {"id", entry->id},
+            {"object", "chat.completion"},
+            {"created", entry->created},
+            {"model", entry->model},
+            {"choices", entry->completion.value("choices", json::array())},
+            {"usage", entry->completion.value("usage", json::object())},
+            {"metadata", entry->metadata}
+        };
+        res->ok(result);
+        return res;
+    };
+
+    this->get_chat_completion_messages = [this](const server_http_req & req) {
+        auto res = create_response();
+        if (server_chat_completions_store::instance().max_entries() <= 0) {
+            res->error(format_error_response("Chat completions store is disabled", ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+
+        const std::string completion_id = req.get_param("completion_id");
+        auto entry = server_chat_completions_store::instance().get(completion_id);
+        if (!entry) {
+            res->error(format_error_response("Chat completion not found: " + completion_id, ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+
+        const std::string after = req.get_param("after");
+        const std::string limit_str = req.get_param("limit");
+        const int limit = limit_str.empty() ? 20 : std::stoi(limit_str);
+        const std::string order = req.get_param("order");
+        const bool order_desc = (order == "desc");
+
+        // Extract messages from choices
+        json messages = json::array();
+        const json & completion = entry->completion;
+        if (completion.contains("choices") && completion.at("choices").is_array()) {
+            for (const auto & choice : completion.at("choices")) {
+                if (choice.contains("message") && choice.at("message").is_object()) {
+                    json msg = choice.at("message");
+                    msg["id"] = "msg_" + random_string();
+                    msg["object"] = "thread.message";
+                    messages.push_back(msg);
+                }
+            }
+        }
+
+        // Apply ordering and pagination
+        if (order_desc && !messages.empty()) {
+            // nlohmann::json doesn't have rbegin/rend, need manual reverse
+            json reversed = json::array();
+            for (int i = (int)messages.size() - 1; i >= 0; --i) {
+                reversed.push_back(messages[i]);
+            }
+            messages = std::move(reversed);
+        }
+
+        json result = {
+            {"object", "list"},
+            {"data", messages},
+            {"first_id", messages.empty() ? nullptr : messages[0].at("id")},
+            {"last_id", messages.empty() ? nullptr : messages.back().at("id")},
+            {"has_more", false}
+        };
+        res->ok(result);
+        return res;
+    };
+
+    this->post_chat_completion_update = [this](const server_http_req & req) {
+        auto res = create_response();
+        if (server_chat_completions_store::instance().max_entries() <= 0) {
+            res->error(format_error_response("Chat completions store is disabled", ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+
+        const std::string completion_id = req.get_param("completion_id");
+        json body;
+        try {
+            body = json::parse(req.body);
+        } catch (const std::exception &) {
+            res->error(format_error_response("Invalid JSON", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        if (!body.contains("metadata")) {
+            res->error(format_error_response("'metadata' is required", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        auto updated = server_chat_completions_store::instance().update_metadata(completion_id, body.at("metadata"));
+        if (!updated) {
+            res->error(format_error_response("Chat completion not found: " + completion_id, ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+
+        res->ok(*updated);
+        return res;
+    };
+
+    this->delete_chat_completion = [this](const server_http_req & req) {
+        auto res = create_response();
+        if (server_chat_completions_store::instance().max_entries() <= 0) {
+            res->error(format_error_response("Chat completions store is disabled", ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+
+        const std::string completion_id = req.get_param("completion_id");
+        bool erased = server_chat_completions_store::instance().erase(completion_id);
+        if (!erased) {
+            res->error(format_error_response("Chat completion not found: " + completion_id, ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+
+        res->ok({
+            {"id", completion_id},
+            {"object", "chat.completion.deleted"},
+            {"deleted", true}
+        });
+        return res;
     };
 
     this->post_control = [this](const server_http_req & req) {
