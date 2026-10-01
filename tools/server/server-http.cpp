@@ -268,7 +268,7 @@ bool server_http_context::init_listener(const common_params & params) {
         return endpoints;
     }();
 
-    auto middleware_validate_api_key = [api_keys = params.api_keys](const httplib::Request & req, httplib::Response & res) {
+    auto middleware_validate_api_key = [this, api_keys = params.api_keys](const httplib::Request & req, httplib::Response & res) {
         // If API key is not set, skip validation
         if (api_keys.empty()) {
             return true;
@@ -300,13 +300,18 @@ bool server_http_context::init_listener(const common_params & params) {
         // API key is invalid or not provided
         res.status = 401;
         const std::string msg = "Invalid API Key";
-        // Anthropic routes answer with the official envelope, where a rejected key is authentication_error
-        res.set_content(
-            safe_json_to_str(is_anthropic_api_path(req.path) ?
-                format_anthropic_error("authentication_error", msg) :
-                json {{"error", format_error_response(msg, ERROR_TYPE_AUTHENTICATION, "", "invalid_api_key")}}),
-            "application/json; charset=utf-8"
-        );
+        // S5: use registered error handler
+        auto err_handler = find_error_handler(req.path);
+        if (err_handler) {
+            auto err_res = err_handler(msg, (int)ERROR_TYPE_AUTHENTICATION, "", "invalid_api_key");
+            res.status = err_res->status;
+            res.set_content(err_res->data, "application/json; charset=utf-8");
+        } else {
+            res.set_content(
+                safe_json_to_str(json {{"error", format_error_response(msg, ERROR_TYPE_AUTHENTICATION, "", "invalid_api_key")}}),
+                "application/json; charset=utf-8"
+            );
+        }
 
         SRV_WRN("%s", "unauthorized: Invalid API Key\n");
 
@@ -320,12 +325,14 @@ bool server_http_context::init_listener(const common_params & params) {
             }
             // no endpoints are allowed to be accessed when the server is not ready
             // this is to prevent any data races or inconsistent states
-            const json error_data = format_error_response("Loading model", ERROR_TYPE_UNAVAILABLE);
-            if (is_anthropic_api_path(req.path)) {
-                // local capacity error maps onto the official overloaded_error (529)
-                res.status = anthropic_error_status_from_body(error_data);
-                res.set_content(safe_json_to_str(format_anthropic_error_response(error_data)), "application/json; charset=utf-8");
+            // S5: use registered error handler
+            auto err_handler = find_error_handler(req.path);
+            if (err_handler) {
+                auto err_res = err_handler("Loading model", (int)ERROR_TYPE_UNAVAILABLE, "", "");
+                res.status = err_res->status;
+                res.set_content(err_res->data, "application/json; charset=utf-8");
             } else {
+                const json error_data = format_error_response("Loading model", ERROR_TYPE_UNAVAILABLE);
                 res.status = 503;
                 res.set_content(safe_json_to_str(json {{"error", error_data}}), "application/json; charset=utf-8");
             }
@@ -334,8 +341,28 @@ bool server_http_context::init_listener(const common_params & params) {
         return true;
     };
 
+    // S5: register error handlers for each API surface
+    // Anthropic Messages: /v1/messages uses official envelope (503 capacity -> 529)
+    error_handlers["/v1/messages"] = [](const std::string & message, int error, const std::string & param, const std::string & code) {
+        auto res = std::make_unique<server_http_res>();
+        json error_data = format_error_response(message, (error_type)error, param, code);
+        res->status = anthropic_error_status_from_body(error_data);
+        res->data = safe_json_to_str(format_anthropic_error_response(error_data));
+        return res;
+    };
+    // OpenAI Chat/Completions/Responses: standard error format
+    error_handlers["/v1/chat"] = [](const std::string & message, int error, const std::string & param, const std::string & code) {
+        auto res = std::make_unique<server_http_res>();
+        json error_data = format_error_response(message, (error_type)error, param, code);
+        res->status = error_status_from_body(error_data);
+        res->data = safe_json_to_str(json{{"error", error_data}});
+        return res;
+    };
+    error_handlers["/v1/completions"] = error_handlers["/v1/chat"];
+    error_handlers["/v1/responses"] = error_handlers["/v1/chat"];
+
     // register server middlewares
-    srv->set_pre_routing_handler([&params, middleware_validate_api_key, middleware_server_state](const httplib::Request & req, httplib::Response & res) {
+    srv->set_pre_routing_handler([&params, middleware_validate_api_key, middleware_server_state, this](const httplib::Request & req, httplib::Response & res) {
         if (params.cors_credentials && params.cors_origins == "*") {
             // special case: echo back the Origin header to allow any origin to access the server with credentials
             res.set_header("Access-Control-Allow-Origin", req.get_header_value("Origin"));
@@ -652,6 +679,17 @@ static std::string build_query_string(const httplib::Request & req) {
 // using unique_ptr for request to allow safe capturing in lambdas
 using server_http_req_ptr = std::unique_ptr<server_http_req>;
 
+// S5: find error handler for a path (prefix match)
+server_http_context::error_handler_t server_http_context::find_error_handler(const std::string & path) const {
+    // Check each registered error handler's path prefix
+    for (const auto & [route_path, handler] : error_handlers) {
+        if (path.find(route_path) == 0) {
+            return handler;
+        }
+    }
+    return nullptr;
+}
+
 static void process_handler_response(server_http_req_ptr && request, server_http_res_ptr & response, httplib::Response & res) {
     if (response->is_stream()) {
         res.status = response->status;
@@ -715,7 +753,7 @@ void server_http_context::get(const std::string & path, const server_http_contex
 
 void server_http_context::post(const std::string & path, const server_http_context::handler_t & handler) const {
     handlers.emplace(path, handler);
-    auto callback = [handler](const httplib::Request & req, httplib::Response & res) {
+    auto callback = [handler, path](const httplib::Request & req, httplib::Response & res) {
         std::string body = req.body;
         std::map<std::string, uploaded_file> files;
 

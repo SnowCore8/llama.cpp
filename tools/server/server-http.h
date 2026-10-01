@@ -74,6 +74,13 @@ struct server_http_context {
     using handler_t = std::function<server_http_res_ptr(const server_http_req & req)>;
     mutable std::unordered_map<std::string, handler_t> handlers;
 
+    // S5: error formatters per route pattern (internal use)
+    using error_handler_t = std::function<server_http_res_ptr(const std::string & message, int error, const std::string & param, const std::string & code)>;
+    mutable std::unordered_map<std::string, error_handler_t> error_handlers;
+
+    // S5: find error handler for a path (returns nullptr if not found)
+    error_handler_t find_error_handler(const std::string & path) const;
+
     std::string path_prefix;
     int port    = 8080;
     bool is_ssl = false;

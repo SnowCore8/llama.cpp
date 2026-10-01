@@ -86,10 +86,6 @@ int error_status_from_body(const json & error_data, int fallback) {
     return fallback;
 }
 
-bool is_anthropic_api_path(const std::string & path) {
-    return path.find("/v1/messages") == 0;
-}
-
 void server_openai_apply_prompt_cache_semantics(json & body) {
     // OpenAI prompt cache semantics: prompt_cache_options.ttl -> internal cache TTL.
     // The official API supports prompt_cache_options.ttl for gpt-5.6+ models.

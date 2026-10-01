@@ -106,9 +106,6 @@ json format_anthropic_error_response(const json & local_error_body);
 // HTTP status for the Anthropic envelope of a local error body; local 503 (capacity) -> 529
 int anthropic_error_status_from_body(const json & local_error_body);
 
-// true for the Anthropic API routes (/v1/messages and its sub-paths), which answer with the envelope above
-bool is_anthropic_api_path(const std::string & path);
-
 // official OpenAI error body for an unknown model name (HTTP 404, code "model_not_found")
 json format_oai_model_not_found(const std::string & model_name);
 
