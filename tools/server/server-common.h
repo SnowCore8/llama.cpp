@@ -362,7 +362,6 @@ void server_openai_apply_prompt_cache_semantics(json & body);
 // True for OpenAI `web_search` / `web_search_preview` tool types.
 // Implemented in server-web-search.cpp (compat wrappers).
 bool server_is_local_web_search_tool_type(const std::string & type);
-void server_openai_apply_web_search_semantics(json & body);
 
 // Completions nonempty suffix → FIM (vocab tokens when available, else soft FIM prompt).
 json server_openai_completions_apply_suffix(

@@ -596,14 +596,8 @@ void fill_surface_params(
         }
     }
 
-    // Responses-specific fields for store
+    // Responses-specific fields
     if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
-        if (data.contains("__oai_resp_input") && !data.at("__oai_resp_input").is_null()) {
-            params.oaicompat_resp_input = data.at("__oai_resp_input");
-        }
-        if (data.contains("__oai_resp_instructions") && !data.at("__oai_resp_instructions").is_null()) {
-            params.oaicompat_resp_instructions = data.at("__oai_resp_instructions");
-        }
         params.oaicompat_resp_request = data;
     }
 }

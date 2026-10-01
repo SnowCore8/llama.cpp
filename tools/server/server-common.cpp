@@ -300,28 +300,6 @@ void server_openai_validate_reasoning_object(const json & body) {
     }
 }
 
-void server_openai_apply_web_search_semantics(json & body) {
-    // Local web_search tool: strip hosted web_search tools, inject system prompt,
-    // emit url_citation annotations. The actual search is done by server-web-search.cpp.
-    // This function marks the body for web search processing if web_search_options or
-    // a web_search tool is present.
-    if (body.contains("web_search_options") && !body.at("web_search_options").is_null()) {
-        // Mark for local web search processing.
-        body["__oai_web_search_enabled"] = true;
-    }
-    // Check for web_search tool in tools array.
-    if (body.contains("tools") && body.at("tools").is_array()) {
-        for (const auto & tool : body.at("tools")) {
-            if (tool.is_object() && tool.contains("type") &&
-                    tool.at("type").is_string() &&
-                    tool.at("type").get<std::string>() == "web_search") {
-                body["__oai_web_search_enabled"] = true;
-                break;
-            }
-        }
-    }
-}
-
 bool server_openai_is_reasoning_effort(const std::string & effort) {
     static const std::unordered_set<std::string> valid_efforts = {
         "none", "minimal", "low", "medium", "high", "xhigh", "max"

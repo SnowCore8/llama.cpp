@@ -469,7 +469,7 @@ json server_chat_convert_responses_to_chatcmpl(const json & response_body) {
 
             const std::string type = json_value(resp_tool, "type", std::string());
             if (server_is_local_web_search_tool_type(type)) {
-                // Handled by server_openai_apply_web_search_semantics (prepare_request).
+                // Handled by server_web_search_apply (prepare_request).
                 continue;
             }
             if (type == "custom") {
