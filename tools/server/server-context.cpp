@@ -4937,11 +4937,11 @@ void server_routes::init_routes() {
         auto res = create_response();
         std::vector<raw_buffer> files;
         json body = json::parse(req.body);
-        json body_parsed = oaicompat_chat_params_parse(
+        // S2: use surface-specific parser
+        json body_parsed = parse_chat_completions_request(
             body,
             meta->chat_params,
-            files,
-            /*openai_defaults*/ false);
+            files);
         return handle_completions_impl(
             req,
             SERVER_TASK_TYPE_COMPLETION,
@@ -5163,15 +5163,11 @@ void server_routes::init_routes() {
         if (body.contains("instructions")) {
             body["__oai_resp_instructions"] = body.at("instructions");
         }
-        // Then convert to chat completions format
-        body = server_chat_convert_responses_to_chatcmpl(body);
-        SRV_DBG("%s\n", "Request converted: OpenAI Responses -> OpenAI Chat Completions");
-        SRV_DBG("converted request: %s\n", body.dump().c_str());
-        json body_parsed = oaicompat_chat_params_parse(
+        // S2: use surface-specific parser (includes conversion)
+        json body_parsed = parse_responses_request(
             body,
             meta->chat_params,
-            files,
-            /*openai_defaults*/ false);
+            files);
         return handle_completions_impl(
             req,
             SERVER_TASK_TYPE_COMPLETION,
@@ -5448,11 +5444,11 @@ void server_routes::init_routes() {
             files);
         SRV_DBG("%s\n", "Request converted: OpenAI Transcriptions -> OpenAI Chat Completions");
         SRV_DBG("converted request: %s\n", body.dump().c_str());
-        json body_parsed = oaicompat_chat_params_parse(
+        // S2: use Chat Completions parser (transcription already converted)
+        json body_parsed = parse_chat_completions_request(
             body,
             meta->chat_params,
-            files,
-            /*openai_defaults*/ false);
+            files);
         return handle_completions_impl(
             req,
             SERVER_TASK_TYPE_COMPLETION,
@@ -5464,14 +5460,12 @@ void server_routes::init_routes() {
     this->post_anthropic_messages = [this](const server_http_req & req) {
         auto res = create_response();
         std::vector<raw_buffer> files;
-        json body = server_chat_convert_anthropic_to_oai(json::parse(req.body));
-        SRV_DBG("%s\n", "Request converted: Anthropic -> OpenAI Chat Completions");
-        SRV_DBG("converted request: %s\n", body.dump().c_str());
-        json body_parsed = oaicompat_chat_params_parse(
+        json body = json::parse(req.body);
+        // S2: use surface-specific parser (includes conversion)
+        json body_parsed = parse_anthropic_request(
             body,
             meta->chat_params,
-            files,
-            /*openai_defaults*/ false);
+            files);
         return handle_completions_impl(
             req,
             SERVER_TASK_TYPE_COMPLETION,
@@ -5489,11 +5483,11 @@ void server_routes::init_routes() {
         auto res = create_response();
         std::vector<raw_buffer> files; // dummy, unused
         json body = json::parse(req.body);
-        json data = oaicompat_chat_params_parse(
+        // S2: use Chat Completions parser
+        json data = parse_chat_completions_request(
             body,
             meta->chat_params,
-            files,
-            /*openai_defaults*/ false);
+            files);
         res->ok({{ "prompt", std::move(data.at("prompt")) }});
         return res;
     };
@@ -5973,30 +5967,28 @@ std::unique_ptr<server_res_generator> server_routes::handle_count_tokens(const s
     json body = json::parse(req.body);
     bool is_oai = false;
 
+    // S2: use surface-specific parser based on res_type
+    json body_parsed;
     switch (res_type) {
         case TASK_RESPONSE_TYPE_OAI_CHAT:
             {
                 is_oai = true;
+                body_parsed = parse_chat_completions_request(body, meta->chat_params, files);
             } break;
         case TASK_RESPONSE_TYPE_OAI_RESP:
             {
                 is_oai = true;
-                body = server_chat_convert_responses_to_chatcmpl(body);
+                body_parsed = parse_responses_request(body, meta->chat_params, files);
             } break;
         case TASK_RESPONSE_TYPE_ANTHROPIC:
             {
-                body = server_chat_convert_anthropic_to_oai(body);
+                body_parsed = parse_anthropic_request(body, meta->chat_params, files);
             } break;
         default:
             res->error(format_error_response("invalid res_type", ERROR_TYPE_INVALID_REQUEST));
             return res;
     }
 
-    json body_parsed = oaicompat_chat_params_parse(
-            body,
-            meta->chat_params,
-            files,
-            /*openai_defaults*/ false);
     json prompt = body_parsed.at("prompt");
     // SRV_DBG("prompt = %s\n", prompt.dump().c_str());
 
