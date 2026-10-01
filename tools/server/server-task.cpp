@@ -928,9 +928,9 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
         res["incomplete_details"] = json { {"reason", incomplete_reason} };
     }
     server_responses_remember(res, oaicompat_resp_input, oaicompat_resp_instructions,
-                              json_value(req, "__oai_conv_input", json(nullptr)),
+                              oaicompat_resp_conv_input,
                               json_value(req, "model", std::string()),
-                              json_value(req, "__oai_ws_local", std::string()));
+                              oaicompat_resp_ws_local);
     server_responses_reset_seq(oai_resp_id);
 
     return res;
@@ -1162,9 +1162,9 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
         response_obj["incomplete_details"] = json { {"reason", incomplete_reason} };
     }
     server_responses_remember(response_obj, oaicompat_resp_input, oaicompat_resp_instructions,
-                              json_value(req, "__oai_conv_input", json(nullptr)),
+                              oaicompat_resp_conv_input,
                               json_value(req, "model", std::string()),
-                              json_value(req, "__oai_ws_local", std::string()));
+                              oaicompat_resp_ws_local);
 
     push_evt(resp_incomplete ? "response.incomplete" : "response.completed", json {
         {"response", response_obj},

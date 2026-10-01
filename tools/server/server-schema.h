@@ -110,4 +110,13 @@ void fill_surface_params(
                     const std::string & completion_id,
                     const std::string & model_name);
 
+// S4: Fill surface-specific fields from surface payload (eliminates __oai_* keys)
+void fill_surface_params(
+                    task_params & params,
+                    task_response_type res_type,
+                    const json & data,
+                    const json & surface,
+                    const std::string & completion_id,
+                    const std::string & model_name);
+
 } // namespace server_schema

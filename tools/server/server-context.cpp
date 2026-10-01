@@ -4332,7 +4332,12 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             sse_ping_interval = task.params.sse_ping_interval;
 
             // Fill surface-specific fields (S1: extracted to fill_surface_params)
-            server_schema::fill_surface_params(task.params, res_type, data, completion_id, meta->model_name);
+            // S4: Use surface-aware version if _surface field is present
+            if (data.contains("_surface") && data.at("_surface").is_object()) {
+                server_schema::fill_surface_params(task.params, res_type, data, data.at("_surface"), completion_id, meta->model_name);
+            } else {
+                server_schema::fill_surface_params(task.params, res_type, data, completion_id, meta->model_name);
+            }
 
             // prepare child tasks
             if (task.params.n_cmpl > 1) {
@@ -5156,18 +5161,20 @@ void server_routes::init_routes() {
         std::vector<raw_buffer> files;
         // First prepare the request (expand previous_response_id, etc.)
         json body = server_responses_prepare_request(json::parse(req.body), ctx_server.vocab, meta->slot_n_ctx);
-        // Save the expanded input before conversion
-        if (body.contains("input")) {
-            body["__oai_resp_input"] = body.at("input");
-        }
-        if (body.contains("instructions")) {
-            body["__oai_resp_instructions"] = body.at("instructions");
-        }
+
+        // S4: Use parse_responses_to_surface_request to capture surface data
+        // This eliminates __oai_resp_input/__oai_resp_instructions private keys
+        server_surface_request surface_req = parse_responses_to_surface_request(body, meta->chat_params);
+
         // S2: use surface-specific parser (includes conversion)
         json body_parsed = parse_responses_request(
             body,
             meta->chat_params,
             files);
+
+        // S4: Attach surface payload to parsed body for fill_surface_params
+        body_parsed["_surface"] = surface_req.surface;
+
         return handle_completions_impl(
             req,
             SERVER_TASK_TYPE_COMPLETION,

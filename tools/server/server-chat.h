@@ -5,10 +5,22 @@
 #include "chat.h"
 #include "server-common.h"
 #include "server-http.h"
+#include "server-task.h"
 
 #include "json.h"
 
 #include <unordered_set>
+
+// S3: Parse Anthropic request directly to server_surface_request
+// Eliminates the chatcmpl intermediate format; surface-private data goes into result.surface
+server_surface_request parse_anthropic_to_surface_request(
+    const json & body,
+    const server_chat_params & opt);
+
+// S3: Parse Responses request directly to server_surface_request
+server_surface_request parse_responses_to_surface_request(
+    const json & body,
+    const server_chat_params & opt);
 
 // Convert OpenAI Responses API format to OpenAI Chat Completions API format
 json server_chat_convert_responses_to_chatcmpl(const json & body);

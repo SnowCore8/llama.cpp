@@ -95,6 +95,11 @@ struct task_params {
     json        oaicompat_resp_request      = nullptr; // original/prepared Responses request body
     bool        oaicompat_steer_hold        = false; // WebSocket steering: request has tools, steering waits for the terminal
 
+    // S4: Responses surface-private fields (moved from __oai_* keys)
+    std::string oaicompat_resp_prev_id;    // previous_response_id for response echo
+    json        oaicompat_resp_conv_input   = nullptr; // conversation input for Response Store
+    std::string oaicompat_resp_ws_local;   // WebSocket local token for connection cache
+
     // Anthropic Messages: thinking.display == "omitted" hides thinking text but keeps the
     // thinking block, its (empty) signature and the signature_delta
     bool anthropic_thinking_display_omitted = false;
@@ -147,6 +152,15 @@ struct task_params {
     json to_json(bool only_metrics = false) const;
 };
 
+// S3: server_surface_request - the single entry point from surface to kernel
+// Kernel only accepts this structure; surface-specific data goes into `surface` field
+struct server_surface_request {
+    json                    prompt;   // template output (with injected tool grammar)
+    std::vector<raw_buffer> files;    // multimodal attachments
+    task_params             params;   // engine fields: sampling, cache key, stream, id_slot, n_cmpl, etc.
+    json                    surface;  // surface-private payload (for serialization/streaming), kernel doesn't read
+};
+
 // struct for tracking the state of a task (e.g., for streaming)
 struct task_result_state {
     // tracking diffs for partial tool calls
@@ -185,6 +199,11 @@ struct task_result_state {
     json oaicompat_resp_input        = nullptr;
     json oaicompat_resp_instructions = nullptr;
     json oaicompat_resp_request      = nullptr;
+
+    // S4: Responses surface-private fields (moved from __oai_* keys)
+    std::string oaicompat_resp_prev_id;
+    json        oaicompat_resp_conv_input   = nullptr;
+    std::string oaicompat_resp_ws_local;
 
     task_result_state(const common_chat_parser_params & chat_parser_params, const std::string & resp_id = "");
 
@@ -324,6 +343,10 @@ struct server_task {
         st.oaicompat_resp_instructions = params.oaicompat_resp_instructions;
         st.oaicompat_resp_request      = params.oaicompat_resp_request;
         st.oai_custom_tool_names       = params.oai_custom_tool_names;
+        // S4: Copy surface-private fields
+        st.oaicompat_resp_prev_id    = params.oaicompat_resp_prev_id;
+        st.oaicompat_resp_conv_input = params.oaicompat_resp_conv_input;
+        st.oaicompat_resp_ws_local   = params.oaicompat_resp_ws_local;
         return st;
     }
 
@@ -446,6 +469,11 @@ struct server_task_result_cmpl_final : server_task_result {
     json oaicompat_resp_instructions = nullptr;
     json oaicompat_resp_request      = nullptr;
 
+    // S4: Responses surface-private fields (moved from __oai_* keys)
+    std::string oaicompat_resp_prev_id;
+    json        oaicompat_resp_conv_input   = nullptr;
+    std::string oaicompat_resp_ws_local;
+
     virtual bool is_stop() override {
         return true; // in stream mode, final responses are considered stop
     }
@@ -462,6 +490,10 @@ struct server_task_result_cmpl_final : server_task_result {
         oaicompat_resp_input        = state.oaicompat_resp_input;
         oaicompat_resp_instructions = state.oaicompat_resp_instructions;
         oaicompat_resp_request      = state.oaicompat_resp_request;
+        // S4: Copy surface-private fields
+        oaicompat_resp_prev_id    = state.oaicompat_resp_prev_id;
+        oaicompat_resp_conv_input = state.oaicompat_resp_conv_input;
+        oaicompat_resp_ws_local   = state.oaicompat_resp_ws_local;
     }
 
     json to_json_non_oaicompat();
