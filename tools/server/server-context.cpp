@@ -5291,6 +5291,39 @@ void server_routes::init_routes() {
         return res;
     };
 
+    this->get_model = [this](const server_http_req & req) {
+        auto res = create_response(true);
+        const std::string model_id = req.get_param("model");
+
+        // Get all models
+        json all_models;
+        if (queue_tasks.is_sleeping()) {
+            std::unique_lock<std::mutex> lock(mutex_cache);
+            all_models = cached_models;
+        } else {
+            all_models = get_res_models(*meta);
+        }
+
+        // Search for the specific model
+        if (all_models.contains("data") && all_models.at("data").is_array()) {
+            for (const auto & m : all_models.at("data")) {
+                if (m.contains("id") && m.at("id").is_string()) {
+                    const std::string id = m.at("id").get<std::string>();
+                    if (id == model_id) {
+                        res->ok(m);
+                        return res;
+                    }
+                }
+            }
+        }
+
+        // Model not found
+        res->error(format_error_response(
+            "The model '" + model_id + "' does not exist.",
+            ERROR_TYPE_NOT_FOUND));
+        return res;
+    };
+
     this->post_tokenize = [this](const server_http_req & req) {
         auto res = create_response();
         const json body = json::parse(req.body);
