@@ -582,6 +582,52 @@ void server_openai_validate_chat_create_fields(const json & body) {
         }
     }
 
+    // logprobs: if true, top_logprobs 0..20.
+    if (body.contains("logprobs") && !body.at("logprobs").is_null() &&
+            body.at("logprobs").is_boolean() && body.at("logprobs").get<bool>()) {
+        if (body.contains("top_logprobs")) {
+            if (!body.at("top_logprobs").is_number_integer()) {
+                throw std::invalid_argument("'top_logprobs' must be an integer");
+            }
+            const int top_logprobs = body.at("top_logprobs").get<int>();
+            if (top_logprobs < 0 || top_logprobs > 20) {
+                throw std::invalid_argument("'top_logprobs' must be between 0 and 20");
+            }
+        }
+    }
+    // top_logprobs without logprobs=true should also be validated
+    if (body.contains("top_logprobs") && !body.at("top_logprobs").is_null()) {
+        if (!body.at("top_logprobs").is_number_integer()) {
+            throw std::invalid_argument("'top_logprobs' must be an integer");
+        }
+        const int top_logprobs = body.at("top_logprobs").get<int>();
+        if (top_logprobs < 0 || top_logprobs > 20) {
+            throw std::invalid_argument("'top_logprobs' must be between 0 and 20");
+        }
+        if (!body.contains("logprobs") || body.at("logprobs").is_null() ||
+                !body.at("logprobs").is_boolean() || !body.at("logprobs").get<bool>()) {
+            throw std::invalid_argument("'top_logprobs' requires 'logprobs' to be true");
+        }
+    }
+
+    // stop: string or array of up to 4 strings
+    if (body.contains("stop") && !body.at("stop").is_null()) {
+        if (body.at("stop").is_string()) {
+            // Single stop string is fine.
+        } else if (body.at("stop").is_array()) {
+            if (body.at("stop").size() > 4) {
+                throw std::invalid_argument("'stop' array must have at most 4 strings");
+            }
+            for (const auto & s : body.at("stop")) {
+                if (!s.is_string()) {
+                    throw std::invalid_argument("'stop' array items must be strings");
+                }
+            }
+        } else {
+            throw std::invalid_argument("'stop' must be a string or array of up to 4 strings");
+        }
+    }
+
     // metadata: validate via helper
     if (body.contains("metadata") && !body.at("metadata").is_null()) {
         server_openai_validate_metadata(body.at("metadata"));
