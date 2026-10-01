@@ -215,8 +215,7 @@ private:
     void update_meta(const std::string & name, const server_model_meta & meta);
 
     // unload least recently used models if the limit is reached
-    // name is the model about to be loaded: its --device pool is the one that must free a slot
-    void unload_lru(const std::string & name);
+    void unload_lru();
 
     // not thread-safe, caller must hold mutex
     void add_model(server_model_meta && meta);

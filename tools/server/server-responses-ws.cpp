@@ -159,22 +159,19 @@ static void ws_lane_enqueue(ws_session & sess, const std::string & name, std::sh
 // Builds the official nested error event. Empty code/param become null, and an
 // empty stream_id omits the field, which marks connection-level errors.
 static json ws_make_error(
-        int status,
+        int /*status*/,
         const std::string & type,
         const std::string & code,
         const std::string & message,
         const std::string & param,
         const std::string & stream_id) {
-    json error_obj = {
-        {"type",    type.empty() ? std::string("server_error") : type},
-        {"code",    code.empty() ? json(nullptr) : json(code)},
+    // Official ResponseErrorEvent: flat structure per OpenAPI spec
+    // {type: "error", code, message, param, sequence_number?, stream_id?}
+    json ev = {
+        {"type",    "error"},
+        {"code",    code.empty() ? (type.empty() ? json("server_error") : json(type)) : json(code)},
         {"message", message},
         {"param",   param.empty() ? json(nullptr) : json(param)},
-    };
-    json ev = {
-        {"type",   "error"},
-        {"status", status},
-        {"error",  error_obj},
     };
     if (!stream_id.empty()) {
         ev["stream_id"] = stream_id;

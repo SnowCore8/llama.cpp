@@ -137,7 +137,7 @@ Compaction 自动折叠历史 + 展开 `local.` back into real messages for mode
 
 ## WebSocket
 
-- 错误信封: 官方嵌套 `{type:"error", status, error:{type, code, message, param}, stream_id?, sequence_number?}`
+- 错误信封: 官方平铺 `{type:"error", code, message, param, stream_id?, sequence_number?}`
 - `stream_id`: 1-256 字符 `[A-Za-z0-9_.-]`；命名 lane 全部事件回显 `stream_id`；默认 lane 不带
 - 限额: 16 在飞响应（超出排队）/ 32 命名 lane（第 33 报 `websocket_stream_limit_reached`）/ 60 分钟连接寿命
 - 连接级错误不带 `stream_id`；自产事件（`steer.*`/`inject.*`）序号用连接级计数器

@@ -146,9 +146,13 @@ def _drain_one(ws: Any, deadline: float, max_frames: int = _MAX_FRAMES):
 
 
 def _err_of(ev: Any) -> dict[str, Any]:
-    """The error object of an error frame, {} otherwise."""
-    if isinstance(ev, dict) and isinstance(ev.get("error"), dict):
-        return ev["error"]
+    """The error object of an error frame, {} otherwise.
+    
+    Official ResponseErrorEvent is flat: {type: "error", code, message, param, ...}
+    """
+    if isinstance(ev, dict) and ev.get("type") == "error":
+        # Flat structure: return the event itself as the error object
+        return ev
     return {}
 
 
@@ -297,17 +301,15 @@ def run_ws_checks(
                     ws.send(json.dumps(_create(model, extra, stream_id=sid)))
                     frames, outcome, ev = _drain_one(ws, case_deadline, max_frames=64)
                     err = _err_of(ev)
-                    st = ev.get("status") if isinstance(ev, dict) else None
                     echo = isinstance(ev, dict) and "stream_id" in ev
                     ok = (
                         outcome == "error"
-                        and st == 400
                         and err.get("code") == "invalid_stream_id"
                         and err.get("param") == "stream_id"
                         and not echo
                     )
                     if outcome == "error":
-                        detail = (f"{label}: status={st} code={err.get('code')!r} "
+                        detail = (f"{label}: code={err.get('code')!r} "
                                   f"param={err.get('param')!r} echo={echo}")
                     else:
                         detail = f"{label}: {outcome} (want error frame)"
@@ -322,51 +324,45 @@ def run_ws_checks(
             ws.send(json.dumps({"type": "bogus"}))
             frames, outcome, ev = _drain_one(ws, deadline, max_frames=32)
             err = _err_of(ev)
-            st = ev.get("status") if isinstance(ev, dict) else None
             ok = (
                 outcome == "error"
-                and st == 400
-                and isinstance(err.get("type"), str) and bool(err.get("type"))
+                and isinstance(err.get("code"), str) and bool(err.get("code"))
                 and err.get("code") == "unsupported_event_type"
                 and isinstance(err.get("message"), str) and bool(err.get("message"))
                 and err.get("param") == "type"
             )
             add("error shape: unknown event type", ok,
-                f"outcome={outcome} status={st} error={json.dumps(err)[:200]}")
+                f"outcome={outcome} error={json.dumps(err)[:200]}")
 
     def invalid_json(deadline: float) -> None:
         with _connect(ws_connect, client) as ws:
             ws.send("not-a-json")
             frames, outcome, ev = _drain_one(ws, deadline, max_frames=32)
             err = _err_of(ev)
-            st = ev.get("status") if isinstance(ev, dict) else None
             ok = (
                 outcome == "error"
-                and st == 400
-                and isinstance(err.get("type"), str) and bool(err.get("type"))
+                and isinstance(err.get("code"), str) and bool(err.get("code"))
                 and err.get("code") == "invalid_json"
                 and isinstance(err.get("message"), str) and bool(err.get("message"))
                 and "param" in err
             )
             add("error shape: invalid json", ok,
-                f"outcome={outcome} status={st} error={json.dumps(err)[:200]}")
+                f"outcome={outcome} error={json.dumps(err)[:200]}")
 
     def http_status_error_type(deadline: float) -> None:
-        # error.type must be one of the five official values; a transport-level 400
-        # is reported as invalid_request_error (status -> type mapping)
+        # error.code must be one of the five official values; a transport-level 400
+        # is reported as invalid_request_error (status -> code mapping)
         with _connect(ws_connect, client) as ws:
             ws.send(json.dumps(_create(model, extra, max_output_tokens="abc")))
             frames, outcome, ev = _drain_one(ws, deadline, max_frames=32)
             err = _err_of(ev)
-            st = ev.get("status") if isinstance(ev, dict) else None
             ok = (
                 outcome == "error"
-                and st == 400
-                and err.get("type") == "invalid_request_error"
+                and err.get("code") == "invalid_request_error"
                 and isinstance(err.get("message"), str) and bool(err.get("message"))
             )
             add("error shape: HTTP 400 -> invalid_request_error", ok,
-                f"outcome={outcome} status={st} error={json.dumps(err)[:200]}")
+                f"outcome={outcome} error={json.dumps(err)[:200]}")
 
     def unknown_model(deadline: float) -> None:
         # an unknown model arrives as a request-level error frame; the model check
@@ -403,17 +399,15 @@ def run_ws_checks(
             ws.send(json.dumps(_create(model, extra, stream_id=sid, previous_response_id="resp_missing")))
             frames, outcome, ev = _drain_one(ws, deadline, max_frames=64)
             err = _err_of(ev)
-            st = ev.get("status") if isinstance(ev, dict) else None
             st_sid = ev.get("stream_id") if isinstance(ev, dict) else None
             ok = (
                 outcome == "error"
-                and st == 400
                 and err.get("code") == "previous_response_not_found"
                 and err.get("param") == "previous_response_id"
                 and st_sid == sid
             )
             add("previous_response_not_found", ok,
-                f"outcome={outcome} status={st} stream_id={st_sid!r} error={json.dumps(err)[:180]}")
+                f"outcome={outcome} stream_id={st_sid!r} error={json.dumps(err)[:180]}")
 
     def lane_fifo(deadline: float) -> None:
         sid = "fifo"
@@ -510,16 +504,14 @@ def run_ws_checks(
                         break
             err = _err_of(limit_ev)
             lsid = limit_ev.get("stream_id") if isinstance(limit_ev, dict) else None
-            lst = limit_ev.get("status") if isinstance(limit_ev, dict) else None
             accepted = len(created_lanes & set(ids[:32]))
             ok = (
                 limit_ev is not None
-                and lst == 400
                 and err.get("param") == "stream_id"
                 and early_ev is None
             )
             detail = (
-                f"limit_stream_id={lsid!r} status={lst} code={err.get('code')!r} "
+                f"limit_stream_id={lsid!r} code={err.get('code')!r} "
                 f"param={err.get('param')!r} created_seen={accepted}/32 frames={n}"
             )
             if early_ev is not None:
@@ -903,12 +895,11 @@ def run_ws_checks(
                 return
             e2 = _err_of(fail2)
             steer2 = fail2.get("steer") if isinstance(fail2.get("steer"), dict) else {}
-            carrier_ok = isinstance(err2, dict) and err2.get("status") == 400
+            carrier_ok = isinstance(err2, dict) and err2.get("type") == "error"
             prev_ok = steer2.get("previous_response_id") == rid
-            ok = (e2.get("type") == "invalid_request_error" and e2.get("code") == "successor_creation_failed"
+            ok = (e2.get("code") == "successor_creation_failed"
                   and prev_ok and carrier_ok)
-            carc = err2.get("status") if isinstance(err2, dict) else None
-            add(name, ok, f"carrier_status={carc!r} code={e2.get('code')!r} type={e2.get('type')!r} prev_ok={prev_ok}")
+            add(name, ok, f"code={e2.get('code')!r} prev_ok={prev_ok}")
 
     def steer_pending(deadline: float) -> None:
         name = "steer.pending: waiting for required input"
@@ -1136,8 +1127,7 @@ def run_ws_checks(
             eobj = _err_of(err)
             shape_ok = (
                 err is not None
-                and err.get("status") == 400
-                and isinstance(eobj.get("type"), str) and bool(eobj.get("type"))
+                and isinstance(eobj.get("code"), str) and bool(eobj.get("code"))
                 and isinstance(eobj.get("message"), str) and bool(eobj.get("message"))
             )
             closed = False
@@ -1229,7 +1219,6 @@ def run_ws_checks(
                 a_started = any(f.get("type") == "response.created" for f in fa)
             a_ok = (
                 aerr is not None
-                and aerr.get("status") == 400
                 and _err_of(aerr).get("code") == "previous_response_not_found"
                 and not a_started
             )
@@ -1246,14 +1235,12 @@ def run_ws_checks(
                       "max_output_tokens": 16, "__oai_ws_local": "x", **extra}
             code_c, data_c = client.post_json("/v1/responses", body_c)
             ec = _err_of(data_c)
-            c_ok = (code_c == 400 and ec.get("type") == "invalid_request_error"
-                    and ec.get("code") == "previous_response_not_found")
-            a_st = aerr.get("status") if isinstance(aerr, dict) else None
+            c_ok = (code_c == 400 and ec.get("code") == "previous_response_not_found")
             msg_b = str(eb.get("message"))[:40]
             msg_c = str(ec.get("message"))[:40]
-            detail = (f"other_ws: status={a_st} code={_err_of(aerr).get('code')!r} start={a_started}; "
-                      f"http: {code_b} code={eb.get('code')!r} type={eb.get('type')!r} msg={msg_b!r}; "
-                      f"forge: {code_c} code={ec.get('code')!r} type={ec.get('type')!r} msg={msg_c!r}")
+            detail = (f"other_ws: code={_err_of(aerr).get('code')!r} start={a_started}; "
+                      f"http: {code_b} code={eb.get('code')!r} msg={msg_b!r}; "
+                      f"forge: {code_c} code={ec.get('code')!r} msg={msg_c!r}")
             add(name, a_ok and b_ok and c_ok, detail)
 
     def store_false_cache_dropped_on_close(deadline: float) -> None:
@@ -1286,17 +1273,15 @@ def run_ws_checks(
             )
             err1 = next((f for f in f1 if f.get("type") == "error"), None)
             created1 = next((f for f in f1 if f.get("type") == "response.created"), None)
-        st1 = err1.get("status") if isinstance(err1, dict) else None
         code1 = _err_of(err1).get("code")
-        ws_ok = err1 is not None and st1 == 400 and code1 == "previous_response_not_found" and created1 is None
+        ws_ok = err1 is not None and code1 == "previous_response_not_found" and created1 is None
         # the HTTP surface stays consistent after the connection closed
         body = {"model": model, "input": "x", "previous_response_id": rid, "max_output_tokens": 16, **extra}
         code_h, data_h = client.post_json("/v1/responses", body)
         eh = _err_of(data_h)
-        http_ok = (code_h == 400 and eh.get("type") == "invalid_request_error"
-                   and eh.get("code") == "previous_response_not_found")
+        http_ok = (code_h == 400 and eh.get("code") == "previous_response_not_found")
         add(name, ws_ok and http_ok,
-            f"ws: status={st1!r} code={code1!r} started={created1 is not None}; "
+            f"ws: code={code1!r} started={created1 is not None}; "
             f"http: {code_h} code={eh.get('code')!r}")
 
     def store_true_continuation(deadline: float) -> None:
@@ -1413,11 +1398,10 @@ def run_ws_checks(
                     lambda o, _fs: o.get("type") == "error" or o.get("type") in _TERMINAL,
                 )
                 perr = next((f for f in pf if f.get("type") == "error"), None)
-                pst = perr.get("status") if isinstance(perr, dict) else None
-                if perr is not None and isinstance(pst, int) and 400 <= pst < 500:
+                if perr is not None and _err_of(perr).get("code"):
                     vehicle, vehicle_ev = label, bad
                     break
-                obs = "accepted" if any(f.get("type") in _TERMINAL for f in pf) else "no 4xx/terminal"
+                obs = "accepted" if any(f.get("type") in _TERMINAL for f in pf) else "no error/terminal"
                 probe_obs.append(f"{label}->{obs}")
         if vehicle is None:
             probes_s = "; ".join(probe_obs)
@@ -1454,14 +1438,13 @@ def run_ws_checks(
                 max_frames=2000,
             )
             ferr = next((f for f in fc if f.get("type") == "error"), None)
-            fst = ferr.get("status") if isinstance(ferr, dict) else None
             f_code = _err_of(ferr).get("code")
             c_ok = (ferr is not None and ferr.get("stream_id") == "fork"
-                    and isinstance(fst, int) and 400 <= fst < 500
+                    and isinstance(f_code, str) and bool(f_code)
                     and f_code != "previous_response_not_found")
             if not c_ok:
                 fsid = ferr.get("stream_id") if isinstance(ferr, dict) else None
-                add(name, False, f"fork: error={ferr is not None} status={fst!r} code={f_code!r} "
+                add(name, False, f"fork: error={ferr is not None} code={f_code!r} "
                                  f"stream_id={fsid!r} vehicle={vehicle}")
                 return
             # (d) the source lane must still resolve X
@@ -1494,14 +1477,13 @@ def run_ws_checks(
                 max_frames=2000,
             )
             eerr = next((f for f in fe if f.get("type") == "error"), None)
-            est = eerr.get("status") if isinstance(eerr, dict) else None
             e_code = _err_of(eerr).get("code")
-            e_ok = (eerr is not None and isinstance(est, int) and 400 <= est < 500
+            e_ok = (eerr is not None and isinstance(e_code, str) and bool(e_code)
                     and e_code != "previous_response_not_found")
             if not e_ok:
                 estarted = any(f.get("type") == "response.created" for f in fe)
                 add(name, False, f"X={x_id!r} X2={x2_id!r} same-lane fail: error={eerr is not None} "
-                                 f"status={est!r} code={e_code!r} started={estarted}")
+                                 f"code={e_code!r} started={estarted}")
                 return
             # (f) after the failed same-lane continuation X2 must be gone
             cont2 = _create(model, extra, store=False, max_output_tokens=16)
@@ -1514,13 +1496,12 @@ def run_ws_checks(
             )
             ferr2 = next((f for f in ff if f.get("type") == "error"), None)
             f_created = next((f for f in ff if f.get("type") == "response.created"), None)
-            fst2 = ferr2.get("status") if isinstance(ferr2, dict) else None
             f2_code = _err_of(ferr2).get("code")
-            f_ok = (ferr2 is not None and fst2 == 400 and f2_code == "previous_response_not_found"
+            f_ok = (ferr2 is not None and f2_code == "previous_response_not_found"
                     and f_created is None)
             ok = c_ok and d_ok and e_ok and f_ok
-            add(name, ok, f"vehicle={vehicle}; X={x_id!r} X2={x2_id!r} fork_err={fst!r} same_err={est!r} "
-                          f"after_evict: status={fst2!r} code={f2_code!r} created={f_created is not None}")
+            add(name, ok, f"vehicle={vehicle}; X={x_id!r} X2={x2_id!r} "
+                          f"after_evict: code={f2_code!r} created={f_created is not None}")
 
     def gen_false_warmup_shape(deadline: float) -> None:
         name = "generate=false warmup: created+completed, empty output, chainable (store=false)"
@@ -1624,11 +1605,10 @@ def run_ws_checks(
             ws.send(json.dumps(_create(model, extra, generate="yes")))
             frames, outcome, ev = _drain_one(ws, deadline, max_frames=32)
             err = _err_of(ev)
-            st = ev.get("status") if isinstance(ev, dict) else None
             msg = str(err.get("message"))
-            ok = (outcome == "error" and st == 400 and err.get("type") == "invalid_request_error"
+            ok = (outcome == "error" and err.get("code") == "invalid_request_error"
                   and "boolean" in msg)
-            add(name, ok, f"outcome={outcome} status={st} error={json.dumps(err)[:180]}")
+            add(name, ok, f"outcome={outcome} error={json.dumps(err)[:180]}")
 
     guarded("connect/create default lane", default_lane)
     guarded("stream_id echo (named lane)", named_lane_echo)

@@ -33,48 +33,127 @@
 #include <unistd.h>
 #endif
 
-json format_error_response(const std::string & message, const enum error_type type) {
+json format_error_response(const std::string & message, const enum error_type type, const std::string & param, const std::string & code) {
     std::string type_str;
-    int code = 500;
     switch (type) {
         case ERROR_TYPE_INVALID_REQUEST:
             type_str = "invalid_request_error";
-            code = 400;
             break;
         case ERROR_TYPE_AUTHENTICATION:
             type_str = "authentication_error";
-            code = 401;
             break;
         case ERROR_TYPE_NOT_FOUND:
             type_str = "not_found_error";
-            code = 404;
             break;
         case ERROR_TYPE_SERVER:
             type_str = "server_error";
-            code = 500;
             break;
         case ERROR_TYPE_PERMISSION:
             type_str = "permission_error";
-            code = 403;
             break;
         case ERROR_TYPE_NOT_SUPPORTED:
             type_str = "not_supported_error";
-            code = 501;
             break;
         case ERROR_TYPE_UNAVAILABLE:
             type_str = "unavailable_error";
-            code = 503;
             break;
         case ERROR_TYPE_EXCEED_CONTEXT_SIZE:
             type_str = "exceed_context_size_error";
-            code = 400;
             break;
     }
     return json {
-        {"code", code},
+        {"code", code.empty() ? json(nullptr) : json(code)},
         {"message", message},
+        {"param", param.empty() ? json(nullptr) : json(param)},
         {"type", type_str},
     };
+}
+
+int error_status_from_body(const json & error_data, int fallback) {
+    if (!error_data.contains("type")) {
+        return fallback;
+    }
+    std::string type = error_data.at("type").get<std::string>();
+    if (type == "invalid_request_error") return 400;
+    if (type == "authentication_error") return 401;
+    if (type == "not_found_error") return 404;
+    if (type == "permission_error") return 403;
+    if (type == "not_supported_error") return 501;
+    if (type == "unavailable_error") return 503;
+    if (type == "exceed_context_size_error") return 400;
+    if (type == "server_error") return 500;
+    return fallback;
+}
+
+bool is_anthropic_api_path(const std::string & path) {
+    return path.find("/v1/messages") == 0;
+}
+
+void server_openai_apply_prompt_cache_semantics(json & /*body*/) {
+    // TODO: implement OpenAI prompt cache semantics
+}
+
+void server_openai_validate_compact_service_tier(const json & /*body*/) {
+    // TODO: implement compact service tier validation
+}
+
+bool server_oai_prompt_cache_keys_compatible(const std::string & a, const std::string & b) {
+    return a == b;
+}
+
+json format_anthropic_error(const std::string & official_type, const std::string & message) {
+    return json {
+        {"type", "error"},
+        {"error", {
+            {"type", official_type},
+            {"message", message}
+        }},
+        {"request_id", nullptr}
+    };
+}
+
+json format_anthropic_error_response(const json & local_error_body) {
+    std::string type_str = "api_error";
+    std::string message = local_error_body.value("message", "Unknown error");
+
+    if (local_error_body.contains("type")) {
+        std::string local_type = local_error_body.at("type").get<std::string>();
+        if (local_type == "invalid_request_error") type_str = "invalid_request_error";
+        else if (local_type == "authentication_error") type_str = "authentication_error";
+        else if (local_type == "permission_error") type_str = "permission_error";
+        else if (local_type == "not_found_error") type_str = "not_found_error";
+    }
+
+    return format_anthropic_error(type_str, message);
+}
+
+int anthropic_error_status_from_body(const json & local_error_body) {
+    if (!local_error_body.contains("type")) {
+        return 500;
+    }
+    std::string type = local_error_body.at("type").get<std::string>();
+    if (type == "invalid_request_error") return 400;
+    if (type == "authentication_error") return 401;
+    if (type == "permission_error") return 403;
+    if (type == "not_found_error") return 404;
+    if (type == "unavailable_error") return 503;
+    return 500;
+}
+
+void server_openai_validate_cloud_shaped_fields(const json & /*body*/, bool /*allow_prompt*/) {
+    // TODO: implement cloud-shaped fields validation
+}
+
+void server_openai_validate_reasoning_object(const json & /*body*/) {
+    // TODO: implement reasoning object validation
+}
+
+void server_openai_apply_web_search_semantics(json & /*body*/) {
+    // TODO: implement web search semantics
+}
+
+bool server_is_local_web_search_tool_type(const std::string & type) {
+    return type == "web_search";
 }
 
 //
@@ -1224,7 +1303,8 @@ server_tokens tokenize_oai_content_array(const llama_vocab * vocab, mtmd_context
 json oaicompat_chat_params_parse(
     json & body, /* openai api json semantics */
     const server_chat_params & opt,
-    std::vector<raw_buffer> & out_files)
+    std::vector<raw_buffer> & out_files,
+    bool /*openai_defaults*/)
 {
     json llama_params;
 
