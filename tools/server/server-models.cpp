@@ -2094,6 +2094,81 @@ void server_models_routes::init_routes() {
         return res;
     };
 
+    this->get_router_model = [this](const server_http_req & req) {
+        auto res = std::make_unique<server_http_res>();
+        const std::string model_id = req.get_param("model");
+
+        auto model = models.get_meta(model_id);
+        if (!model.has_value()) {
+            res_err(res, format_error_response(
+                "The model '" + model_id + "' does not exist.",
+                ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+
+        if (model->hidden) {
+            res_err(res, format_error_response(
+                "The model '" + model_id + "' does not exist.",
+                ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+
+        std::time_t t = std::time(0);
+        json status {
+            {"value",  server_model_status_to_string(model->status)},
+            {"args",   model->args},
+        };
+        if (!model->preset.name.empty()) {
+            common_preset preset_copy = model->preset;
+            unset_reserved_args(preset_copy, false);
+            preset_copy.unset_option("LLAMA_ARG_HOST");
+            preset_copy.unset_option("LLAMA_ARG_PORT");
+            preset_copy.unset_option("LLAMA_ARG_ALIAS");
+            preset_copy.unset_option("LLAMA_ARG_TAGS");
+            status["preset"] = preset_copy.to_ini();
+        }
+        if (model->is_failed()) {
+            status["exit_code"] = model->exit_code;
+            status["failed"]    = true;
+        }
+
+        json input_modalities = json::array({"text"});
+        if (model->multimodal.inp_vision) {
+            input_modalities.push_back("image");
+        }
+        if (model->multimodal.inp_audio) {
+            input_modalities.push_back("audio");
+        }
+        json architecture {
+            {"input_modalities",  input_modalities},
+            {"output_modalities", json::array({"text"})},
+        };
+
+        json model_info = json {
+            {"id",            model->name},
+            {"aliases",       model->aliases},
+            {"tags",          model->tags},
+            {"object",        "model"},
+            {"owned_by",      "llamacpp"},
+            {"created",       t},
+            {"status",        status},
+            {"architecture",  architecture},
+            {"source",        server_model_source_to_string(model->source)},
+            {"can_remove",    model->source == SERVER_MODEL_SOURCE_CACHE},
+        };
+
+        if (model->is_running()) {
+            for (auto it = model->loaded_info.begin(); it != model->loaded_info.end(); ++it) {
+                if (!model_info.contains(it.key())) {
+                    model_info[it.key()] = it.value();
+                }
+            }
+        }
+
+        res_ok(res, model_info);
+        return res;
+    };
+
     this->post_router_models_unload = [this](const server_http_req & req) {
         auto res = std::make_unique<server_http_res>();
         json body = json::parse(req.body);
