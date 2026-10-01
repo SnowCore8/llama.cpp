@@ -149,6 +149,18 @@ def run_endpoint_checks(
             f"HTTP {code} {json_preview(compacted)}",
         )
 
+    # compact service_tier validation (scale/ultrafast -> 400)
+    code, data = client.post_json(
+        "/v1/responses/compact",
+        {"model": model, "input": "compact me", "service_tier": "scale"},
+    )
+    report.add(
+        "endpoint",
+        "POST /v1/responses/compact service_tier=scale rejected",
+        "PASS" if code == 400 else "FAIL",
+        f"HTTP {code}",
+    )
+
     # input_items
     code, items = client.get_json(f"/v1/responses/{rid}/input_items")
     if code == 404:
