@@ -4331,33 +4331,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             task.id_slot = json_value(data, "id_slot", -1);
             sse_ping_interval = task.params.sse_ping_interval;
 
-            // OAI-compat
-            task.params.res_type          = res_type;
-            task.params.oaicompat_cmpl_id = completion_id;
-            task.params.oaicompat_model   = meta->model_name;
-
-            // Chat-specific fields for store
-            if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT) {
-                task.params.oaicompat_chat_store = json_value(data, "store", false);
-                if (data.contains("metadata") && !data.at("metadata").is_null()) {
-                    task.params.oaicompat_chat_metadata = data.at("metadata");
-                }
-                task.params.oaicompat_chat_user = json_value(data, "user", std::string());
-                if (data.contains("safety_identifier") && !data.at("safety_identifier").is_null()) {
-                    task.params.oaicompat_chat_safety_identifier = data.at("safety_identifier").get<std::string>();
-                }
-            }
-
-            // Responses-specific fields for store
-            if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
-                if (data.contains("__oai_resp_input") && !data.at("__oai_resp_input").is_null()) {
-                    task.params.oaicompat_resp_input = data.at("__oai_resp_input");
-                }
-                if (data.contains("__oai_resp_instructions") && !data.at("__oai_resp_instructions").is_null()) {
-                    task.params.oaicompat_resp_instructions = data.at("__oai_resp_instructions");
-                }
-                task.params.oaicompat_resp_request = data;
-            }
+            // Fill surface-specific fields (S1: extracted to fill_surface_params)
+            server_schema::fill_surface_params(task.params, res_type, data, completion_id, meta->model_name);
 
             // prepare child tasks
             if (task.params.n_cmpl > 1) {

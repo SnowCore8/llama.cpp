@@ -101,4 +101,13 @@ task_params eval_llama_cmpl_schema(
                     const std::vector<llama_logit_bias> & logit_bias_eog,
                     const json & data);
 
+// Fill surface-specific fields in task.params based on res_type.
+// This is an equivalent extraction from handle_completions_impl (S1).
+void fill_surface_params(
+                    task_params & params,
+                    task_response_type res_type,
+                    const json & data,
+                    const std::string & completion_id,
+                    const std::string & model_name);
+
 } // namespace server_schema

@@ -573,6 +573,41 @@ task_params eval_llama_cmpl_schema(
     return params;
 }
 
+void fill_surface_params(
+                task_params & params,
+                task_response_type res_type,
+                const json & data,
+                const std::string & completion_id,
+                const std::string & model_name) {
+    // OAI-compat base fields
+    params.res_type          = res_type;
+    params.oaicompat_cmpl_id = completion_id;
+    params.oaicompat_model   = model_name;
+
+    // Chat-specific fields for store
+    if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT) {
+        params.oaicompat_chat_store = json_value(data, "store", false);
+        if (data.contains("metadata") && !data.at("metadata").is_null()) {
+            params.oaicompat_chat_metadata = data.at("metadata");
+        }
+        params.oaicompat_chat_user = json_value(data, "user", std::string());
+        if (data.contains("safety_identifier") && !data.at("safety_identifier").is_null()) {
+            params.oaicompat_chat_safety_identifier = data.at("safety_identifier").get<std::string>();
+        }
+    }
+
+    // Responses-specific fields for store
+    if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
+        if (data.contains("__oai_resp_input") && !data.at("__oai_resp_input").is_null()) {
+            params.oaicompat_resp_input = data.at("__oai_resp_input");
+        }
+        if (data.contains("__oai_resp_instructions") && !data.at("__oai_resp_instructions").is_null()) {
+            params.oaicompat_resp_instructions = data.at("__oai_resp_instructions");
+        }
+        params.oaicompat_resp_request = data;
+    }
+}
+
 //
 // eval() implementations
 //
