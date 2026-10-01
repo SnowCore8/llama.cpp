@@ -1185,6 +1185,10 @@ json server_responses_enrich_response(json response_obj, const json & request_bo
             response_obj[key] = request_body.at(key);
         }
     }
+    // Echo input from the saved __oai_resp_input (converted from Responses API format)
+    if (!response_obj.contains("input") && request_body.contains("__oai_resp_input")) {
+        response_obj["input"] = request_body.at("__oai_resp_input");
+    }
     // previous_response_id is stripped from the prepared request; enrich sees the kept value
     if (!response_obj.contains("previous_response_id") &&
             request_body.contains("__oai_prev_response_id")) {

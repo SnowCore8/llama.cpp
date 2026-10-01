@@ -4348,6 +4348,17 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                 }
             }
 
+            // Responses-specific fields for store
+            if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
+                if (data.contains("__oai_resp_input") && !data.at("__oai_resp_input").is_null()) {
+                    task.params.oaicompat_resp_input = data.at("__oai_resp_input");
+                }
+                if (data.contains("__oai_resp_instructions") && !data.at("__oai_resp_instructions").is_null()) {
+                    task.params.oaicompat_resp_instructions = data.at("__oai_resp_instructions");
+                }
+                task.params.oaicompat_resp_request = data;
+            }
+
             // prepare child tasks
             if (task.params.n_cmpl > 1) {
                 int n_children = task.params.n_cmpl - 1;
@@ -5168,7 +5179,17 @@ void server_routes::init_routes() {
     this->post_responses_oai = [this](const server_http_req & req) {
         auto res = create_response();
         std::vector<raw_buffer> files;
-        json body = server_chat_convert_responses_to_chatcmpl(json::parse(req.body));
+        // First prepare the request (expand previous_response_id, etc.)
+        json body = server_responses_prepare_request(json::parse(req.body), ctx_server.vocab, meta->slot_n_ctx);
+        // Save the expanded input before conversion
+        if (body.contains("input")) {
+            body["__oai_resp_input"] = body.at("input");
+        }
+        if (body.contains("instructions")) {
+            body["__oai_resp_instructions"] = body.at("instructions");
+        }
+        // Then convert to chat completions format
+        body = server_chat_convert_responses_to_chatcmpl(body);
         SRV_DBG("%s\n", "Request converted: OpenAI Responses -> OpenAI Chat Completions");
         SRV_DBG("converted request: %s\n", body.dump().c_str());
         json body_parsed = oaicompat_chat_params_parse(
