@@ -4334,6 +4334,18 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             task.params.oaicompat_cmpl_id = completion_id;
             task.params.oaicompat_model   = meta->model_name;
 
+            // Chat-specific fields for store
+            if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT) {
+                task.params.oaicompat_chat_store = json_value(data, "store", false);
+                if (data.contains("metadata") && !data.at("metadata").is_null()) {
+                    task.params.oaicompat_chat_metadata = data.at("metadata");
+                }
+                task.params.oaicompat_chat_user = json_value(data, "user", std::string());
+                if (data.contains("safety_identifier") && !data.at("safety_identifier").is_null()) {
+                    task.params.oaicompat_chat_safety_identifier = data.at("safety_identifier").get<std::string>();
+                }
+            }
+
             // prepare child tasks
             if (task.params.n_cmpl > 1) {
                 int n_children = task.params.n_cmpl - 1;
