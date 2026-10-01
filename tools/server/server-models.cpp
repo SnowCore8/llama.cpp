@@ -1601,6 +1601,50 @@ server_http_res_ptr server_models::proxy_request(const server_http_req & req, co
     return proxy;
 }
 
+server_http_res_ptr server_models::proxy_broadcast(const server_http_req & req, const std::string & method) {
+    // Get all running models
+    std::vector<std::string> running_models;
+    {
+        std::lock_guard<std::mutex> lk(mutex);
+        for (const auto & kv : mapping) {
+            if (kv.second.meta.is_running()) {
+                running_models.push_back(kv.first);
+            }
+        }
+    }
+
+    if (running_models.empty()) {
+        auto res = std::make_unique<server_http_res>();
+        res->status = 404;
+        res->data = safe_json_to_str(json{
+            {"error", format_error_response("No running models available", ERROR_TYPE_NOT_FOUND)}
+        });
+        return res;
+    }
+
+    // Try each running model
+    for (const auto & name : running_models) {
+        try {
+            auto proxy = proxy_request(req, method, name, false);
+            // Check if the response is not 404
+            if (proxy && proxy->status != 404) {
+                return proxy;
+            }
+        } catch (const std::exception & e) {
+            // Continue to next model
+            SRV_DBG("proxy_broadcast: model %s returned error: %s\n", name.c_str(), e.what());
+        }
+    }
+
+    // All models returned 404 or errors
+    auto res = std::make_unique<server_http_res>();
+    res->status = 404;
+    res->data = safe_json_to_str(json{
+        {"error", format_error_response("Resource not found on any running model", ERROR_TYPE_NOT_FOUND)}
+    });
+    return res;
+}
+
 void server_models::handle_child_state(const std::string & name, const std::string & raw_input) {
     server_state state;
     json payload;
@@ -1998,6 +2042,51 @@ void server_models_routes::init_routes() {
         // client may have dropped during the wait (page reload) and the session buffer must
         // still receive the generation for a later resume
         return models.proxy_request(req, method, name, true, waited && ticket != 0); // update last usage for POST request only
+    };
+
+    this->proxy_delete = [this](const server_http_req & req) {
+        std::string method = "DELETE";
+        std::string name = req.get_param("model");
+        bool autoload = is_autoload(params, req);
+        auto error_res = std::make_unique<server_http_res>();
+        if (!router_validate_model(name, models, autoload, error_res)) {
+            return error_res;
+        }
+        // DELETE typically does not need to autoload, but still resolve the model
+        return models.proxy_request(req, method, name, false);
+    };
+
+    this->proxy_broadcast_get = [this](const server_http_req & req) {
+        return models.proxy_broadcast(req, "GET");
+    };
+
+    this->proxy_broadcast_delete = [this](const server_http_req & req) {
+        return models.proxy_broadcast(req, "DELETE");
+    };
+
+    this->proxy_post_no_model = [this](const server_http_req & req) {
+        // Forward to the first running child (for non-model-specific endpoints like conversations)
+        std::vector<std::string> running_models;
+        {
+            std::lock_guard<std::mutex> lk(models.mutex);
+            for (const auto & kv : models.mapping) {
+                if (kv.second.meta.is_running()) {
+                    running_models.push_back(kv.first);
+                }
+            }
+        }
+
+        if (running_models.empty()) {
+            auto res = std::make_unique<server_http_res>();
+            res->status = 503;
+            res->data = safe_json_to_str(json{
+                {"error", format_error_response("No running models available", ERROR_TYPE_SERVER)}
+            });
+            return res;
+        }
+
+        // Forward to the first running model
+        return models.proxy_request(req, "POST", running_models[0], false);
     };
 
     this->post_router_models_load = [this](const server_http_req & req) {

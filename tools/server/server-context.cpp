@@ -7,7 +7,9 @@
 #include "server-schema.h"
 #include "server-stream.h"
 #include "server-responses.h"
+#include "server-responses-store.h"
 #include "server-chat-completions-store.h"
+#include "server-conversations.h"
 
 #include "build-info.h"
 #include "common.h"
@@ -5210,6 +5212,227 @@ void server_routes::init_routes() {
         }
 
         res->ok(result);
+        return res;
+    };
+
+    this->get_responses_oai = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string response_id = req.get_param("response_id");
+
+        auto entry = server_responses_store::instance().get(response_id);
+        if (!entry.has_value()) {
+            res->error(format_error_response(
+                "The response '" + response_id + "' does not exist.",
+                ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+
+        res->ok(entry->response);
+        return res;
+    };
+
+    this->delete_responses_oai = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string response_id = req.get_param("response_id");
+
+        bool deleted = server_responses_store::instance().erase(response_id);
+        if (!deleted) {
+            res->error(format_error_response(
+                "The response '" + response_id + "' does not exist.",
+                ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+
+        res->ok(json{{"id", response_id}, {"object", "response.deleted"}, {"deleted", true}});
+        return res;
+    };
+
+    this->post_responses_cancel_oai = [this](const server_http_req & req) {
+        // Cancel is not supported for synchronous responses
+        auto res = create_response();
+        const std::string response_id = req.get_param("response_id");
+        res->error(format_error_response(
+            "Cancel is not supported for synchronous responses.",
+            ERROR_TYPE_NOT_SUPPORTED));
+        return res;
+    };
+
+    this->get_responses_input_items_oai = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string response_id = req.get_param("response_id");
+
+        auto entry = server_responses_store::instance().get(response_id);
+        if (!entry.has_value()) {
+            res->error(format_error_response(
+                "The response '" + response_id + "' does not exist.",
+                ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+
+        // Return input items
+        json result = {
+            {"object", "list"},
+            {"data", entry->input}
+        };
+        res->ok(result);
+        return res;
+    };
+
+    // Conversations API handlers
+    this->post_conversations_oai = [this](const server_http_req & req) {
+        auto res = create_response();
+        json body;
+        try {
+            body = json::parse(req.body);
+        } catch (const std::exception &) {
+            res->error(format_error_response("Invalid JSON", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        server_conversation_entry entry;
+        entry.id = "conv_" + random_string();
+        entry.created_at = std::time(nullptr);
+        if (body.contains("metadata") && body["metadata"].is_object()) {
+            entry.metadata = body["metadata"];
+        }
+
+        if (!server_conversations_store::instance().put(entry)) {
+            res->error(format_error_response("Failed to create conversation", ERROR_TYPE_SERVER));
+            return res;
+        }
+
+        res->ok(server_conversation_to_json(entry));
+        return res;
+    };
+
+    this->get_conversation_oai = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string conversation_id = req.get_param("conversation_id");
+
+        auto entry = server_conversations_store::instance().get(conversation_id);
+        if (!entry.has_value()) {
+            res->error(format_error_response(
+                "The conversation '" + conversation_id + "' does not exist.",
+                ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+
+        res->ok(server_conversation_to_json(*entry));
+        return res;
+    };
+
+    this->post_conversation_update_oai = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string conversation_id = req.get_param("conversation_id");
+        json body;
+        try {
+            body = json::parse(req.body);
+        } catch (const std::exception &) {
+            res->error(format_error_response("Invalid JSON", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        bool success = server_conversations_store::instance().update(conversation_id,
+            [&body](server_conversation_entry & entry) {
+                if (body.contains("metadata") && body["metadata"].is_object()) {
+                    entry.metadata = body["metadata"];
+                }
+            });
+
+        if (!success) {
+            res->error(format_error_response(
+                "The conversation '" + conversation_id + "' does not exist.",
+                ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+
+        auto entry = server_conversations_store::instance().get(conversation_id);
+        res->ok(server_conversation_to_json(*entry));
+        return res;
+    };
+
+    this->delete_conversation_oai = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string conversation_id = req.get_param("conversation_id");
+
+        bool deleted = server_conversations_store::instance().erase(conversation_id);
+        if (!deleted) {
+            res->error(format_error_response(
+                "The conversation '" + conversation_id + "' does not exist.",
+                ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+
+        res->ok(json{{"id", conversation_id}, {"object", "conversation.deleted"}, {"deleted", true}});
+        return res;
+    };
+
+    this->post_conversation_items_oai = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string conversation_id = req.get_param("conversation_id");
+        json body;
+        try {
+            body = json::parse(req.body);
+        } catch (const std::exception &) {
+            res->error(format_error_response("Invalid JSON", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        // TODO: Implement item addition
+        res->error(format_error_response("Conversation items not yet implemented", ERROR_TYPE_NOT_SUPPORTED));
+        return res;
+    };
+
+    this->get_conversation_items_oai = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string conversation_id = req.get_param("conversation_id");
+
+        auto entry = server_conversations_store::instance().get(conversation_id);
+        if (!entry.has_value()) {
+            res->error(format_error_response(
+                "The conversation '" + conversation_id + "' does not exist.",
+                ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+
+        res->ok(json{{"object", "list"}, {"data", entry->items}});
+        return res;
+    };
+
+    this->get_conversation_item_oai = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string conversation_id = req.get_param("conversation_id");
+        const std::string item_id = req.get_param("item_id");
+
+        auto entry = server_conversations_store::instance().get(conversation_id);
+        if (!entry.has_value()) {
+            res->error(format_error_response(
+                "The conversation '" + conversation_id + "' does not exist.",
+                ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+
+        // Find the item
+        for (const auto & item : entry->items) {
+            if (item.contains("id") && item["id"] == item_id) {
+                res->ok(item);
+                return res;
+            }
+        }
+
+        res->error(format_error_response(
+            "The item '" + item_id + "' does not exist.",
+            ERROR_TYPE_NOT_FOUND));
+        return res;
+    };
+
+    this->delete_conversation_item_oai = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string conversation_id = req.get_param("conversation_id");
+        const std::string item_id = req.get_param("item_id");
+
+        // TODO: Implement item deletion
+        res->error(format_error_response("Conversation item deletion not yet implemented", ERROR_TYPE_NOT_SUPPORTED));
         return res;
     };
 

@@ -302,6 +302,10 @@ public:
     // proxy an HTTP request to the model instance
     server_http_res_ptr proxy_request(const server_http_req & req, const std::string & method, const std::string & name, bool update_last_used, bool detached = false);
 
+    // proxy an HTTP request to all running children, return first non-404 response
+    // used for responses/conversations retrieve where we don't know which child has the resource
+    server_http_res_ptr proxy_broadcast(const server_http_req & req, const std::string & method);
+
     // handle message sent from server_child::notify_to_router()
     // raw input must starts with CMD_CHILD_TO_ROUTER_STATE, followed by a JSON string
     // called from the monitor thread
@@ -360,6 +364,11 @@ struct server_models_routes {
     server_http_context::handler_t get_router_props;
     server_http_context::handler_t proxy_get;
     server_http_context::handler_t proxy_post;
+    server_http_context::handler_t proxy_delete;
+    // broadcast handlers for responses/conversations (resource_id not model_id)
+    server_http_context::handler_t proxy_broadcast_get;
+    server_http_context::handler_t proxy_broadcast_delete;
+    server_http_context::handler_t proxy_post_no_model; // for conversations create
     server_http_context::handler_t get_router_models;
     server_http_context::handler_t get_router_model;  // retrieve by id
     server_http_context::handler_t post_router_models_load;

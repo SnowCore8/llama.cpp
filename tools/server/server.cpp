@@ -270,6 +270,29 @@ int llama_server(common_params & params, int argc, char ** argv) {
         routes.get_slots                    = models_routes->proxy_get;
         routes.post_slots                   = models_routes->proxy_post;
 
+        // chat completions store CRUD - proxy to child
+        routes.get_chat_completions         = models_routes->proxy_broadcast_get;
+        routes.get_chat_completion          = models_routes->proxy_broadcast_get;
+        routes.get_chat_completion_messages = models_routes->proxy_broadcast_get;
+        routes.post_chat_completion_update  = models_routes->proxy_post;
+        routes.delete_chat_completion       = models_routes->proxy_broadcast_delete;
+
+        // responses CRUD - proxy to child
+        routes.get_responses_oai            = models_routes->proxy_broadcast_get;
+        routes.delete_responses_oai         = models_routes->proxy_broadcast_delete;
+        routes.post_responses_cancel_oai    = models_routes->proxy_post;
+        routes.get_responses_input_items_oai = models_routes->proxy_broadcast_get;
+
+        // conversations CRUD - proxy to child
+        routes.post_conversations_oai       = models_routes->proxy_post_no_model;
+        routes.get_conversation_oai         = models_routes->proxy_broadcast_get;
+        routes.post_conversation_update_oai = models_routes->proxy_post_no_model;
+        routes.delete_conversation_oai      = models_routes->proxy_broadcast_delete;
+        routes.post_conversation_items_oai  = models_routes->proxy_post_no_model;
+        routes.get_conversation_items_oai   = models_routes->proxy_broadcast_get;
+        routes.get_conversation_item_oai    = models_routes->proxy_broadcast_get;
+        routes.delete_conversation_item_oai = models_routes->proxy_broadcast_delete;
+
         // custom routes for router
         routes.get_props                    = models_routes->get_router_props;
         routes.get_models                   = models_routes->get_router_models;
