@@ -1250,7 +1250,8 @@ json server_web_search_responses_output_items(
         const json & request_body,
         const std::string & ws_query,
         const json & ws_results,
-        const json & ws_actions) {
+        const json & ws_actions,
+        const std::string & resp_id) {
     json out = json::array();
     const bool want_sources =
         server_responses_include_contains(request_body, "web_search_call.action.sources");
@@ -1294,7 +1295,6 @@ json server_web_search_responses_output_items(
         }
         // ids must survive repeated builds: streaming events and the final response both call
         // this function, and clients match items by id
-        const std::string resp_id = json_value(request_body, "__oai_resp_id", std::string());
         const std::string ws_id = resp_id.empty()
                                       ? "ws_" + random_string()
                                       : "ws_" + resp_id + "_" + std::to_string(idx);

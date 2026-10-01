@@ -42,7 +42,8 @@ json server_web_search_responses_output_items(
     const json & request_body,
     const std::string & ws_query,
     const json & ws_results,
-    const json & ws_actions);
+    const json & ws_actions,
+    const std::string & resp_id = "");
 
 // Attach url_citation annotations (+ optional Sources footer) on message output_text parts.
 void server_web_search_annotate_responses_output(

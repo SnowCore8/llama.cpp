@@ -952,7 +952,8 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
         req_stream,
         generation_params.oaicompat_web_search_query,
         generation_params.oaicompat_web_search_results != nullptr ? generation_params.oaicompat_web_search_results : json::array(),
-        generation_params.oaicompat_web_search_actions != nullptr ? generation_params.oaicompat_web_search_actions : json::array()
+        generation_params.oaicompat_web_search_actions != nullptr ? generation_params.oaicompat_web_search_actions : json::array(),
+        oai_resp_id
     ).size();
 
     auto push_evt = [&](const std::string & event_name, json data) {
@@ -1520,7 +1521,8 @@ void server_task_result_cmpl_partial::update(task_result_state & state) {
             state.oaicompat_resp_request,
             state.oaicompat_web_search_query,
             state.oaicompat_web_search_results != nullptr ? state.oaicompat_web_search_results : json::array(),
-            state.oaicompat_web_search_actions != nullptr ? state.oaicompat_web_search_actions : json::array());
+            state.oaicompat_web_search_actions != nullptr ? state.oaicompat_web_search_actions : json::array(),
+            state.oai_resp_id);
         state.oai_web_search_output_offset = (int) prefix.size();
         state.oai_web_search_streamed = true;
         // partial will emit using copied offset; mark streamed so we emit once in to_json
@@ -1766,7 +1768,8 @@ json server_task_result_cmpl_partial::to_json_oaicompat_resp() {
             req_partial,
             generation_params.oaicompat_web_search_query,
             generation_params.oaicompat_web_search_results != nullptr ? generation_params.oaicompat_web_search_results : json::array(),
-            generation_params.oaicompat_web_search_actions != nullptr ? generation_params.oaicompat_web_search_actions : json::array());
+            generation_params.oaicompat_web_search_actions != nullptr ? generation_params.oaicompat_web_search_actions : json::array(),
+            oai_resp_id);
         int idx = 0;
         for (auto & item : prefix) {
             const std::string item_id = json_value(item, "id", std::string());

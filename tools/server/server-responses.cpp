@@ -1187,14 +1187,19 @@ json server_responses_enrich_response(json response_obj, const json & request_bo
             response_obj[key] = request_body.at(key);
         }
     }
-    // Echo input from the saved __oai_resp_input (converted from Responses API format)
-    if (!response_obj.contains("input") && request_body.contains("__oai_resp_input")) {
-        response_obj["input"] = request_body.at("__oai_resp_input");
+    // Echo input from surface payload (converted from Responses API format)
+    {
+        const json & surface = request_body.contains("_surface") ? request_body.at("_surface") : json::object();
+        if (!response_obj.contains("input") && surface.contains("resp_input")) {
+            response_obj["input"] = surface.at("resp_input");
+        }
     }
     // previous_response_id is stripped from the prepared request; enrich sees the kept value
-    if (!response_obj.contains("previous_response_id") &&
-            request_body.contains("__oai_prev_response_id")) {
-        response_obj["previous_response_id"] = request_body.at("__oai_prev_response_id");
+    {
+        const json & surface = request_body.contains("_surface") ? request_body.at("_surface") : json::object();
+        if (!response_obj.contains("previous_response_id") && surface.contains("prev_response_id")) {
+            response_obj["previous_response_id"] = surface.at("prev_response_id");
+        }
     }
     // Fast mode: official responses show service_tier=priority for request fast or priority.
     if (response_obj.contains("service_tier") && response_obj.at("service_tier").is_string() &&
@@ -1298,7 +1303,8 @@ json server_responses_enrich_response(json response_obj, const json & request_bo
             const std::string ws_query = surface.contains("web_search_query") ? surface.at("web_search_query").get<std::string>() : std::string();
             const json & ws_results = surface.contains("web_search_results") ? surface.at("web_search_results") : json::array();
             const json & ws_actions = surface.contains("web_search_actions") ? surface.at("web_search_actions") : json::array();
-            json prefix = server_web_search_responses_output_items(request_body, ws_query, ws_results, ws_actions);
+            const std::string enrich_resp_id = json_value(response_obj, "id", std::string());
+            json prefix = server_web_search_responses_output_items(request_body, ws_query, ws_results, ws_actions, enrich_resp_id);
             if (!prefix.empty()) {
                 json new_output = json::array();
                 for (auto & item : prefix) {
