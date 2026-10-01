@@ -404,7 +404,26 @@ void server_openai_validate_compact_service_tier(const json & body);
 // Validate Chat Completions create fields (modalities/audio/verbosity/penalties/…).
 void server_openai_validate_chat_create_fields(const json & body);
 
-// used by /chat/completions endpoint
+// S2: surface-specific request parsers
+// Parse Chat Completions request (OpenAI format)
+json parse_chat_completions_request(
+    json & body,
+    const server_chat_params & opt,
+    std::vector<raw_buffer> & out_files);
+
+// Parse Responses request (OpenAI Responses format)
+json parse_responses_request(
+    json & body,
+    const server_chat_params & opt,
+    std::vector<raw_buffer> & out_files);
+
+// Parse Anthropic request (Anthropic Messages format)
+json parse_anthropic_request(
+    json & body,
+    const server_chat_params & opt,
+    std::vector<raw_buffer> & out_files);
+
+// used by /chat/completions endpoint (deprecated, use parse_chat_completions_request)
 json oaicompat_chat_params_parse(
     json & body, /* openai api json semantics */
     const server_chat_params & opt,

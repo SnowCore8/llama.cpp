@@ -8,6 +8,8 @@
 #include "base64.hpp"
 
 #include "server-common.h"
+#include "server-chat.h"
+#include "server-responses.h"
 
 #include <random>
 #include <sstream>
@@ -2012,6 +2014,37 @@ json oaicompat_chat_params_parse(
     }
 
     return llama_params;
+}
+
+// S2: surface-specific request parsers
+// Parse Chat Completions request (OpenAI format) - wrapper for oaicompat_chat_params_parse
+json parse_chat_completions_request(
+    json & body,
+    const server_chat_params & opt,
+    std::vector<raw_buffer> & out_files) {
+    return oaicompat_chat_params_parse(body, opt, out_files, false);
+}
+
+// Parse Responses request (OpenAI Responses format) - includes conversion
+json parse_responses_request(
+    json & body,
+    const server_chat_params & opt,
+    std::vector<raw_buffer> & out_files) {
+    // S2 phase 1: use existing conversion + parse
+    // TODO phase 2: integrate conversion logic to eliminate __oai_* keys
+    body = server_chat_convert_responses_to_chatcmpl(body);
+    return oaicompat_chat_params_parse(body, opt, out_files, false);
+}
+
+// Parse Anthropic request (Anthropic Messages format) - includes conversion
+json parse_anthropic_request(
+    json & body,
+    const server_chat_params & opt,
+    std::vector<raw_buffer> & out_files) {
+    // S2 phase 1: use existing conversion + parse
+    // TODO phase 2: integrate conversion logic to eliminate __oai_* keys
+    body = server_chat_convert_anthropic_to_oai(body);
+    return oaicompat_chat_params_parse(body, opt, out_files, false);
 }
 
 json format_embeddings_response_oaicompat(
