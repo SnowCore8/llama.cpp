@@ -1,5 +1,7 @@
 # Chat Completions API (`/v1/chat/completions`)
 
+架构（v100 API Surface Split）：Chat 面作为基准面，直接产出 `server_surface_request`；内核单份共享。SSE 格式化器 `format_oai_sse`（`server-common.cpp`）。
+
 ## 端点
 
 | 方法 | 路径 | 说明 |

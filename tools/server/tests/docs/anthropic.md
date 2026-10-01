@@ -6,6 +6,8 @@
 
 实现落点：`server_chat_convert_anthropic_to_oai`（`server-chat.cpp`）、`to_json_anthropic` / `to_json_anthropic_stream`（`server-task.cpp`）、SSE 错误帧（`server-context.cpp`）。
 
+架构（v100 API Surface Split）：面层独立转换，产出 `server_surface_request`；内核单份共享，不再依赖 `__oai_*` 私有键穿层。新增 `parse_anthropic_to_surface_request`（`server-chat.cpp`）作为面→内核入口。
+
 ## 端点
 
 | 方法 | 路径 | 说明 |

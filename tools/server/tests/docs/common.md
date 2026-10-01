@@ -2,6 +2,8 @@
 
 跨 API 面的共享契约：错误信封、鉴权、model 校验、参数默认值、非目标面、验收套件、共享本地契约。
 
+架构（v100 API Surface Split）：三面（Chat/Responses/Anthropic）独立转换，统一产出 `server_surface_request`（定义于 `server-task.h`）。内核单份共享，面私有数据走 `server_surface_request.surface` 字段，不再用 `__oai_*` 私有键穿层。
+
 ## 错误信封
 
 全部端点统一四字段：

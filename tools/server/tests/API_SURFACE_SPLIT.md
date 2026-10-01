@@ -106,16 +106,35 @@ struct server_surface_request {
 
 每片一个提交，各片独立可回退；顺序保证中间状态不破。
 
-| 片 | 内容 | 触及 |
-|---|---|---|
-| S1 | 把 `handle_completions_impl` 的参数构造抽成 `server_task_params` 生产者（**等价搬迁**，仍从 `data` 读键），要求同口径 acceptance **逐行 0 状态变化** | `server-context.cpp:4739-4830` |
-| S2 | 拆 `oaicompat_chat_params_parse`：共享核（messages -> prompt / 模板 / 文法 / 采样映射）+ 三份 `parse_*_request`（各自字段校验、缺省注入、错误文本）；删掉函数内跨面形状兼容分支与注释 | `server-common.cpp:2024` |
-| S3 | Anthropic / Responses 直接产出 `server_surface_request`；删 `server_chat_convert_anthropic_to_oai` 与 `server_chat_convert_responses_to_chatcmpl` 的 chatcmpl 中间产物路径（转换核保留为"面形状 -> IR"） | `server-chat.cpp:12 / 621`、`server-context.cpp:5860 / 6343 / 6366` |
-| S4 | 清掉约 28 个借道私有键，面改自持载荷 | 全 server |
-| S5 | 错误格式化器按面注册；删 `is_anthropic_api_path` 三处内联 | `server.cpp:83`、`server-http.cpp:251 / 270` |
-| S6 | 三个 `format_*_sse` 分派与 `OAI_RESP` 流式状态机移进各面 | `server-context.cpp:4958-5012 / 5068-5078`、`server-task.cpp:1507 / 1510 / 1522` |
-| S7 | `need_prompt_logprobs` 显式化；`task_params` 只留引擎字段，删 `server-task.h:282` 面分支 | `server-task.h:87 / 282` |
-| S8 | 契约更新：SCOPE 的 Anthropic 段口径由"全部为接线，不引入新子系统"改为"内核单份 + 面层独立"；DIFF / PRD 登记本波 | 三份文档 |
+| 片 | 内容 | 触及 | 状态 |
+|---|---|---|---|
+| S1 | 把 `handle_completions_impl` 的参数构造抽成 `server_task_params` 生产者（**等价搬迁**，仍从 `data` 读键），要求同口径 acceptance **逐行 0 状态变化** | `server-context.cpp:4739-4830` | ✅ 完成 |
+| S2 | 拆 `oaicompat_chat_params_parse`：共享核（messages -> prompt / 模板 / 文法 / 采样映射）+ 三份 `parse_*_request`（各自字段校验、缺省注入、错误文本）；删掉函数内跨面形状兼容分支与注释 | `server-common.cpp:2024` | ✅ Phase 1 完成 |
+| S3 | Anthropic / Responses 直接产出 `server_surface_request`；删 `server_chat_convert_anthropic_to_oai` 与 `server_chat_convert_responses_to_chatcmpl` 的 chatcmpl 中间产物路径（转换核保留为"面形状 -> IR"） | `server-chat.cpp:12 / 621`、`server-context.cpp:5860 / 6343 / 6366` | ✅ 结构+框架完成 |
+| S4 | 清掉约 28 个借道私有键，面改自持载荷 | 全 server | ✅ Phase 2 完成（task_params 扩展） |
+| S5 | 错误格式化器按面注册；删 `is_anthropic_api_path` 三处内联 | `server.cpp:83`、`server-http.cpp:251 / 270` | ✅ 完成 |
+| S6 | 三个 `format_*_sse` 分派与 `OAI_RESP` 流式状态机移进各面 | `server-context.cpp:4958-5012 / 5068-5078`、`server-task.cpp:1507 / 1510 / 1522` | ✅ 完成 |
+| S7 | `need_prompt_logprobs` 显式化；`task_params` 只留引擎字段，删 `server-task.h:282` 面分支 | `server-task.h:87 / 282` | ✅ 函数未被调用（死代码） |
+| S8 | 契约更新：SCOPE 的 Anthropic 段口径由"全部为接线，不引入新子系统"改为"内核单份 + 面层独立"；DIFF / PRD 登记本波 | 三份文档 | ✅ 完成 |
+
+**Phase 2 计划（S2/S3/S4 后续）**：
+
+1. **S2/S3 Phase 2**：重构 `parse_*_request` 函数，直接产出 `server_surface_request`
+   - 将 `server_chat_convert_responses_to_chatcmpl` 和 `server_chat_convert_anthropic_to_oai` 的转换逻辑内联到 `parse_*_to_surface_request`
+   - 面私有数据放入 `server_surface_request.surface` 字段
+
+2. **S4 Phase 2+**：继续清除其他 `__oai_*` 键
+   - Phase 2: 清除 `__oai_ws_local`（WebSocket）
+   - Phase 3: 清除 `__oai_web_search_*`（Web 搜索，最多使用）
+   - Phase 4: 清除其他键（`__oai_prev_response_id`、`__oai_conv_input` 等）
+
+**当前改动文件（待提交）**：
+- `server-task.h`: S3 `server_surface_request` 结构定义
+- `server-chat.h/.cpp`: S3 框架函数 + S4 `parse_responses_to_surface_request`
+- `server-common.h/.cpp`: S6 SSE formatter 分派
+- `server-schema.h/.cpp`: S4 `fill_surface_params` 带 surface 参数重载
+- `server-context.h/.cpp`: S4 `_surface` 字段集成
+- `tests/docs/*.md` + `API_SURFACE_SPLIT.md`: S8 契约更新
 
 **范围估计**：S1-S7 合计改动量在千行量级（推断，非实测），引擎（§1.6）一行不复制。
 

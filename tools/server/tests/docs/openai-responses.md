@@ -1,5 +1,7 @@
 # Responses API (`/v1/responses`)
 
+架构（v100 API Surface Split）：面层独立转换，产出 `server_surface_request`；内核单份共享。新增 `parse_responses_to_surface_request`（`server-chat.cpp`）作为面→内核入口。SSE 错误帧按面注册（`error_handlers`）。
+
 ## 端点
 
 | 方法 | 路径 | 说明 |
