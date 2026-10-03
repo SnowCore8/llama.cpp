@@ -1357,7 +1357,8 @@ server_surface_request parse_responses_to_surface_request(
     const std::string & web_search_query,
     const json & web_search_results,
     const json & web_search_actions,
-    int web_search_n_requests) {
+    int web_search_n_requests,
+    const std::string & ws_token) {
     server_surface_request result;
 
     // Capture Responses-specific fields into surface payload before conversion
@@ -1375,8 +1376,9 @@ server_surface_request parse_responses_to_surface_request(
     if (!conv_input.is_null()) {
         surface_data["conv_input"] = conv_input;
     }
-    if (body.contains("__oai_ws_local")) {
-        surface_data["ws_local"] = body.at("__oai_ws_local");
+    // ws_token passed as parameter (no transport key)
+    if (!ws_token.empty()) {
+        surface_data["ws_local"] = ws_token;
     }
     // Web search data passed as parameters (no transport keys)
     if (web_search_enabled) {

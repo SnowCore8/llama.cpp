@@ -82,6 +82,7 @@ struct ws_payload {
     std::string body;
     std::string lane;
     std::string prev_id;                     // continuation parent, for cache eviction on failure
+    std::string ws_token;                    // connection token (was __oai_ws_local in body)
     std::shared_ptr<ws_target> carry_parent; // target that owns the carried steers
     std::vector<std::shared_ptr<ws_steer>> carry; // committed on response.created
 };
@@ -692,12 +693,12 @@ static void ws_start_successor(
     }
     body["previous_response_id"] = target->resp_id;
     body["input"] = std::move(input);
-    body["__oai_ws_local"] = sess.ws_token;
 
     auto payload = std::make_shared<ws_payload>();
     payload->body         = body.dump();
     payload->lane         = target->lane;
     payload->prev_id      = target->resp_id;
+    payload->ws_token     = sess.ws_token;
     payload->carry_parent = target;
     payload->carry        = steers;
     ws_lane_enqueue(sess, target->lane, std::move(payload));
@@ -982,6 +983,7 @@ static void ws_run_one(ws_session & sess, const std::shared_ptr<ws_payload> & pa
         "",
         payload->body,
         {},
+        payload->ws_token, // pass ws_token directly (no __oai_ws_local in body)
         should_stop,
     };
 
@@ -1284,14 +1286,11 @@ static void ws_handle_message(const std::shared_ptr<ws_session> & sess_ptr, cons
     ev.erase("stream");
     ev.erase("background");
     ev["stream"] = true;
-    // connection token: this create may continue a store=false response that only
-    // this connection holds (see server_responses_prepare_request). Always
-    // overwritten, so clients cannot stamp or forge the marker themselves.
-    ev["__oai_ws_local"] = sess.ws_token;
 
     auto payload = std::make_shared<ws_payload>();
     payload->lane    = stream_id;
     payload->prev_id = json_value(ev, "previous_response_id", std::string());
+    payload->ws_token = sess.ws_token;
 
     // a continuation of a steered target picks up its queued input; the steers
     // are carried until this create's response.created (or returned if it fails).

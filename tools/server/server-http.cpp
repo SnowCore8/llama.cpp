@@ -740,6 +740,7 @@ void server_http_context::get(const std::string & path, const server_http_contex
             build_query_string(req),
             req.body,
             {},
+            "", // ws_token (HTTP requests don't have WS token)
             req.is_connection_closed
         });
         server_http_res_ptr response = handler(*request);
@@ -791,6 +792,7 @@ void server_http_context::post(const std::string & path, const server_http_conte
             build_query_string(req),
             body,
             std::move(files),
+            "", // ws_token (HTTP requests don't have WS token)
             req.is_connection_closed
         });
         server_http_res_ptr response = handler(*request);
@@ -812,6 +814,7 @@ void server_http_context::del(const std::string & path, const server_http_contex
             build_query_string(req),
             req.body,
             {},
+            "", // ws_token (HTTP requests don't have WS token)
             req.is_connection_closed
         });
         server_http_res_ptr response = handler(*request);
@@ -999,6 +1002,7 @@ void server_http_context::register_gcp_compat() const {
                         req.query_string,
                         payload.dump(),
                         {},
+                        "", // ws_token
                         req.should_stop,
                     };
 

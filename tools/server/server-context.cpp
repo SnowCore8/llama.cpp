@@ -5161,8 +5161,7 @@ void server_routes::init_routes() {
         std::vector<raw_buffer> files;
         // First prepare the request (expand previous_response_id, etc.)
         json raw = json::parse(req.body);
-        std::string ws_token = json_value(raw, "__oai_ws_local", std::string());
-        auto prepared = server_responses_prepare_request(std::move(raw), ctx_server.vocab, meta->slot_n_ctx, ws_token);
+        auto prepared = server_responses_prepare_request(std::move(raw), ctx_server.vocab, meta->slot_n_ctx, req.ws_token);
 
         // Generate complete server_surface_request including prompt, files, params, and surface
         server_surface_request surface_req = parse_responses_to_surface_request(
@@ -5178,7 +5177,8 @@ void server_routes::init_routes() {
             prepared.web_search_query,
             prepared.web_search_results,
             prepared.web_search_actions,
-            prepared.web_search_n_requests);
+            prepared.web_search_n_requests,
+            req.ws_token);
 
         // Use parsed_body for handle_completions_impl, attach surface payload
         json body_parsed = surface_req.parsed_body;
@@ -5213,8 +5213,7 @@ void server_routes::init_routes() {
 
         json result;
         try {
-            std::string ws_token = json_value(body, "__oai_ws_local", std::string());
-            result = server_responses_compact(std::move(body), ctx_server.vocab, meta->slot_n_ctx, ws_token);
+            result = server_responses_compact(std::move(body), ctx_server.vocab, meta->slot_n_ctx, req.ws_token);
         } catch (const std::exception & e) {
             res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
             return res;

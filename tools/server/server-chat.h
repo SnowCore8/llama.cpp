@@ -24,7 +24,7 @@ server_surface_request parse_anthropic_to_surface_request(
 
 // Parse Responses request to server_surface_request
 // Generates complete server_surface_request including prompt, files, params, and surface payload
-// prev_response_id, conv_input, and web search data are passed directly (no transport keys)
+// prev_response_id, conv_input, web search data, and ws_token are passed directly (no transport keys)
 server_surface_request parse_responses_to_surface_request(
     json & body,
     const server_chat_params & opt,
@@ -38,7 +38,8 @@ server_surface_request parse_responses_to_surface_request(
     const std::string & web_search_query = "",
     const json & web_search_results = nullptr,
     const json & web_search_actions = nullptr,
-    int web_search_n_requests = 0);
+    int web_search_n_requests = 0,
+    const std::string & ws_token = "");
 
 // Convert OpenAI Responses API format to OpenAI Chat Completions API format
 json server_chat_convert_responses_to_chatcmpl(const json & body);

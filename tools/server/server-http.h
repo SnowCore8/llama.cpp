@@ -53,6 +53,7 @@ struct server_http_req {
     std::string query_string; // query parameters string (e.g. "action=save")
     std::string body;
     std::map<std::string, uploaded_file> files; // used for file uploads (form data)
+    std::string ws_token; // WebSocket connection token (replaces __oai_ws_local in body)
     const std::function<bool()> & should_stop;
 
     std::string get_param(const std::string & key, const std::string & def = "") const {
