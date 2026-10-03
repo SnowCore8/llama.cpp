@@ -2,20 +2,22 @@ import pytest
 import os
 from utils import *
 
-server = ServerPreset.tinyllama2()
+server = None
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(scope="module", autouse=True)
 def create_server():
     global server
     server = ServerPreset.tinyllama2()
-    server.server_port = 8081  # v100: use 8081
-    server.api_key = "sk-1234567890"  # v100: use same API key
+    server.server_port = 8081
+    server.api_key = "sk-1234567890"
+    server.start()
+    yield
+    server.stop()
 
 
 def test_tokenize_detokenize():
     global server
-    server.start()
     # tokenize
     content = "What is the capital of France ?"
     res_tok = server.make_request("POST", "/tokenize", data={
@@ -33,7 +35,6 @@ def test_tokenize_detokenize():
 
 def test_tokenize_with_bos():
     global server
-    server.start()
     # tokenize
     content = "What is the capital of France ?"
     bosId = 1
@@ -47,7 +48,6 @@ def test_tokenize_with_bos():
 
 def test_tokenize_with_pieces():
     global server
-    server.start()
     # tokenize
     content = "This is a test string with unicode 媽 and emoji 🤗"
     res_tok = server.make_request("POST", "/tokenize", data={

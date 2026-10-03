@@ -22,13 +22,8 @@ def configure_v100_server():
     print(f"API Key: {V100_API_KEY}")
     print(f"不依赖 /opt/llama-server.sh (端口 8080)")
     print(f"===================\n")
-
-
-@pytest.fixture(autouse=True)
-def stop_server_after_each_test():
-    # do nothing before each test
     yield
-    # stop all servers after each test
+    # Stop all servers at the end of session
     instances = set(server_instances)
     for server in instances:
         server.stop()
