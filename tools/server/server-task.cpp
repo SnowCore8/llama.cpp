@@ -927,10 +927,12 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
         res["status"] = "incomplete";
         res["incomplete_details"] = json { {"reason", incomplete_reason} };
     }
-    server_responses_remember(res, oaicompat_resp_input, oaicompat_resp_instructions,
-                              oaicompat_resp_conv_input,
+    server_responses_remember(res,
+                              json_value(oaicompat_resp_surface, "resp_input", json()),
+                              json_value(oaicompat_resp_surface, "resp_instructions", json()),
+                              json_value(oaicompat_resp_surface, "conv_input", json()),
                               json_value(req, "model", std::string()),
-                              oaicompat_resp_ws_local);
+                              json_value(oaicompat_resp_surface, "ws_local", std::string()));
     server_responses_reset_seq(oai_resp_id);
 
     return res;
@@ -950,9 +952,9 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
     // final output, so both index spaces count them
     const int ws_off = (int) server_web_search_responses_output_items(
         req_stream,
-        generation_params.oaicompat_web_search_query,
-        generation_params.oaicompat_web_search_results != nullptr ? generation_params.oaicompat_web_search_results : json::array(),
-        generation_params.oaicompat_web_search_actions != nullptr ? generation_params.oaicompat_web_search_actions : json::array(),
+        json_value(generation_params.oaicompat_resp_surface, "web_search_query", std::string()),
+        json_value(generation_params.oaicompat_resp_surface, "web_search_results", json::array()),
+        json_value(generation_params.oaicompat_resp_surface, "web_search_actions", json::array()),
         oai_resp_id
     ).size();
 
@@ -1041,11 +1043,11 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
         json raw_item = output_item; // enrich annotates the final response once
         // web_search: enrich annotates the final output later, annotate a copy here so the
         // done events carry the same url_citations as response.completed
-        if (generation_params.oaicompat_web_search_enabled) {
+        if (json_value(generation_params.oaicompat_resp_surface, "web_search_enabled", false)) {
             json copy = json { {"output", json::array({ output_item })} };
             server_web_search_annotate_responses_output(
                 copy,
-                generation_params.oaicompat_web_search_results != nullptr ? generation_params.oaicompat_web_search_results : json::array());
+                json_value(generation_params.oaicompat_resp_surface, "web_search_results", json::array()));
             output_item  = copy.at("output").at(0);
             content_part = output_item.at("content").at(0);
         }
@@ -1169,10 +1171,12 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
         response_obj["status"] = "incomplete";
         response_obj["incomplete_details"] = json { {"reason", incomplete_reason} };
     }
-    server_responses_remember(response_obj, oaicompat_resp_input, oaicompat_resp_instructions,
-                              oaicompat_resp_conv_input,
+    server_responses_remember(response_obj,
+                              json_value(oaicompat_resp_surface, "resp_input", json()),
+                              json_value(oaicompat_resp_surface, "resp_instructions", json()),
+                              json_value(oaicompat_resp_surface, "conv_input", json()),
                               json_value(req, "model", std::string()),
-                              oaicompat_resp_ws_local);
+                              json_value(oaicompat_resp_surface, "ws_local", std::string()));
 
     push_evt(resp_incomplete ? "response.incomplete" : "response.completed", json {
         {"response", response_obj},
@@ -1516,12 +1520,12 @@ void server_task_result_cmpl_partial::update(task_result_state & state) {
         state.oai_resp_created = true;
     }
     if (res_type == TASK_RESPONSE_TYPE_OAI_RESP && !state.oai_web_search_streamed &&
-            state.oaicompat_web_search_enabled) {
+            json_value(state.oaicompat_resp_surface, "web_search_enabled", false)) {
         json prefix = server_web_search_responses_output_items(
             state.oaicompat_resp_request,
-            state.oaicompat_web_search_query,
-            state.oaicompat_web_search_results != nullptr ? state.oaicompat_web_search_results : json::array(),
-            state.oaicompat_web_search_actions != nullptr ? state.oaicompat_web_search_actions : json::array(),
+            json_value(state.oaicompat_resp_surface, "web_search_query", std::string()),
+            json_value(state.oaicompat_resp_surface, "web_search_results", json::array()),
+            json_value(state.oaicompat_resp_surface, "web_search_actions", json::array()),
             state.oai_resp_id);
         state.oai_web_search_output_offset = (int) prefix.size();
         state.oai_web_search_streamed = true;
@@ -1763,12 +1767,12 @@ json server_task_result_cmpl_partial::to_json_oaicompat_resp() {
     const int ws_off = oai_web_search_output_offset;
     // Emit web_search_call items once at stream start (after created/in_progress).
     if (!oai_web_search_streamed &&
-            generation_params.oaicompat_web_search_enabled) {
+            json_value(generation_params.oaicompat_resp_surface, "web_search_enabled", false)) {
         json prefix = server_web_search_responses_output_items(
             req_partial,
-            generation_params.oaicompat_web_search_query,
-            generation_params.oaicompat_web_search_results != nullptr ? generation_params.oaicompat_web_search_results : json::array(),
-            generation_params.oaicompat_web_search_actions != nullptr ? generation_params.oaicompat_web_search_actions : json::array(),
+            json_value(generation_params.oaicompat_resp_surface, "web_search_query", std::string()),
+            json_value(generation_params.oaicompat_resp_surface, "web_search_results", json::array()),
+            json_value(generation_params.oaicompat_resp_surface, "web_search_actions", json::array()),
             oai_resp_id);
         int idx = 0;
         for (auto & item : prefix) {

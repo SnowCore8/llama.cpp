@@ -601,43 +601,6 @@ void fill_surface_params(
 
     // Responses-specific fields for store - read from surface instead of __oai_* keys
     if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
-        // Read from surface.resp_input
-        if (surface.contains("resp_input") && !surface.at("resp_input").is_null()) {
-            params.oaicompat_resp_input = surface.at("resp_input");
-        }
-        // Read from surface.resp_instructions
-        if (surface.contains("resp_instructions") && !surface.at("resp_instructions").is_null()) {
-            params.oaicompat_resp_instructions = surface.at("resp_instructions");
-        }
-        // Read surface-private fields
-        if (surface.contains("prev_response_id")) {
-            params.oaicompat_resp_prev_id = surface.at("prev_response_id").get<std::string>();
-        }
-        if (surface.contains("conv_input")) {
-            params.oaicompat_resp_conv_input = surface.at("conv_input");
-        }
-        if (surface.contains("ws_local")) {
-            params.oaicompat_resp_ws_local = surface.at("ws_local").get<std::string>();
-        }
-        // Read web search fields from surface
-        if (surface.contains("web_search_enabled")) {
-            params.oaicompat_web_search_enabled = surface.at("web_search_enabled").get<bool>();
-        }
-        if (surface.contains("web_search_query")) {
-            params.oaicompat_web_search_query = surface.at("web_search_query").get<std::string>();
-        }
-        if (surface.contains("web_search_results")) {
-            params.oaicompat_web_search_results = surface.at("web_search_results");
-        }
-        if (surface.contains("web_search_actions")) {
-            params.oaicompat_web_search_actions = surface.at("web_search_actions");
-        }
-        if (surface.contains("web_search_n_requests")) {
-            params.oaicompat_web_search_n_requests = surface.at("web_search_n_requests").get<int32_t>();
-        }
-        if (surface.contains("web_search_echo_tools")) {
-            params.oaicompat_web_search_echo_tools = surface.at("web_search_echo_tools");
-        }
         params.oaicompat_resp_request = data;
         params.oaicompat_resp_surface = surface;
     }
