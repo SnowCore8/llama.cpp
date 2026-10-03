@@ -4267,7 +4267,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             server_task_type type,
             const json & data,
             const std::vector<raw_buffer> & files,
-            task_response_type res_type) {
+            task_response_type res_type,
+            const json & surface) {
     GGML_ASSERT(type == SERVER_TASK_TYPE_COMPLETION || type == SERVER_TASK_TYPE_INFILL);
 
     auto res = create_response();
@@ -4332,12 +4333,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             sse_ping_interval = task.params.sse_ping_interval;
 
             // Fill surface-specific fields (extracted to fill_surface_params)
-            // Use surface-aware version if _surface field is present
-            if (data.contains("_surface") && data.at("_surface").is_object()) {
-                server_schema::fill_surface_params(task.params, res_type, data, data.at("_surface"), completion_id, meta->model_name);
-            } else {
-                server_schema::fill_surface_params(task.params, res_type, data, completion_id, meta->model_name);
-            }
+            server_schema::fill_surface_params(task.params, res_type, data, surface, completion_id, meta->model_name);
 
             // prepare child tasks
             if (task.params.n_cmpl > 1) {
@@ -5180,16 +5176,14 @@ void server_routes::init_routes() {
             prepared.web_search_n_requests,
             req.ws_token);
 
-        // Use parsed_body for handle_completions_impl, attach surface payload
-        json body_parsed = surface_req.parsed_body;
-        body_parsed["_surface"] = surface_req.surface;
-
+        // Pass parsed_body and surface payload separately (no transport key)
         return handle_completions_impl(
             req,
             SERVER_TASK_TYPE_COMPLETION,
-            body_parsed,
+            surface_req.parsed_body,
             files,
-            TASK_RESPONSE_TYPE_OAI_RESP);
+            TASK_RESPONSE_TYPE_OAI_RESP,
+            surface_req.surface);
     };
 
     this->post_responses_tok_oai = [this](const server_http_req & req) {
@@ -5485,15 +5479,14 @@ void server_routes::init_routes() {
             params,
             meta->logit_bias_eog,
             files);
-        // Use parsed_body for handle_completions_impl, attach surface payload
-        json body_parsed = surface_req.parsed_body;
-        body_parsed["_surface"] = surface_req.surface;
+        // Pass parsed_body and surface payload separately (no transport key)
         return handle_completions_impl(
             req,
             SERVER_TASK_TYPE_COMPLETION,
-            body_parsed,
+            surface_req.parsed_body,
             files,
-            TASK_RESPONSE_TYPE_ANTHROPIC);
+            TASK_RESPONSE_TYPE_ANTHROPIC,
+            surface_req.surface);
     };
 
     this->post_anthropic_count_tokens = [this](const server_http_req & req) {

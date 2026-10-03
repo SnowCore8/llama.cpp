@@ -1028,12 +1028,11 @@ static void server_responses_echo_prompt_cache_options(json & response_obj, cons
 
 // Request tools plus the web_search tools stripped before templating; the Response
 // echo carries this shape, so the comparison must see both sides alike.
-static json server_responses_tools_for_compare(const json & request_body) {
+static json server_responses_tools_for_compare(const json & request_body, const json & surface) {
     json tools = json::array();
     if (request_body.contains("tools") && request_body.at("tools").is_array()) {
         tools = request_body.at("tools");
     }
-    const json & surface = request_body.contains("_surface") ? request_body.at("_surface") : json::object();
     if (surface.contains("web_search_echo_tools") &&
             surface.at("web_search_echo_tools").is_array()) {
         for (const auto & t : surface.at("web_search_echo_tools")) {
@@ -1043,7 +1042,7 @@ static json server_responses_tools_for_compare(const json & request_body) {
     return tools;
 }
 
-static void server_responses_inject_prompt_cache_diagnostics(json & response_obj, const json & request_body) {
+static void server_responses_inject_prompt_cache_diagnostics(json & response_obj, const json & request_body, const json & surface) {
     if (!request_body.contains("prompt_cache_options") ||
             !request_body.at("prompt_cache_options").is_object()) {
         return;
@@ -1153,7 +1152,7 @@ static void server_responses_inject_prompt_cache_diagnostics(json & response_obj
         };
         if (tier_norm(member_or_null(request_body, "service_tier")) != tier_norm(member_or_null(base, "service_tier"))) {
             reason = "service_tier_changed";
-        } else if (server_responses_tools_for_compare(request_body) != member_or_null(base, "tools")) {
+        } else if (server_responses_tools_for_compare(request_body, surface) != member_or_null(base, "tools")) {
             reason = "tools_changed";
         } else if (nested_or_null(request_body, "text", "format") != nested_or_null(base, "text", "format")) {
             reason = "text_format_changed";
@@ -1173,7 +1172,7 @@ static void server_responses_inject_prompt_cache_diagnostics(json & response_obj
     };
 }
 
-json server_responses_enrich_response(json response_obj, const json & request_body) {
+json server_responses_enrich_response(json response_obj, const json & request_body, const json & surface) {
     if (!response_obj.contains("object")) {
         response_obj["object"] = "response";
     }
@@ -1196,18 +1195,12 @@ json server_responses_enrich_response(json response_obj, const json & request_bo
         }
     }
     // Echo input from surface payload (converted from Responses API format)
-    {
-        const json & surface = request_body.contains("_surface") ? request_body.at("_surface") : json::object();
-        if (!response_obj.contains("input") && surface.contains("resp_input")) {
-            response_obj["input"] = surface.at("resp_input");
-        }
+    if (!response_obj.contains("input") && surface.contains("resp_input")) {
+        response_obj["input"] = surface.at("resp_input");
     }
     // previous_response_id is stripped from the prepared request; enrich sees the kept value
-    {
-        const json & surface = request_body.contains("_surface") ? request_body.at("_surface") : json::object();
-        if (!response_obj.contains("previous_response_id") && surface.contains("prev_response_id")) {
-            response_obj["previous_response_id"] = surface.at("prev_response_id");
-        }
+    if (!response_obj.contains("previous_response_id") && surface.contains("prev_response_id")) {
+        response_obj["previous_response_id"] = surface.at("prev_response_id");
     }
     // Fast mode: official responses show service_tier=priority for request fast or priority.
     if (response_obj.contains("service_tier") && response_obj.at("service_tier").is_string() &&
@@ -1220,13 +1213,10 @@ json server_responses_enrich_response(json response_obj, const json & request_bo
         response_obj["tools"] = json::array();
     }
     // Restore web_search tools stripped during local deepen so Response echoes request shape.
-    {
-        const json & surface = request_body.contains("_surface") ? request_body.at("_surface") : json::object();
-        if (surface.contains("web_search_echo_tools") &&
-                surface.at("web_search_echo_tools").is_array()) {
-            for (const auto & t : surface.at("web_search_echo_tools")) {
-                response_obj["tools"].push_back(t);
-            }
+    if (surface.contains("web_search_echo_tools") &&
+            surface.at("web_search_echo_tools").is_array()) {
+        for (const auto & t : surface.at("web_search_echo_tools")) {
+            response_obj["tools"].push_back(t);
         }
     }
     if (!response_obj.contains("tool_choice") || response_obj.at("tool_choice").is_null()) {
@@ -1294,7 +1284,7 @@ json server_responses_enrich_response(json response_obj, const json & request_bo
 
     // Echoed prompt_cache_options complete with local defaults; a comparison id adds diagnostics.
     server_responses_echo_prompt_cache_options(response_obj, request_body);
-    server_responses_inject_prompt_cache_diagnostics(response_obj, request_body);
+    server_responses_inject_prompt_cache_diagnostics(response_obj, request_body, surface);
 
     if (!response_obj.contains("error")) {
         response_obj["error"] = nullptr;
@@ -1305,7 +1295,6 @@ json server_responses_enrich_response(json response_obj, const json & request_bo
 
     // Local web_search deepen: prepend hosted-shaped web_search_call / open_page items.
     {
-        const json & surface = request_body.contains("_surface") ? request_body.at("_surface") : json::object();
         const bool ws_enabled = surface.contains("web_search_enabled") && surface.at("web_search_enabled").get<bool>();
         if (ws_enabled && response_obj.contains("output") && response_obj.at("output").is_array()) {
             const std::string ws_query = surface.contains("web_search_query") ? surface.at("web_search_query").get<std::string>() : std::string();
@@ -1328,60 +1317,6 @@ json server_responses_enrich_response(json response_obj, const json & request_bo
     }
 
     return response_obj;
-}
-
-json server_responses_build_error_failed_sse_events(
-    const std::string & resp_id,
-    const std::string & model,
-    const json & request_body,
-    const std::string & message,
-    const std::string & code) {
-    const int64_t t = (int64_t) std::time(nullptr);
-
-    json failed = {
-        {"id",         resp_id},
-        {"object",     "response"},
-        {"created_at", t},
-        {"completed_at", t},
-        {"model",      model},
-        {"status",     "failed"},
-        {"output",     json::array()},
-        {"error",      json {
-            {"code",    code},
-            {"message", message},
-        }},
-        {"incomplete_details", nullptr},
-    };
-    failed = server_responses_enrich_response(std::move(failed), request_body);
-    failed["status"] = "failed";
-    failed["error"] = json {
-        {"code",    code},
-        {"message", message},
-    };
-
-    auto push = [&](const std::string & event_name, json data) {
-        data["type"] = event_name;
-        data["sequence_number"] = server_responses_next_seq(resp_id);
-        return json {
-            {"event", event_name},
-            {"data",  std::move(data)},
-        };
-    };
-
-    json events = json::array();
-    events.push_back(push("error", json {
-        {"code",    code},
-        {"message", message},
-        {"param",   nullptr},
-    }));
-    events.push_back(push("response.failed", json { {"response", failed} }));
-
-    server_responses_remember(
-        failed,
-        request_body.contains("input") ? request_body.at("input") : json::array(),
-        request_body.contains("instructions") ? request_body.at("instructions") : json(nullptr));
-    server_responses_reset_seq(resp_id);
-    return events;
 }
 
 static int64_t server_responses_now_unix() {

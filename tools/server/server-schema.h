@@ -107,14 +107,6 @@ void fill_surface_params(
                     task_params & params,
                     task_response_type res_type,
                     const json & data,
-                    const std::string & completion_id,
-                    const std::string & model_name);
-
-// Fill surface-specific fields from surface payload
-void fill_surface_params(
-                    task_params & params,
-                    task_response_type res_type,
-                    const json & data,
                     const json & surface,
                     const std::string & completion_id,
                     const std::string & model_name);

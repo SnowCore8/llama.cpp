@@ -921,7 +921,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
     }
 
     const json req = req_early;
-    res = server_responses_enrich_response(std::move(res), req);
+    res = server_responses_enrich_response(std::move(res), req, oaicompat_resp_surface);
     // enrich may default-fill incomplete_details=null when absent; restore after limit stop
     if (resp_incomplete) {
         res["status"] = "incomplete";
@@ -1164,7 +1164,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
         response_obj["incomplete_details"] = json { {"reason", incomplete_reason} };
     }
     const json req = req_stream;
-    response_obj = server_responses_enrich_response(std::move(response_obj), req);
+    response_obj = server_responses_enrich_response(std::move(response_obj), req, oaicompat_resp_surface);
     if (resp_incomplete) {
         response_obj["status"] = "incomplete";
         response_obj["incomplete_details"] = json { {"reason", incomplete_reason} };
@@ -1742,7 +1742,7 @@ json server_task_result_cmpl_partial::to_json_oaicompat_resp() {
     };
     // Attach required OpenAI Response fields (tools / tool_choice / parallel_tool_calls / store)
     {
-        response_stub = server_responses_enrich_response(std::move(response_stub), req_partial);
+        response_stub = server_responses_enrich_response(std::move(response_stub), req_partial, generation_params.oaicompat_resp_surface);
         // enrich may set status=completed by default when missing; keep in_progress for stubs
         response_stub["status"] = "in_progress";
         if (response_stub.contains("completed_at")) {

@@ -99,6 +99,7 @@ struct task_params {
     std::string oaicompat_resp_prev_id;    // previous_response_id for response echo
     json        oaicompat_resp_conv_input   = nullptr; // conversation input for Response Store
     std::string oaicompat_resp_ws_local;   // WebSocket local token for connection cache
+    json        oaicompat_resp_surface = nullptr; // opaque surface payload for response enrichment
 
     // Web search fields
     bool        oaicompat_web_search_enabled = false;
@@ -213,6 +214,7 @@ struct task_result_state {
     std::string oaicompat_resp_prev_id;
     json        oaicompat_resp_conv_input   = nullptr;
     std::string oaicompat_resp_ws_local;
+    json        oaicompat_resp_surface = nullptr;
 
     // Web search fields
     bool        oaicompat_web_search_enabled = false;
@@ -312,15 +314,6 @@ struct server_task {
         }
     }
 
-    // legacy /v1/completions echo + logprobs: also report prompt positions, so the prompt
-    // must be decoded with logits at every position
-    bool need_prompt_logprobs() const {
-        return params.res_type == TASK_RESPONSE_TYPE_OAI_CMPL &&
-            params.oaicompat_cmpl_echo &&
-            params.sampling.n_probs > 0 &&
-            !params.oaicompat_cmpl_hide_rank_logprobs; // rank-only logprobs are hidden, no prompt rows needed
-    }
-
     // utility function
     static std::unordered_set<int> get_list_id(const std::vector<server_task> & tasks) {
         std::unordered_set<int> ids(tasks.size());
@@ -364,6 +357,7 @@ struct server_task {
         st.oaicompat_resp_prev_id    = params.oaicompat_resp_prev_id;
         st.oaicompat_resp_conv_input = params.oaicompat_resp_conv_input;
         st.oaicompat_resp_ws_local   = params.oaicompat_resp_ws_local;
+        st.oaicompat_resp_surface    = params.oaicompat_resp_surface;
         // Copy web search fields
         st.oaicompat_web_search_enabled    = params.oaicompat_web_search_enabled;
         st.oaicompat_web_search_query      = params.oaicompat_web_search_query;
@@ -497,6 +491,7 @@ struct server_task_result_cmpl_final : server_task_result {
     std::string oaicompat_resp_prev_id;
     json        oaicompat_resp_conv_input   = nullptr;
     std::string oaicompat_resp_ws_local;
+    json        oaicompat_resp_surface = nullptr;
 
     // Web search fields
     bool        oaicompat_web_search_enabled = false;
@@ -526,6 +521,7 @@ struct server_task_result_cmpl_final : server_task_result {
         oaicompat_resp_prev_id    = state.oaicompat_resp_prev_id;
         oaicompat_resp_conv_input = state.oaicompat_resp_conv_input;
         oaicompat_resp_ws_local   = state.oaicompat_resp_ws_local;
+        oaicompat_resp_surface    = state.oaicompat_resp_surface;
         // Copy web search fields
         oaicompat_web_search_enabled    = state.oaicompat_web_search_enabled;
         oaicompat_web_search_query      = state.oaicompat_web_search_query;
