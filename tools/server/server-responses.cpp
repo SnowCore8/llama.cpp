@@ -1185,7 +1185,7 @@ json server_responses_enrich_response(json response_obj, const json & request_bo
         "temperature", "top_logprobs", "top_p", "truncation", "metadata", "store",
         "service_tier", "user", "max_output_tokens", "tools", "tool_choice",
         "parallel_tool_calls", "text", "reasoning", "instructions",
-        "background", "include", "max_tool_calls", "prompt",
+        "background", "include", "max_tool_calls",
         "prompt_cache_key", "prompt_cache_retention", "prompt_cache_options",
         "safety_identifier", "stream_options", "context_management", "conversation",
     };
@@ -1193,6 +1193,12 @@ json server_responses_enrich_response(json response_obj, const json & request_bo
         if (request_body.contains(key) && !response_obj.contains(key)) {
             response_obj[key] = request_body.at(key);
         }
+    }
+    // prompt: only echo if it's an object (ResponsePrompt with id/variables/version).
+    // String prompts are internal to the server and should not appear in responses.
+    if (request_body.contains("prompt") && !response_obj.contains("prompt") &&
+            request_body.at("prompt").is_object()) {
+        response_obj["prompt"] = request_body.at("prompt");
     }
     // Echo input from surface payload (converted from Responses API format)
     if (!response_obj.contains("input") && surface.contains("resp_input")) {
