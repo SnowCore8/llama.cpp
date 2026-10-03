@@ -119,14 +119,14 @@ struct server_surface_request {
 
 **Phase 2 计划（S2/S3/S4 后续）**：
 
-1. **S2/S3 Phase 2**：重构 `parse_*_request` 函数，直接产出 `server_surface_request`
+1. **S2/S3 Phase 2**：✅ 完成 - 重构 `parse_*_request` 函数，直接产出 `server_surface_request`
    - 将 `server_chat_convert_responses_to_chatcmpl` 和 `server_chat_convert_anthropic_to_oai` 的转换逻辑内联到 `parse_*_to_surface_request`
    - 面私有数据放入 `server_surface_request.surface` 字段
 
-2. **S4 Phase 2+**：继续清除其他 `__oai_*` 键
-   - Phase 2: 清除 `__oai_ws_local`（WebSocket）
-   - Phase 3: 清除 `__oai_web_search_*`（Web 搜索，最多使用）
-   - Phase 4: 清除其他键（`__oai_prev_response_id`、`__oai_conv_input` 等）
+2. **S4 Phase 2+**：✅ 完成 - 继续清除其他 `__oai_*` 键
+   - Phase 2: ✅ 清除 `__oai_ws_local`（WebSocket）- 通过 `req.ws_token` 参数化
+   - Phase 3: ✅ 清除 `__oai_web_search_*`（Web 搜索）- 通过 `server_web_search_deepen` 结构体返回
+   - Phase 4: ✅ 清除其他键（`__oai_prev_response_id`、`__oai_conv_input` 等）- 通过 `server_responses_prepared` 结构体返回
 
 **当前改动文件（待提交）**：
 - `server-task.h`: S3 `server_surface_request` 结构定义
