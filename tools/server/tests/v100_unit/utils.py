@@ -650,9 +650,9 @@ class ServerPreset:
     @staticmethod
     def router() -> ServerProcess:
         server = ServerProcess()
-        # v100: Use local models.ini for router mode
+        # v100: Use local models <= 9B only
         server.offline = True
-        server.models_dir = "/opt/llama_gguf"
+        server.models_preset = os.path.join(os.path.dirname(__file__), "v100_router_models.ini")
         server.model_file = None
         server.model_alias = None
         server.model_hf_repo = None
