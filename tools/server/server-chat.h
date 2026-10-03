@@ -11,6 +11,17 @@
 
 #include <unordered_set>
 
+// Parse Chat Completions request to server_surface_request
+// Generates complete server_surface_request including prompt, files, params, and surface payload
+// Surface-private data (store, metadata, user, safety_identifier, service_tier) goes into result.surface
+server_surface_request parse_chat_completions_to_surface_request(
+    json & body,
+    const server_chat_params & opt,
+    const llama_vocab * vocab,
+    const common_params & params_base,
+    const std::vector<llama_logit_bias> & logit_bias_eog,
+    std::vector<raw_buffer> & out_files);
+
 // Parse Anthropic request to server_surface_request
 // Generates complete server_surface_request including prompt, files, params, and surface payload
 // Surface-private data goes into result.surface

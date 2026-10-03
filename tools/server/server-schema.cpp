@@ -590,22 +590,6 @@ void fill_surface_params(
     // archive the surface payload for response serialization on every surface
     params.oaicompat_surface = surface;
 
-    // Chat-specific fields ride the surface payload (echoed on the response,
-    // persisted by the store when store=true)
-    if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT) {
-        json chat_surface = std::move(params.oaicompat_surface);
-        chat_surface["store"] = json_value(data, "store", false);
-        if (data.contains("metadata") && !data.at("metadata").is_null()) {
-            chat_surface["metadata"] = data.at("metadata");
-        }
-        chat_surface["user"] = json_value(data, "user", std::string());
-        if (data.contains("safety_identifier") && !data.at("safety_identifier").is_null()) {
-            chat_surface["safety_identifier"] = data.at("safety_identifier").get<std::string>();
-        }
-        chat_surface["service_tier"] = json_value(data, "service_tier", std::string());
-        params.oaicompat_surface = std::move(chat_surface);
-    }
-
     // Completions may include request `user` for client correlation; echo=true repeats
     // the prompt in the choice text. best_of generates extra choices ranked by logprobs.
     if (res_type == TASK_RESPONSE_TYPE_OAI_CMPL) {

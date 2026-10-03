@@ -212,6 +212,48 @@ json convert_transcriptions_to_chatcmpl(
     return chatcmpl_body;
 }
 
+// Parse Chat Completions request to server_surface_request
+// Generates complete server_surface_request including prompt, files, params, and surface payload
+// Surface-private data (store, metadata, user, safety_identifier, service_tier) goes into result.surface
+server_surface_request parse_chat_completions_to_surface_request(
+    json & body,
+    const server_chat_params & opt,
+    const llama_vocab * vocab,
+    const common_params & params_base,
+    const std::vector<llama_logit_bias> & logit_bias_eog,
+    std::vector<raw_buffer> & out_files) {
+    server_surface_request result;
+
+    // Parse Chat Completions format to extract prompt and params
+    json llama_params = oaicompat_chat_params_parse(body, opt, out_files, false);
+
+    // Fill task_params from llama_params using schema evaluation
+    result.params = server_schema::eval_llama_cmpl_schema(vocab, params_base, logit_bias_eog, llama_params);
+
+    // Extract prompt from llama_params
+    result.prompt = llama_params.value("prompt", json(nullptr));
+
+    // Store full parsed body
+    result.parsed_body = llama_params;
+
+    // Fill surface payload with Chat Completions-specific fields
+    json surface_data;
+    surface_data["store"] = json_value(body, "store", false);
+    if (body.contains("metadata") && !body.at("metadata").is_null()) {
+        surface_data["metadata"] = body.at("metadata");
+    }
+    surface_data["user"] = json_value(body, "user", std::string());
+    if (body.contains("safety_identifier") && !body.at("safety_identifier").is_null()) {
+        surface_data["safety_identifier"] = body.at("safety_identifier").get<std::string>();
+    }
+    surface_data["service_tier"] = json_value(body, "service_tier", std::string());
+
+    // Attach surface payload
+    result.surface = surface_data;
+
+    return result;
+}
+
 // Parse Anthropic request to server_surface_request
 // Generates complete server_surface_request including prompt, files, params, and surface payload
 // Inlines conversion logic from server_chat_convert_anthropic_to_oai (S3)

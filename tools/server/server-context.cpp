@@ -4938,17 +4938,21 @@ void server_routes::init_routes() {
         auto res = create_response();
         std::vector<raw_buffer> files;
         json body = json::parse(req.body);
-        // S2: use surface-specific parser
-        json body_parsed = parse_chat_completions_request(
+        // §2 constraint 1: use surface-specific parser (consistent with Responses/Anthropic)
+        server_surface_request surface_req = parse_chat_completions_to_surface_request(
             body,
             meta->chat_params,
+            ctx_server.vocab,
+            params,
+            meta->logit_bias_eog,
             files);
         return handle_completions_impl(
             req,
             SERVER_TASK_TYPE_COMPLETION,
-            body_parsed,
+            surface_req.parsed_body,
             files,
-            TASK_RESPONSE_TYPE_OAI_CHAT);
+            TASK_RESPONSE_TYPE_OAI_CHAT,
+            surface_req.surface);
     };
 
     this->post_chat_completions_tok = [this](const server_http_req & req) {
