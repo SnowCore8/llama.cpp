@@ -587,6 +587,9 @@ void fill_surface_params(
     params.oaicompat_cmpl_id = completion_id;
     params.oaicompat_model   = model_name;
 
+    // archive the surface payload for response serialization on every surface
+    params.oaicompat_surface = surface;
+
     // Chat-specific fields for store
     if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT) {
         params.oaicompat_chat_store = json_value(data, "store", false);
@@ -599,10 +602,9 @@ void fill_surface_params(
         }
     }
 
-    // Responses-specific fields for store - read from surface instead of __oai_* keys
+    // Responses-specific fields for store
     if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
         params.oaicompat_resp_request = data;
-        params.oaicompat_resp_surface = surface;
     }
 }
 

@@ -921,18 +921,18 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
     }
 
     const json req = req_early;
-    res = server_responses_enrich_response(std::move(res), req, oaicompat_resp_surface);
+    res = server_responses_enrich_response(std::move(res), req, oaicompat_surface);
     // enrich may default-fill incomplete_details=null when absent; restore after limit stop
     if (resp_incomplete) {
         res["status"] = "incomplete";
         res["incomplete_details"] = json { {"reason", incomplete_reason} };
     }
     server_responses_remember(res,
-                              json_value(oaicompat_resp_surface, "resp_input", json()),
-                              json_value(oaicompat_resp_surface, "resp_instructions", json()),
-                              json_value(oaicompat_resp_surface, "conv_input", json()),
+                              json_value(oaicompat_surface, "resp_input", json()),
+                              json_value(oaicompat_surface, "resp_instructions", json()),
+                              json_value(oaicompat_surface, "conv_input", json()),
                               json_value(req, "model", std::string()),
-                              json_value(oaicompat_resp_surface, "ws_local", std::string()));
+                              json_value(oaicompat_surface, "ws_local", std::string()));
     server_responses_reset_seq(oai_resp_id);
 
     return res;
@@ -952,9 +952,9 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
     // final output, so both index spaces count them
     const int ws_off = (int) server_web_search_responses_output_items(
         req_stream,
-        json_value(generation_params.oaicompat_resp_surface, "web_search_query", std::string()),
-        json_value(generation_params.oaicompat_resp_surface, "web_search_results", json::array()),
-        json_value(generation_params.oaicompat_resp_surface, "web_search_actions", json::array()),
+        json_value(generation_params.oaicompat_surface, "web_search_query", std::string()),
+        json_value(generation_params.oaicompat_surface, "web_search_results", json::array()),
+        json_value(generation_params.oaicompat_surface, "web_search_actions", json::array()),
         oai_resp_id
     ).size();
 
@@ -1043,11 +1043,11 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
         json raw_item = output_item; // enrich annotates the final response once
         // web_search: enrich annotates the final output later, annotate a copy here so the
         // done events carry the same url_citations as response.completed
-        if (json_value(generation_params.oaicompat_resp_surface, "web_search_enabled", false)) {
+        if (json_value(generation_params.oaicompat_surface, "web_search_enabled", false)) {
             json copy = json { {"output", json::array({ output_item })} };
             server_web_search_annotate_responses_output(
                 copy,
-                json_value(generation_params.oaicompat_resp_surface, "web_search_results", json::array()));
+                json_value(generation_params.oaicompat_surface, "web_search_results", json::array()));
             output_item  = copy.at("output").at(0);
             content_part = output_item.at("content").at(0);
         }
@@ -1166,17 +1166,17 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
         response_obj["incomplete_details"] = json { {"reason", incomplete_reason} };
     }
     const json req = req_stream;
-    response_obj = server_responses_enrich_response(std::move(response_obj), req, oaicompat_resp_surface);
+    response_obj = server_responses_enrich_response(std::move(response_obj), req, oaicompat_surface);
     if (resp_incomplete) {
         response_obj["status"] = "incomplete";
         response_obj["incomplete_details"] = json { {"reason", incomplete_reason} };
     }
     server_responses_remember(response_obj,
-                              json_value(oaicompat_resp_surface, "resp_input", json()),
-                              json_value(oaicompat_resp_surface, "resp_instructions", json()),
-                              json_value(oaicompat_resp_surface, "conv_input", json()),
+                              json_value(oaicompat_surface, "resp_input", json()),
+                              json_value(oaicompat_surface, "resp_instructions", json()),
+                              json_value(oaicompat_surface, "conv_input", json()),
                               json_value(req, "model", std::string()),
-                              json_value(oaicompat_resp_surface, "ws_local", std::string()));
+                              json_value(oaicompat_surface, "ws_local", std::string()));
 
     push_evt(resp_incomplete ? "response.incomplete" : "response.completed", json {
         {"response", response_obj},
@@ -1225,7 +1225,7 @@ json server_task_result_cmpl_final::to_json_anthropic() {
     // thinking block comes first (Anthropic extended thinking format)
     if (!msg.reasoning_content.empty()) {
         // display=omitted hides the text but keeps the block and its signature
-        const std::string thinking_text = generation_params.anthropic_thinking_display_omitted
+        const std::string thinking_text = json_value(generation_params.oaicompat_surface, "thinking_display_omitted", false)
             ? std::string()
             : msg.reasoning_content;
         content_blocks.push_back({
@@ -1332,7 +1332,7 @@ json server_task_result_cmpl_final::to_json_anthropic_stream() {
             }
 
             // display=omitted keeps the block and the signature_delta, but skips thinking_delta
-            if (!generation_params.anthropic_thinking_display_omitted) {
+            if (!json_value(generation_params.oaicompat_surface, "thinking_display_omitted", false)) {
                 events.push_back({
                     {"event", "content_block_delta"},
                     {"data", {
@@ -1520,12 +1520,12 @@ void server_task_result_cmpl_partial::update(task_result_state & state) {
         state.oai_resp_created = true;
     }
     if (res_type == TASK_RESPONSE_TYPE_OAI_RESP && !state.oai_web_search_streamed &&
-            json_value(state.oaicompat_resp_surface, "web_search_enabled", false)) {
+            json_value(state.oaicompat_surface, "web_search_enabled", false)) {
         json prefix = server_web_search_responses_output_items(
             state.oaicompat_resp_request,
-            json_value(state.oaicompat_resp_surface, "web_search_query", std::string()),
-            json_value(state.oaicompat_resp_surface, "web_search_results", json::array()),
-            json_value(state.oaicompat_resp_surface, "web_search_actions", json::array()),
+            json_value(state.oaicompat_surface, "web_search_query", std::string()),
+            json_value(state.oaicompat_surface, "web_search_results", json::array()),
+            json_value(state.oaicompat_surface, "web_search_actions", json::array()),
             state.oai_resp_id);
         state.oai_web_search_output_offset = (int) prefix.size();
         state.oai_web_search_streamed = true;
@@ -1746,7 +1746,7 @@ json server_task_result_cmpl_partial::to_json_oaicompat_resp() {
     };
     // Attach required OpenAI Response fields (tools / tool_choice / parallel_tool_calls / store)
     {
-        response_stub = server_responses_enrich_response(std::move(response_stub), req_partial, generation_params.oaicompat_resp_surface);
+        response_stub = server_responses_enrich_response(std::move(response_stub), req_partial, generation_params.oaicompat_surface);
         // enrich may set status=completed by default when missing; keep in_progress for stubs
         response_stub["status"] = "in_progress";
         if (response_stub.contains("completed_at")) {
@@ -1767,12 +1767,12 @@ json server_task_result_cmpl_partial::to_json_oaicompat_resp() {
     const int ws_off = oai_web_search_output_offset;
     // Emit web_search_call items once at stream start (after created/in_progress).
     if (!oai_web_search_streamed &&
-            json_value(generation_params.oaicompat_resp_surface, "web_search_enabled", false)) {
+            json_value(generation_params.oaicompat_surface, "web_search_enabled", false)) {
         json prefix = server_web_search_responses_output_items(
             req_partial,
-            json_value(generation_params.oaicompat_resp_surface, "web_search_query", std::string()),
-            json_value(generation_params.oaicompat_resp_surface, "web_search_results", json::array()),
-            json_value(generation_params.oaicompat_resp_surface, "web_search_actions", json::array()),
+            json_value(generation_params.oaicompat_surface, "web_search_query", std::string()),
+            json_value(generation_params.oaicompat_surface, "web_search_results", json::array()),
+            json_value(generation_params.oaicompat_surface, "web_search_actions", json::array()),
             oai_resp_id);
         int idx = 0;
         for (auto & item : prefix) {
@@ -2032,7 +2032,7 @@ json server_task_result_cmpl_partial::to_json_anthropic() {
             }
 
             // display=omitted keeps the block and the signature_delta, but skips thinking_delta
-            if (!generation_params.anthropic_thinking_display_omitted) {
+            if (!json_value(generation_params.oaicompat_surface, "thinking_display_omitted", false)) {
                 events.push_back({
                     {"event", "content_block_delta"},
                     {"data", {

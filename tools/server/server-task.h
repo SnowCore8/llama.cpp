@@ -95,11 +95,7 @@ struct task_params {
 
     // Responses surface payload (resp_input/instructions, prev/conv, ws token,
     // web search deepen data) for response serialization; the kernel doesn't read it
-    json        oaicompat_resp_surface = nullptr;
-
-    // Anthropic Messages: thinking.display == "omitted" hides thinking text but keeps the
-    // thinking block, its (empty) signature and the signature_delta
-    bool anthropic_thinking_display_omitted = false;
+    json        oaicompat_surface = nullptr;
 
     // OpenAI Chat Completions: echo/store request fields (persisted when store=true)
     bool oaicompat_chat_store    = false;
@@ -197,7 +193,7 @@ struct task_result_state {
     json oaicompat_resp_request = nullptr;
 
     // Responses surface payload for response serialization
-    json oaicompat_resp_surface = nullptr;
+    json oaicompat_surface = nullptr;
 
     task_result_state(const common_chat_parser_params & chat_parser_params, const std::string & resp_id = "");
 
@@ -326,7 +322,7 @@ struct server_task {
         task_result_state st(params.chat_parser_params, params.oaicompat_resp_id);
         st.oai_custom_tool_names       = params.oai_custom_tool_names;
         st.oaicompat_resp_request      = params.oaicompat_resp_request;
-        st.oaicompat_resp_surface      = params.oaicompat_resp_surface;
+        st.oaicompat_surface      = params.oaicompat_surface;
         return st;
     }
 
@@ -448,7 +444,7 @@ struct server_task_result_cmpl_final : server_task_result {
     json oaicompat_resp_request = nullptr;
 
     // Responses surface payload for response serialization
-    json oaicompat_resp_surface = nullptr;
+    json oaicompat_surface = nullptr;
 
     virtual bool is_stop() override {
         return true; // in stream mode, final responses are considered stop
@@ -464,7 +460,7 @@ struct server_task_result_cmpl_final : server_task_result {
         oai_resp_reasoning_id = state.oai_resp_reasoning_id;
         oai_resp_message_id = state.oai_resp_message_id;
         oaicompat_resp_request = state.oaicompat_resp_request;
-        oaicompat_resp_surface = state.oaicompat_resp_surface;
+        oaicompat_surface = state.oaicompat_surface;
     }
 
     json to_json_non_oaicompat();
