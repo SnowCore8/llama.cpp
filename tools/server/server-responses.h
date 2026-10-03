@@ -19,6 +19,12 @@ struct server_responses_prepared {
     json body;
     std::string prev_response_id;  // for response echo (was __oai_prev_response_id)
     json conv_input;               // for conversation store (was __oai_conv_input)
+    // Web search metadata (was __oai_web_search_*)
+    bool web_search_enabled = false;
+    std::string web_search_query;
+    json web_search_results = nullptr;
+    json web_search_actions = nullptr;
+    int web_search_n_requests = 0;
 };
 
 server_responses_prepared server_responses_prepare_request(json body, const std::string & ws_token = "");

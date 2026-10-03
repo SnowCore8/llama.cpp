@@ -1129,12 +1129,10 @@ static bool server_web_search_denied_by_allowed_tools(const json & body) {
     return true;
 }
 
-void server_web_search_apply(json & body) {
-    if (json_value(body, "__oai_web_search", false)) {
-        return;
-    }
+server_web_search_deepen server_web_search_apply(json & body) {
+    server_web_search_deepen deepen;
     if (server_web_search_denied_by_allowed_tools(body)) {
-        return;
+        return deepen;
     }
 
     bool want = false;
@@ -1162,17 +1160,18 @@ void server_web_search_apply(json & body) {
         }
     }
     if (!want) {
-        return;
+        return deepen;
     }
 
     server_web_search_options opt = server_web_search_options_from_body(body, echo_web_tools);
     json packed = server_web_search_run(opt);
 
-    body["__oai_web_search"] = true;
-    body["__oai_web_search_query"] = packed.at("query");
-    body["__oai_web_search_results"] = packed.at("results");
-    body["__oai_web_search_actions"] = packed.at("actions");
-    body["__oai_web_search_n_requests"] = packed.at("n_requests");
+    // Return web search metadata via struct (no transport keys)
+    deepen.enabled = true;
+    deepen.query = packed.at("query").get<std::string>();
+    deepen.results = packed.at("results");
+    deepen.actions = packed.at("actions");
+    deepen.n_requests = packed.at("n_requests").get<int>();
 
     std::ostringstream ctx;
     ctx << "You have local web_search results. Prefer these over parametric memory when relevant.\n";
@@ -1241,6 +1240,7 @@ void server_web_search_apply(json & body) {
             packed.at("results").size(),
             packed.at("actions").size(),
             packed.at("n_requests").get<int>());
+    return deepen;
 }
 
 json server_web_search_responses_output_items(

@@ -5173,7 +5173,12 @@ void server_routes::init_routes() {
             meta->logit_bias_eog,
             files,
             prepared.prev_response_id,
-            prepared.conv_input);
+            prepared.conv_input,
+            prepared.web_search_enabled,
+            prepared.web_search_query,
+            prepared.web_search_results,
+            prepared.web_search_actions,
+            prepared.web_search_n_requests);
 
         // Use parsed_body for handle_completions_impl, attach surface payload
         json body_parsed = surface_req.parsed_body;

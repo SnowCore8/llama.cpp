@@ -37,8 +37,17 @@ server_web_search_options server_web_search_options_from_body(
 // }
 json server_web_search_run(const server_web_search_options & opt);
 
-// Apply deepen onto request body (strip web_search tools, inject context, set __oai_web_search_*).
-void server_web_search_apply(json & body);
+// Apply deepen onto request body (strip web_search tools, inject context).
+// Returns web search metadata for surface payload (no transport keys).
+struct server_web_search_deepen {
+    bool enabled = false;
+    std::string query;
+    json results = nullptr;
+    json actions = nullptr;
+    int n_requests = 0;
+};
+
+server_web_search_deepen server_web_search_apply(json & body);
 
 // Build Responses output items (web_search_call[+open_page...]) honoring include[].
 json server_web_search_responses_output_items(

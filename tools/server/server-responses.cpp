@@ -798,7 +798,12 @@ server_responses_prepared server_responses_prepare_request(
     server_openai_validate_cloud_shaped_fields(body, /*allow_prompt=*/true);
     server_openai_apply_prompt_cache_semantics(body);
     // Local web_search deepen (strip hosted web_search tools, inject results, emit later).
-    server_web_search_apply(body);
+    auto ws_deepen = server_web_search_apply(body);
+    result.web_search_enabled = ws_deepen.enabled;
+    result.web_search_query = ws_deepen.query;
+    result.web_search_results = ws_deepen.results;
+    result.web_search_actions = ws_deepen.actions;
+    result.web_search_n_requests = ws_deepen.n_requests;
     // Official Responses `reasoning` object (effort/context/summary/generate_summary/mode).
     server_openai_validate_reasoning_object(body);
 

@@ -1352,7 +1352,12 @@ server_surface_request parse_responses_to_surface_request(
     const std::vector<llama_logit_bias> & logit_bias_eog,
     std::vector<raw_buffer> & out_files,
     const std::string & prev_response_id,
-    const json & conv_input) {
+    const json & conv_input,
+    bool web_search_enabled,
+    const std::string & web_search_query,
+    const json & web_search_results,
+    const json & web_search_actions,
+    int web_search_n_requests) {
     server_surface_request result;
 
     // Capture Responses-specific fields into surface payload before conversion
@@ -1373,19 +1378,20 @@ server_surface_request parse_responses_to_surface_request(
     if (body.contains("__oai_ws_local")) {
         surface_data["ws_local"] = body.at("__oai_ws_local");
     }
-    if (json_value(body, "__oai_web_search", false)) {
+    // Web search data passed as parameters (no transport keys)
+    if (web_search_enabled) {
         surface_data["web_search_enabled"] = true;
-        if (body.contains("__oai_web_search_query")) {
-            surface_data["web_search_query"] = body.at("__oai_web_search_query");
+        if (!web_search_query.empty()) {
+            surface_data["web_search_query"] = web_search_query;
         }
-        if (body.contains("__oai_web_search_results")) {
-            surface_data["web_search_results"] = body.at("__oai_web_search_results");
+        if (!web_search_results.is_null()) {
+            surface_data["web_search_results"] = web_search_results;
         }
-        if (body.contains("__oai_web_search_actions")) {
-            surface_data["web_search_actions"] = body.at("__oai_web_search_actions");
+        if (!web_search_actions.is_null()) {
+            surface_data["web_search_actions"] = web_search_actions;
         }
-        if (body.contains("__oai_web_search_n_requests")) {
-            surface_data["web_search_n_requests"] = body.at("__oai_web_search_n_requests");
+        if (web_search_n_requests > 0) {
+            surface_data["web_search_n_requests"] = web_search_n_requests;
         }
     }
 
