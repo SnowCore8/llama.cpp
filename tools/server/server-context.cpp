@@ -5162,16 +5162,17 @@ void server_routes::init_routes() {
         // First prepare the request (expand previous_response_id, etc.)
         json body = server_responses_prepare_request(json::parse(req.body), ctx_server.vocab, meta->slot_n_ctx);
 
-        // Capture surface data from Responses request
-        server_surface_request surface_req = parse_responses_to_surface_request(body, meta->chat_params);
-
-        // use surface-specific parser (includes conversion)
-        json body_parsed = parse_responses_request(
+        // Generate complete server_surface_request including prompt, files, params, and surface
+        server_surface_request surface_req = parse_responses_to_surface_request(
             body,
             meta->chat_params,
+            ctx_server.vocab,
+            params,
+            meta->logit_bias_eog,
             files);
 
-        // Attach surface payload to parsed body for fill_surface_params
+        // Use parsed_body for handle_completions_impl, attach surface payload
+        json body_parsed = surface_req.parsed_body;
         body_parsed["_surface"] = surface_req.surface;
 
         return handle_completions_impl(
@@ -5467,11 +5468,17 @@ void server_routes::init_routes() {
         auto res = create_response();
         std::vector<raw_buffer> files;
         json body = json::parse(req.body);
-        // S2: use surface-specific parser (includes conversion)
-        json body_parsed = parse_anthropic_request(
+        // Generate complete server_surface_request including prompt, files, params, and surface
+        server_surface_request surface_req = parse_anthropic_to_surface_request(
             body,
             meta->chat_params,
+            ctx_server.vocab,
+            params,
+            meta->logit_bias_eog,
             files);
+        // Use parsed_body for handle_completions_impl, attach surface payload
+        json body_parsed = surface_req.parsed_body;
+        body_parsed["_surface"] = surface_req.surface;
         return handle_completions_impl(
             req,
             SERVER_TASK_TYPE_COMPLETION,
@@ -5973,29 +5980,32 @@ std::unique_ptr<server_res_generator> server_routes::handle_count_tokens(const s
     json body = json::parse(req.body);
     bool is_oai = false;
 
-    // S2: use surface-specific parser based on res_type
-    json body_parsed;
+    // Use surface-specific parser based on res_type
+    json prompt;
     switch (res_type) {
         case TASK_RESPONSE_TYPE_OAI_CHAT:
             {
                 is_oai = true;
-                body_parsed = parse_chat_completions_request(body, meta->chat_params, files);
+                json body_parsed = parse_chat_completions_request(body, meta->chat_params, files);
+                prompt = body_parsed.at("prompt");
             } break;
         case TASK_RESPONSE_TYPE_OAI_RESP:
             {
                 is_oai = true;
-                body_parsed = parse_responses_request(body, meta->chat_params, files);
+                server_surface_request surface_req = parse_responses_to_surface_request(
+                    body, meta->chat_params, ctx_server.vocab, params, meta->logit_bias_eog, files);
+                prompt = surface_req.prompt;
             } break;
         case TASK_RESPONSE_TYPE_ANTHROPIC:
             {
-                body_parsed = parse_anthropic_request(body, meta->chat_params, files);
+                server_surface_request surface_req = parse_anthropic_to_surface_request(
+                    body, meta->chat_params, ctx_server.vocab, params, meta->logit_bias_eog, files);
+                prompt = surface_req.prompt;
             } break;
         default:
             res->error(format_error_response("invalid res_type", ERROR_TYPE_INVALID_REQUEST));
             return res;
     }
-
-    json prompt = body_parsed.at("prompt");
     // SRV_DBG("prompt = %s\n", prompt.dump().c_str());
 
     // TODO @ngxson : refactor this code block, move this to server-common and reuse it in other places

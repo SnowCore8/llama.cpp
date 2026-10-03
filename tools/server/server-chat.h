@@ -12,15 +12,25 @@
 #include <unordered_set>
 
 // Parse Anthropic request to server_surface_request
+// Generates complete server_surface_request including prompt, files, params, and surface payload
 // Surface-private data goes into result.surface
 server_surface_request parse_anthropic_to_surface_request(
-    const json & body,
-    const server_chat_params & opt);
+    json & body,
+    const server_chat_params & opt,
+    const llama_vocab * vocab,
+    const common_params & params_base,
+    const std::vector<llama_logit_bias> & logit_bias_eog,
+    std::vector<raw_buffer> & out_files);
 
 // Parse Responses request to server_surface_request
+// Generates complete server_surface_request including prompt, files, params, and surface payload
 server_surface_request parse_responses_to_surface_request(
-    const json & body,
-    const server_chat_params & opt);
+    json & body,
+    const server_chat_params & opt,
+    const llama_vocab * vocab,
+    const common_params & params_base,
+    const std::vector<llama_logit_bias> & logit_bias_eog,
+    std::vector<raw_buffer> & out_files);
 
 // Convert OpenAI Responses API format to OpenAI Chat Completions API format
 json server_chat_convert_responses_to_chatcmpl(const json & body);

@@ -163,10 +163,11 @@ struct task_params {
 // server_surface_request - the single entry point from surface to kernel
 // Kernel only accepts this structure; surface-specific data goes into `surface` field
 struct server_surface_request {
-    json                    prompt;   // template output (with injected tool grammar)
-    std::vector<raw_buffer> files;    // multimodal attachments
-    task_params             params;   // engine fields: sampling, cache key, stream, id_slot, n_cmpl, etc.
-    json                    surface;  // surface-private payload (for serialization/streaming), kernel doesn't read
+    json                    prompt;       // template output (with injected tool grammar)
+    std::vector<raw_buffer> files;        // multimodal attachments
+    task_params             params;       // engine fields: sampling, cache key, stream, id_slot, n_cmpl, etc.
+    json                    surface;      // surface-private payload (for serialization/streaming), kernel doesn't read
+    json                    parsed_body;  // full parsed JSON for handle_completions_impl (contains all fields needed by eval_llama_cmpl_schema)
 };
 
 // struct for tracking the state of a task (e.g., for streaming)

@@ -410,18 +410,6 @@ json parse_chat_completions_request(
     const server_chat_params & opt,
     std::vector<raw_buffer> & out_files);
 
-// Parse Responses request (OpenAI Responses format)
-json parse_responses_request(
-    json & body,
-    const server_chat_params & opt,
-    std::vector<raw_buffer> & out_files);
-
-// Parse Anthropic request (Anthropic Messages format)
-json parse_anthropic_request(
-    json & body,
-    const server_chat_params & opt,
-    std::vector<raw_buffer> & out_files);
-
 // used by /chat/completions endpoint (deprecated, use parse_chat_completions_request)
 json oaicompat_chat_params_parse(
     json & body, /* openai api json semantics */

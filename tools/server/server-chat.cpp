@@ -1,6 +1,7 @@
 #include "server-chat.h"
 #include "server-common.h"
 #include "server-responses.h"
+#include "server-schema.h"
 
 #include <algorithm>
 #include <chrono>
@@ -1305,25 +1306,59 @@ json convert_transcriptions_to_chatcmpl(
 }
 
 // Parse Anthropic request to server_surface_request
-// This is a placeholder that wraps the existing conversion + parse flow.
-// TODO: Integrate conversion logic to eliminate __oai_* intermediate keys.
+// Generates complete server_surface_request including prompt, files, params, and surface payload
 server_surface_request parse_anthropic_to_surface_request(
-    const json & body,
-    const server_chat_params & opt) {
+    json & body,
+    const server_chat_params & opt,
+    const llama_vocab * vocab,
+    const common_params & params_base,
+    const std::vector<llama_logit_bias> & logit_bias_eog,
+    std::vector<raw_buffer> & out_files) {
     server_surface_request result;
+
+    // Capture Anthropic-specific fields into surface payload before conversion
+    json surface_data;
+    if (body.contains("thinking") && body.at("thinking").is_object()) {
+        const auto & thinking = body.at("thinking");
+        if (json_value(thinking, "type", std::string()) == "enabled" &&
+            json_value(thinking, "display", std::string()) == "omitted") {
+            surface_data["thinking_display_omitted"] = true;
+        }
+    }
+
+    // Convert Anthropic format to Chat completions format
     json converted = server_chat_convert_anthropic_to_oai(body);
-    // TODO: Directly fill result.prompt, result.params without intermediate JSON
-    result.surface = converted;
+
+    // Parse chat completions format to extract prompt and params
+    json llama_params = oaicompat_chat_params_parse(converted, opt, out_files, false);
+
+    // Fill task_params from llama_params using schema evaluation
+    result.params = server_schema::eval_llama_cmpl_schema(vocab, params_base, logit_bias_eog, llama_params);
+
+    // Extract prompt from llama_params
+    result.prompt = llama_params.value("prompt", json(nullptr));
+
+    // Store full parsed body for handle_completions_impl
+    result.parsed_body = llama_params;
+
+    // Attach surface payload
+    result.surface = surface_data;
+
     return result;
 }
 
 // Parse Responses request to server_surface_request
+// Generates complete server_surface_request including prompt, files, params, and surface payload
 server_surface_request parse_responses_to_surface_request(
-    const json & body,
-    const server_chat_params & opt) {
+    json & body,
+    const server_chat_params & opt,
+    const llama_vocab * vocab,
+    const common_params & params_base,
+    const std::vector<llama_logit_bias> & logit_bias_eog,
+    std::vector<raw_buffer> & out_files) {
     server_surface_request result;
 
-    // Capture Responses-specific fields into surface payload
+    // Capture Responses-specific fields into surface payload before conversion
     json surface_data;
     if (body.contains("input")) {
         surface_data["resp_input"] = body.at("input");
@@ -1359,9 +1394,26 @@ server_surface_request parse_responses_to_surface_request(
         }
     }
 
+    // Convert Responses format to Chat completions format
     json converted = server_chat_convert_responses_to_chatcmpl(body);
-    // TODO: Directly fill result.prompt, result.params without intermediate JSON
 
+    // Parse chat completions format to extract prompt and params
+    json llama_params = oaicompat_chat_params_parse(converted, opt, out_files, false);
+
+    // Fill task_params from llama_params using schema evaluation
+    result.params = server_schema::eval_llama_cmpl_schema(vocab, params_base, logit_bias_eog, llama_params);
+
+    // Extract prompt from llama_params
+    result.prompt = llama_params.value("prompt", json(nullptr));
+
+    // Store full parsed body for handle_completions_impl
+    result.parsed_body = llama_params;
+
+    // Files are populated by oaicompat_chat_params_parse via out_files parameter
+    // (out_files is passed by reference and populated during parsing)
+
+    // Attach surface payload
     result.surface = surface_data;
+
     return result;
 }
