@@ -387,6 +387,10 @@ void server_prompt_cache_key_touch(const std::string & key, int32_t ttl_seconds)
 // false if missing/expired on disk (24h/30m keys).
 bool server_prompt_cache_key_alive(const std::string & key);
 
+// Parse TTL duration string ("5m", "1h", "30m") to seconds.
+// Returns 0 on error or unrecognized format.
+int32_t server_parse_ttl_duration(const std::string & ttl);
+
 // Official ReasoningEffort enum (Chat `reasoning_effort` + Responses `reasoning.effort`).
 bool server_openai_is_reasoning_effort(const std::string & effort);
 void server_openai_validate_reasoning_effort_field(const json & value, const char * field_name);

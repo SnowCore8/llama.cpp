@@ -300,6 +300,34 @@ void server_openai_validate_reasoning_object(const json & body) {
     }
 }
 
+int32_t server_parse_ttl_duration(const std::string & ttl) {
+    if (ttl.empty()) {
+        return 0;
+    }
+    // Parse formats: "5m", "1h", "30m", "24h"
+    // Last character is the unit, rest is the number
+    char unit = ttl.back();
+    std::string num_str = ttl.substr(0, ttl.size() - 1);
+    if (num_str.empty()) {
+        return 0;
+    }
+    int num = 0;
+    try {
+        num = std::stoi(num_str);
+    } catch (...) {
+        return 0;
+    }
+    if (num <= 0) {
+        return 0;
+    }
+    switch (unit) {
+        case 'm': return num * 60;           // minutes
+        case 'h': return num * 3600;         // hours
+        case 'd': return num * 86400;        // days
+        default: return 0;
+    }
+}
+
 bool server_openai_is_reasoning_effort(const std::string & effort) {
     static const std::unordered_set<std::string> valid_efforts = {
         "none", "minimal", "low", "medium", "high", "xhigh", "max"

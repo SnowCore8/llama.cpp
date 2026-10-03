@@ -1,6 +1,7 @@
 #include "server-schema.h"
 
 #include "json-schema-to-grammar.h"
+#include "server-common.h"
 
 namespace server_schema {
 
@@ -514,6 +515,14 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
             } else if (samplers.is_string()) {
                 ctx.params.sampling.samplers = common_sampler_types_from_chars(samplers.get<std::string>());
             }
+        }));
+
+    // Internal TTL channel: __prompt_cache_ttl from cache_control.ttl or prompt_cache_options.ttl
+    add((new field_str("__prompt_cache_ttl"))
+        ->set_desc("Internal channel for prompt cache TTL (5m/1h/etc.)")
+        ->set_handler([&](field_eval_context & ctx, const json & data) {
+            const std::string ttl = data.at("__prompt_cache_ttl").get<std::string>();
+            ctx.params.oai_prompt_cache_ttl = server_parse_ttl_duration(ttl);
         }));
 
     return fields;
