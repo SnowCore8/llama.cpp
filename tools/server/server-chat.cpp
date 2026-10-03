@@ -687,7 +687,7 @@ server_surface_request parse_anthropic_to_surface_request(
             if (display != "summarized" && display != "omitted") {
                 throw std::invalid_argument("'thinking.display' must be 'summarized' or 'omitted'");
             }
-            oai_body["anthropic_thinking_display"] = display;
+            // display is captured as thinking_display_omitted in surface_data above
         }
     }
 
@@ -728,12 +728,12 @@ server_surface_request parse_anthropic_to_surface_request(
         oai_body["__prompt_cache_ttl"] = cache_ttl;
     }
 
-    // Handle metadata param
+    // Handle metadata param - store in surface payload
     if (body.contains("metadata")) {
         json metadata = json_value(body, "metadata", json::object());
         std::string user_id = json_value(metadata, "user_id", std::string());
         if (!user_id.empty()) {
-            oai_body["__metadata_user_id"] = user_id;
+            surface_data["metadata_user_id"] = user_id;
         }
     }
 
