@@ -18,11 +18,6 @@ json server_chat_convert_responses_to_chatcmpl(const json & response_body) {
 
     const json input_value = response_body.at("input");
     json chatcmpl_body = response_body;
-    // Save original input for responses store before erasing
-    chatcmpl_body["__oai_resp_input"] = input_value;
-    if (response_body.contains("instructions")) {
-        chatcmpl_body["__oai_resp_instructions"] = response_body.at("instructions");
-    }
     chatcmpl_body.erase("input");
     chatcmpl_body.erase("previous_response_id");
     std::vector<json> chatcmpl_messages;

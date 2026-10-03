@@ -556,14 +556,15 @@ static json server_responses_prompt_expand_input(const json & items, const json 
     return out;
 }
 
-json server_responses_prepare_request(json body) {
-    return server_responses_prepare_request(std::move(body), nullptr, 0);
+json server_responses_prepare_request(json body, const std::string & ws_token) {
+    return server_responses_prepare_request(std::move(body), nullptr, 0, ws_token);
 }
 
 json server_responses_prepare_request(
         json body,
         const llama_vocab * vocab,
-        int32_t n_ctx_slot) {
+        int32_t n_ctx_slot,
+        const std::string & ws_token) {
     // OpenAI Responses create requires `model`.
     // Optional `prompt.id` expands local templates under --openai-files-path/prompts/.
     if (!body.contains("model") || !body.at("model").is_string() ||
@@ -702,8 +703,7 @@ json server_responses_prepare_request(
                 json_value(prev->response, "object", std::string()) == "response.compaction";
         } else {
             // WebSocket store=false / ZDR: a response the store does not keep, but the
-            // very connection that created it may continue (internal __oai_ws_local token).
-            const std::string ws_token = json_value(body, "__oai_ws_local", std::string());
+            // very connection that created it may continue (ws_token from caller).
             if (!local_cache_get(prev_id, ws_token, prev_input, prev_output)) {
                 throw std::invalid_argument(
                     "previous_response_id not found or expired: " + prev_id);
@@ -1398,7 +1398,8 @@ static json server_responses_usage_zero() {
 // Build the warmup Response (generate:false) and persist it; a warmup produces no
 // model output, so it must not join a conversation turn.
 static json server_responses_warmup_build_store(
-        const json & prepared, const std::string & resp_id, const std::string & model) {
+        const json & prepared, const std::string & resp_id, const std::string & model,
+        const std::string & ws_token) {
     const int64_t t = server_responses_now_unix();
     json warmup = {
         {"id",           resp_id},
@@ -1426,18 +1427,20 @@ static json server_responses_warmup_build_store(
         prepared.contains("instructions") ? prepared.at("instructions") : json(nullptr),
         json(nullptr),
         model,
-        json_value(prepared, "__oai_ws_local", std::string()));
+        ws_token);
     return warmup;
 }
 
-json server_responses_build_warmup_response(const json & prepared, const std::string & resp_id) {
+json server_responses_build_warmup_response(const json & prepared, const std::string & resp_id,
+                                            const std::string & ws_token) {
     return server_responses_warmup_build_store(
-        prepared, resp_id, json_value(prepared, "model", std::string()));
+        prepared, resp_id, json_value(prepared, "model", std::string()), ws_token);
 }
 
 json server_responses_build_warmup_sse_events(
-        const std::string & resp_id, const std::string & model, const json & request_body) {
-    const json warmup = server_responses_warmup_build_store(request_body, resp_id, model);
+        const std::string & resp_id, const std::string & model, const json & request_body,
+        const std::string & ws_token) {
+    const json warmup = server_responses_warmup_build_store(request_body, resp_id, model, ws_token);
 
     auto push = [&](const std::string & event_name, json data) {
         data["type"] = event_name;
@@ -1596,10 +1599,11 @@ json server_responses_apply_output_include(json response_obj, const json & inclu
     return response_obj;
 }
 
-json server_responses_compact(json body, const llama_vocab * vocab, int32_t n_ctx_slot) {
+json server_responses_compact(json body, const llama_vocab * vocab, int32_t n_ctx_slot,
+                              const std::string & ws_token) {
     // official compact accepts a narrower service_tier enum than create/chat
     server_openai_validate_compact_service_tier(body);
-    body = server_responses_prepare_request(std::move(body), vocab, n_ctx_slot);
+    body = server_responses_prepare_request(std::move(body), vocab, n_ctx_slot, ws_token);
 
     json input = server_responses_normalize_input(body.at("input"));
     json folded_input = server_responses_fold_input_compaction(input);
@@ -1641,7 +1645,7 @@ json server_responses_compact(json body, const llama_vocab * vocab, int32_t n_ct
         body.contains("instructions") ? body.at("instructions") : json(nullptr),
         json(nullptr),
         json_value(body, "model", std::string()),
-        json_value(body, "__oai_ws_local", std::string()));
+        ws_token);
     return result;
 }
 

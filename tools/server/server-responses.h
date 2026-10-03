@@ -14,14 +14,17 @@
 // Expand previous_response_id into a full input array. Throws std::invalid_argument on errors.
 // Also strips previous_response_id from the returned body.
 // When vocab/n_ctx_slot are set, truncation uses real tokenizer counts vs the slot context budget.
-json server_responses_prepare_request(json body);
+// ws_token is the WebSocket connection token for connection-local store=false cache lookups.
+json server_responses_prepare_request(json body, const std::string & ws_token = "");
 json server_responses_prepare_request(
     json body,
     const llama_vocab * vocab,
-    int32_t n_ctx_slot);
+    int32_t n_ctx_slot,
+    const std::string & ws_token = "");
 
 // POST /v1/responses/compact — CompactedResponse (response.compaction).
-json server_responses_compact(json body, const llama_vocab * vocab, int32_t n_ctx_slot);
+json server_responses_compact(json body, const llama_vocab * vocab, int32_t n_ctx_slot,
+                              const std::string & ws_token = "");
 
 // Convert a Responses output item into an input item for multi-turn continuation.
 json server_responses_output_item_to_input(const json & output_item);
@@ -79,13 +82,15 @@ json server_responses_enrich_response(json response_obj, const json & request_bo
 
 // response.create with generate:false: a completed warmup Response with no model
 // output; it is remembered (chainable / retrievable) but does not join a conversation turn.
-json server_responses_build_warmup_response(const json & prepared, const std::string & resp_id);
+json server_responses_build_warmup_response(const json & prepared, const std::string & resp_id,
+                                            const std::string & ws_token = "");
 
 // SSE events for a streaming warmup: response.created + response.completed only.
 json server_responses_build_warmup_sse_events(
     const std::string & resp_id,
     const std::string & model,
-    const json & request_body);
+    const json & request_body,
+    const std::string & ws_token = "");
 
 // Mid-stream tail only: error + response.failed (created/in_progress already sent).
 json server_responses_build_error_failed_sse_events(
