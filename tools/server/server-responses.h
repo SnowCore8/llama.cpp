@@ -59,9 +59,6 @@ void server_responses_remember(
     const std::string & request_model = std::string(),
     const std::string & ws_token = std::string());
 
-// Generate a new response id (resp_...).
-std::string server_responses_new_id();
-
 // WebSocket steering interrupt: set when a steer targets a running response, consumed
 // by the decode loop so the response stops at the next token with STOP_TYPE_STEERED.
 void server_responses_steer_flag_set(const std::string & resp_id);

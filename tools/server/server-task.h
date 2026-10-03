@@ -88,9 +88,6 @@ struct task_params {
     std::string        oaicompat_model;
     std::string        oaicompat_cmpl_id;
 
-    // OpenAI Responses: optional pre-assigned id + metadata for Response Store
-    std::string oaicompat_resp_id;
-
     // Responses surface payload (resp_input/instructions, prev/conv, ws token,
     // web search deepen data) for response serialization; the kernel doesn't read it
     json        oaicompat_surface = nullptr;
@@ -301,7 +298,7 @@ struct server_task {
     // the task will be moved into queue, then onto slots
     // however, the state must be kept by caller (e.g., HTTP thread)
     task_result_state create_state() const {
-        task_result_state st(params.chat_parser_params, params.oaicompat_resp_id);
+        task_result_state st(params.chat_parser_params);
         st.oai_custom_tool_names = params.oai_custom_tool_names;
         st.oaicompat_surface     = params.oaicompat_surface;
         return st;

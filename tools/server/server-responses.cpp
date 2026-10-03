@@ -19,10 +19,6 @@
 #include <unordered_map>
 #include <vector>
 
-std::string server_responses_new_id() {
-    return "resp_" + random_string();
-}
-
 namespace {
 std::mutex & responses_seq_mutex() {
     static std::mutex mu;
