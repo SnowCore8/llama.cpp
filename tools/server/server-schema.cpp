@@ -602,9 +602,7 @@ void fill_surface_params(
         const int best_of = json_value(data, "best_of", n_val);
         if (best_of > n_val) {
             params.n_cmpl = best_of;
-            const bool user_logprobs = json_value(data, "logprobs", 0) > 0 ||
-                (data.contains("logprobs") && data.at("logprobs").is_boolean() &&
-                 data.at("logprobs").get<bool>());
+            // best_of generates extra choices, need at least 1 prob
             if (params.sampling.n_probs < 1) {
                 params.sampling.n_probs = 1;
             }
