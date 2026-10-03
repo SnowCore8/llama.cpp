@@ -1412,6 +1412,10 @@ server_surface_request parse_responses_to_surface_request(
     // Store full parsed body for handle_completions_impl
     result.parsed_body = llama_params;
 
+    // The parsed body doubles as the response echo source (enrich reads the
+    // passthrough keys from it), so it rides the surface payload
+    surface_data["resp_request"] = result.parsed_body;
+
     // Files are populated by oaicompat_chat_params_parse via out_files parameter
     // (out_files is passed by reference and populated during parsing)
 

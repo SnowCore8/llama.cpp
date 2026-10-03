@@ -90,7 +90,6 @@ struct task_params {
 
     // OpenAI Responses: optional pre-assigned id + metadata for Response Store
     std::string oaicompat_resp_id;
-    json        oaicompat_resp_request      = nullptr; // original/prepared Responses request body
 
     // Responses surface payload (resp_input/instructions, prev/conv, ws token,
     // web search deepen data) for response serialization; the kernel doesn't read it
@@ -174,9 +173,6 @@ struct task_result_state {
     std::string oai_resp_id;
     std::string oai_resp_reasoning_id;
     std::string oai_resp_message_id;
-
-    // metadata for Response Store (copied from task_params)
-    json oaicompat_resp_request = nullptr;
 
     // Responses surface payload for response serialization
     json oaicompat_surface = nullptr;
@@ -306,9 +302,8 @@ struct server_task {
     // however, the state must be kept by caller (e.g., HTTP thread)
     task_result_state create_state() const {
         task_result_state st(params.chat_parser_params, params.oaicompat_resp_id);
-        st.oai_custom_tool_names       = params.oai_custom_tool_names;
-        st.oaicompat_resp_request      = params.oaicompat_resp_request;
-        st.oaicompat_surface      = params.oaicompat_surface;
+        st.oai_custom_tool_names = params.oai_custom_tool_names;
+        st.oaicompat_surface     = params.oaicompat_surface;
         return st;
     }
 
@@ -427,7 +422,6 @@ struct server_task_result_cmpl_final : server_task_result {
     std::string oai_resp_id;
     std::string oai_resp_reasoning_id;
     std::string oai_resp_message_id;
-    json oaicompat_resp_request = nullptr;
 
     // Responses surface payload for response serialization
     json oaicompat_surface = nullptr;
@@ -445,7 +439,6 @@ struct server_task_result_cmpl_final : server_task_result {
         oai_resp_id = state.oai_resp_id;
         oai_resp_reasoning_id = state.oai_resp_reasoning_id;
         oai_resp_message_id = state.oai_resp_message_id;
-        oaicompat_resp_request = state.oaicompat_resp_request;
         oaicompat_surface = state.oaicompat_surface;
     }
 
@@ -521,7 +514,6 @@ struct server_task_result_cmpl_partial : server_task_result {
     std::string oai_resp_id;
     std::string oai_resp_reasoning_id;
     std::string oai_resp_message_id;
-    json oaicompat_resp_request = nullptr;
 
     // for Anthropic API: track if any reasoning content has been generated
     bool anthropic_has_reasoning = false;

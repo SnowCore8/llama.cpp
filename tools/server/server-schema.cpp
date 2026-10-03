@@ -626,11 +626,6 @@ void fill_surface_params(
             }
         }
     }
-
-    // Responses-specific fields for store
-    if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
-        params.oaicompat_resp_request = data;
-    }
 }
 
 //

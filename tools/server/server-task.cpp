@@ -830,7 +830,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
     const bool steered         = (stop == STOP_TYPE_STEERED);
     const bool resp_incomplete = hit_token_limit || steered;
     const char * incomplete_reason = hit_token_limit ? "max_output_tokens" : "steered";
-    const json req_early = oaicompat_resp_request.is_null() ? json::object() : oaicompat_resp_request;
+    const json req_early = json_value(oaicompat_surface, "resp_request", json::object());
     const int emit_tool_cap = server_responses_effective_tool_call_cap(req_early);
 
     std::vector<json> output;
@@ -946,7 +946,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
 json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
     std::vector<json> server_sent_events;
     std::vector<json> output;
-    const json req_stream = oaicompat_resp_request.is_null() ? json::object() : oaicompat_resp_request;
+    const json req_stream = json_value(oaicompat_surface, "resp_request", json::object());
     const int emit_tool_cap = server_responses_effective_tool_call_cap(req_stream);
     const bool hit_token_limit = (stop == STOP_TYPE_LIMIT) || truncated;
     const bool steered         = (stop == STOP_TYPE_STEERED);
@@ -1516,7 +1516,6 @@ void server_task_result_cmpl_partial::update(task_result_state & state) {
     oai_resp_id            = state.oai_resp_id;
     oai_resp_reasoning_id  = state.oai_resp_reasoning_id;
     oai_resp_message_id    = state.oai_resp_message_id;
-    oaicompat_resp_request = state.oaicompat_resp_request;
 
     // track if the accumulated message has any reasoning content
     anthropic_has_reasoning = !state.chat_msg.reasoning_content.empty();
@@ -1527,7 +1526,7 @@ void server_task_result_cmpl_partial::update(task_result_state & state) {
     if (res_type == TASK_RESPONSE_TYPE_OAI_RESP && !state.oai_web_search_streamed &&
             json_value(state.oaicompat_surface, "web_search_enabled", false)) {
         json prefix = server_web_search_responses_output_items(
-            state.oaicompat_resp_request,
+            json_value(state.oaicompat_surface, "resp_request", json::object()),
             json_value(state.oaicompat_surface, "web_search_query", std::string()),
             json_value(state.oaicompat_surface, "web_search_results", json::array()),
             json_value(state.oaicompat_surface, "web_search_actions", json::array()),
@@ -1543,7 +1542,8 @@ void server_task_result_cmpl_partial::update(task_result_state & state) {
     // clients listening to the official summary events see the thinking live
     if (res_type == TASK_RESPONSE_TYPE_OAI_RESP && !state.reasoning_summary_frozen) {
         const std::string target = server_responses_reasoning_summary_text(
-                state.chat_msg.reasoning_content, state.oaicompat_resp_request);
+                state.chat_msg.reasoning_content,
+                json_value(state.oaicompat_surface, "resp_request", json::object()));
         if (target.size() > state.reasoning_summary_emitted) {
             reasoning_summary_delta = target.substr(state.reasoning_summary_emitted);
             state.reasoning_summary_emitted = target.size();
@@ -1726,7 +1726,7 @@ json server_task_result_cmpl_partial::to_json_oaicompat_chat() {
 
 json server_task_result_cmpl_partial::to_json_oaicompat_resp() {
     std::vector<json> events;
-    const json req_partial = oaicompat_resp_request.is_null() ? json::object() : oaicompat_resp_request;
+    const json req_partial = json_value(generation_params.oaicompat_surface, "resp_request", json::object());
     const int max_tool_calls = server_responses_effective_tool_call_cap(req_partial); // emit cap for deltas
     const bool want_lp = server_responses_wants_output_logprobs(req_partial);
 
