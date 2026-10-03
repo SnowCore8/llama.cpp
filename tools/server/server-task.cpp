@@ -498,7 +498,7 @@ json server_task_result_cmpl_final::to_json_oaicompat() {
         const std::vector<completion_token_output> * prompt_probs =
             prompt_probs_output.empty() ? nullptr : &prompt_probs_output;
         // offsets count from the start of the full text: the prompt is part of it even when not echoed
-        const size_t offset_base = generation_params.oaicompat_cmpl_echo ? 0 : prompt.size();
+        const size_t offset_base = json_value(generation_params.oaicompat_surface, "echo", false) ? 0 : prompt.size();
         logprobs = completion_token_output::probs_vector_to_json_oaicompat_completions(
                 probs_output, prompt_probs, offset_base);
     }
@@ -507,7 +507,7 @@ json server_task_result_cmpl_final::to_json_oaicompat() {
         finish_reason = "stop";
     }
     std::string text_out = content;
-    if (generation_params.oaicompat_cmpl_echo && !prompt.empty() && !stream) {
+    if (json_value(generation_params.oaicompat_surface, "echo", false) && !prompt.empty() && !stream) {
         // OpenAI Completions echo=true: choice text starts with the prompt. Streamed chunks
         // carry the prompt with the first chunk instead, so the final event stays empty here.
         text_out = prompt + content;
@@ -1621,7 +1621,7 @@ json server_task_result_cmpl_partial::to_json_oaicompat() {
                 {prob_output}, prompt_probs, offset_base);
     }
     std::string text_out = content;
-    if (generation_params.oaicompat_cmpl_echo && !prompt.empty()) {
+    if (json_value(generation_params.oaicompat_surface, "echo", false) && !prompt.empty()) {
         // OpenAI Completions echo=true: the chunk text starts with the prompt
         text_out = prompt + content;
     }

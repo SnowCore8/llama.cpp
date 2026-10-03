@@ -606,11 +606,25 @@ void fill_surface_params(
         params.oaicompat_surface = std::move(chat_surface);
     }
 
-    // Completions may include request `user` for client correlation.
+    // Completions may include request `user` for client correlation; echo=true repeats
+    // the prompt in the choice text. best_of generates extra choices ranked by logprobs.
     if (res_type == TASK_RESPONSE_TYPE_OAI_CMPL) {
         json cmpl_surface = std::move(params.oaicompat_surface);
         cmpl_surface["user"] = json_value(data, "user", std::string());
+        cmpl_surface["echo"] = json_value(data, "echo", false);
         params.oaicompat_surface = std::move(cmpl_surface);
+
+        const int n_val = json_value(data, "n", 1);
+        const int best_of = json_value(data, "best_of", n_val);
+        if (best_of > n_val) {
+            params.n_cmpl = best_of;
+            const bool user_logprobs = json_value(data, "logprobs", 0) > 0 ||
+                (data.contains("logprobs") && data.at("logprobs").is_boolean() &&
+                 data.at("logprobs").get<bool>());
+            if (params.sampling.n_probs < 1) {
+                params.sampling.n_probs = 1;
+            }
+        }
     }
 
     // Responses-specific fields for store

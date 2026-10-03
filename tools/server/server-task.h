@@ -91,17 +91,10 @@ struct task_params {
     // OpenAI Responses: optional pre-assigned id + metadata for Response Store
     std::string oaicompat_resp_id;
     json        oaicompat_resp_request      = nullptr; // original/prepared Responses request body
-    bool        oaicompat_steer_hold        = false; // WebSocket steering: request has tools, steering waits for the terminal
 
     // Responses surface payload (resp_input/instructions, prev/conv, ws token,
     // web search deepen data) for response serialization; the kernel doesn't read it
     json        oaicompat_surface = nullptr;
-
-    // OpenAI Completions: echo prompt into choice text; truncate best_of → n choices.
-    bool    oaicompat_cmpl_echo     = false;
-    int32_t oaicompat_cmpl_return_n = -1; // <0 → keep all generated choices
-    bool    oaicompat_cmpl_rank_by_logprob = false;
-    bool    oaicompat_cmpl_hide_rank_logprobs = false; // n_probs forced for ranking only
 
     // OpenAI prompt_cache local deepen
     std::string oai_prompt_cache_key;   // slot affinity key
