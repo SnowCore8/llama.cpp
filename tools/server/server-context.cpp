@@ -5159,6 +5159,38 @@ void server_routes::init_routes() {
         json raw = json::parse(req.body);
         auto prepared = server_responses_prepare_request(std::move(raw), ctx_server.vocab, meta->slot_n_ctx, req.ws_token);
 
+        const bool want_stream = json_value(prepared.body, "stream", false);
+        const bool want_background = json_value(prepared.body, "background", false);
+
+        // generate:false warms up request state without model output (official WS guide);
+        // the flag must be a boolean when present
+        if (prepared.body.contains("generate") && !prepared.body.at("generate").is_boolean()) {
+            res->error(format_error_response("'generate' must be a boolean", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        if (prepared.body.contains("generate") && !prepared.body.at("generate").get<bool>()) {
+            const std::string warmup_model = json_value(prepared.body, "model", meta->model_name);
+            const std::string warmup_id = server_responses_new_id();
+            if (want_stream) {
+                // local contract: created + completed only, no in_progress phase
+                res->status = 200;
+                res->content_type = "text/event-stream";
+                std::string sse = format_oai_resp_sse(
+                    server_responses_build_warmup_sse_events(warmup_id, warmup_model, prepared.body));
+                res->set_next([sse = std::move(sse)](std::string & out) mutable {
+                    if (sse.empty()) {
+                        return false;
+                    }
+                    out = std::move(sse);
+                    sse.clear();
+                    return true;
+                });
+                return res;
+            }
+            res->ok(server_responses_build_warmup_response(prepared.body, warmup_id));
+            return res;
+        }
+
         // Generate complete server_surface_request including prompt, files, params, and surface
         server_surface_request surface_req = parse_responses_to_surface_request(
             prepared.body,
@@ -5175,6 +5207,141 @@ void server_routes::init_routes() {
             prepared.web_search_actions,
             prepared.web_search_n_requests,
             req.ws_token);
+
+        // One stable id for the stub, the stream events and the final response
+        const std::string resp_id = server_responses_new_id();
+        surface_req.surface["resp_id"] = resp_id;
+
+        // Background responses must be retrievable and cancellable while they run, so persist
+        // an in_progress stub before any work starts. this covers the streaming variant too
+        json stub = json::object();
+        if (want_background) {
+            const int64_t t = (int64_t) std::time(nullptr);
+            stub = {
+                {"id",         resp_id},
+                {"object",     "response"},
+                {"created_at", t},
+                {"model",      json_value(prepared.body, "model", meta->model_name)},
+                {"status",     "in_progress"},
+                {"background", true},
+                {"output",     json::array()},
+                {"error",      nullptr},
+                {"incomplete_details", nullptr},
+            };
+            stub = server_responses_enrich_response(std::move(stub), prepared.body);
+            // persist the stub so cancel / retrieve work before the result lands;
+            // no conversation turn is appended for the stub
+            server_responses_remember(stub,
+                                      json_value(prepared.body, "input", json::array()),
+                                      json_value(prepared.body, "instructions", json()));
+        }
+
+        // Background, non-streaming: return in_progress immediately; complete asynchronously.
+        if (want_background && !want_stream) {
+            auto res_bg = create_response();
+
+            json body_parsed_copy = surface_req.parsed_body;
+            json surface_copy = surface_req.surface;
+            std::vector<raw_buffer> files_copy = files;
+            auto headers_copy = req.headers;
+
+            std::thread([this, body_parsed_copy, surface_copy, files_copy, headers_copy, resp_id]() mutable {
+                try {
+                    std::function<bool()> stop_if_cancelled = [resp_id]() {
+                        auto cur = server_responses_store::instance().get(resp_id);
+                        if (!cur.has_value()) {
+                            return false;
+                        }
+                        const std::string st = json_value(cur->response, "status", std::string());
+                        return st == "cancelled" || st == "cancelling";
+                    };
+                    server_http_req fake_req {
+                        {},
+                        headers_copy,
+                        "/v1/responses",
+                        "",
+                        "",
+                        {},
+                        std::string(), // no ws token for background HTTP requests
+                        stop_if_cancelled,
+                    };
+                    auto gen = handle_completions_impl(
+                        fake_req,
+                        SERVER_TASK_TYPE_COMPLETION,
+                        body_parsed_copy,
+                        files_copy,
+                        TASK_RESPONSE_TYPE_OAI_RESP,
+                        surface_copy);
+                    if (!gen) {
+                        return;
+                    }
+                    // If cancelled while running, keep cancelled.
+                    auto cur = server_responses_store::instance().get(resp_id);
+                    if (cur.has_value()) {
+                        const std::string st = json_value(cur->response, "status", std::string());
+                        if (st == "cancelled") {
+                            return;
+                        }
+                    }
+                    if (gen->status >= 400 || gen->data.empty()) {
+                        auto cur_fail = server_responses_store::instance().get(resp_id);
+                        if (cur_fail.has_value()) {
+                            const std::string st = json_value(cur_fail->response, "status", std::string());
+                            if (st == "cancelled") {
+                                return;
+                            }
+                        }
+                        json failed = {
+                            {"id",         resp_id},
+                            {"object",     "response"},
+                            {"status",     "failed"},
+                            {"background", true},
+                            {"output",     json::array()},
+                            {"error",      json::parse(gen->data.empty() ? "{}" : gen->data)},
+                        };
+                        server_responses_remember(failed, json(), json(), json(), std::string(), std::string());
+                        return;
+                    }
+                    json final_obj = json::parse(gen->data);
+                    final_obj["background"] = true;
+                    if (!final_obj.contains("id")) {
+                        final_obj["id"] = resp_id;
+                    }
+                    // Don't clobber an intervening cancel.
+                    cur = server_responses_store::instance().get(resp_id);
+                    if (cur.has_value()) {
+                        const std::string st = json_value(cur->response, "status", std::string());
+                        if (st == "cancelled") {
+                            return;
+                        }
+                    }
+                    server_responses_remember(final_obj, json(), json(), json(), std::string(), std::string());
+                } catch (const std::exception & e) {
+                    SRV_ERR("background responses task failed: %s\n", e.what());
+                    // Don't clobber an intervening cancel (same guard as success path).
+                    auto cur = server_responses_store::instance().get(resp_id);
+                    if (cur.has_value()) {
+                        const std::string st = json_value(cur->response, "status", std::string());
+                        if (st == "cancelled") {
+                            return;
+                        }
+                    }
+                    json failed = {
+                        {"id",         resp_id},
+                        {"object",     "response"},
+                        {"status",     "failed"},
+                        {"background", true},
+                        {"output",     json::array()},
+                        // official ResponseError shape: code + message
+                        {"error",      {{"code", "server_error"}, {"message", e.what()}}},
+                    };
+                    server_responses_remember(failed, json(), json(), json(), std::string(), std::string());
+                }
+            }).detach();
+
+            res_bg->ok(std::move(stub));
+            return res_bg;
+        }
 
         // Pass parsed_body and surface payload separately (no transport key)
         return handle_completions_impl(

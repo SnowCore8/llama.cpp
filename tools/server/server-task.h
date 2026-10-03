@@ -298,7 +298,10 @@ struct server_task {
     // the task will be moved into queue, then onto slots
     // however, the state must be kept by caller (e.g., HTTP thread)
     task_result_state create_state() const {
-        task_result_state st(params.chat_parser_params);
+        // Responses pre-assigns the id in the route (background stub must match the
+        // final response); other surfaces leave it empty for the constructor fallback
+        task_result_state st(params.chat_parser_params,
+                             json_value(params.oaicompat_surface, "resp_id", std::string()));
         st.oai_custom_tool_names = params.oai_custom_tool_names;
         st.oaicompat_surface     = params.oaicompat_surface;
         return st;
