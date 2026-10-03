@@ -728,14 +728,7 @@ server_surface_request parse_anthropic_to_surface_request(
         oai_body["__prompt_cache_ttl"] = cache_ttl;
     }
 
-    // Handle metadata param - store in surface payload
-    if (body.contains("metadata")) {
-        json metadata = json_value(body, "metadata", json::object());
-        std::string user_id = json_value(metadata, "user_id", std::string());
-        if (!user_id.empty()) {
-            surface_data["metadata_user_id"] = user_id;
-        }
-    }
+    // metadata is accepted but not returned in Anthropic responses
 
     // Parse chat completions format to extract prompt and params
     json llama_params = oaicompat_chat_params_parse(oai_body, opt, out_files, false);
