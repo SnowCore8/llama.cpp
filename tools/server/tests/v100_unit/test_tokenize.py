@@ -1,4 +1,5 @@
 import pytest
+import os
 from utils import *
 
 server = ServerPreset.tinyllama2()
@@ -8,6 +9,11 @@ server = ServerPreset.tinyllama2()
 def create_server():
     global server
     server = ServerPreset.tinyllama2()
+    server.api_key = "sk-1234567890"  # v100: Use same API key as llama-server.sh
+
+    # v100: If external server is running, don't start new server
+    if os.environ.get("V100_EXTERNAL_SERVER") == "1":
+        server.external_server = True
 
 
 def test_tokenize_detokenize():
@@ -16,13 +22,15 @@ def test_tokenize_detokenize():
     # tokenize
     content = "What is the capital of France ?"
     res_tok = server.make_request("POST", "/tokenize", data={
-        "content": content
+        "content": content,
+        "model": "Qwen3.5-0.8B",  # v100: Use model from router
     })
     assert res_tok.status_code == 200
     assert len(res_tok.body["tokens"]) > 5
     # detokenize
     res_detok = server.make_request("POST", "/detokenize", data={
         "tokens": res_tok.body["tokens"],
+        "model": "Qwen3.5-0.8B",  # v100: Use model from router
     })
     assert res_detok.status_code == 200
     assert res_detok.body["content"].strip() == content
@@ -37,6 +45,7 @@ def test_tokenize_with_bos():
     res_tok = server.make_request("POST", "/tokenize", data={
         "content": content,
         "add_special": True,
+        "model": "Qwen3.5-0.8B",  # v100: Use model from router
     })
     assert res_tok.status_code == 200
     assert res_tok.body["tokens"][0] == bosId
@@ -50,6 +59,7 @@ def test_tokenize_with_pieces():
     res_tok = server.make_request("POST", "/tokenize", data={
         "content": content,
         "with_pieces": True,
+        "model": "Qwen3.5-0.8B",  # v100: Use model from router
     })
     assert res_tok.status_code == 200
     for token in res_tok.body["tokens"]:

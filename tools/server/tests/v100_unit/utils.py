@@ -383,6 +383,10 @@ class ServerProcess:
         host: str | None = None,
     ) -> ServerResponse:
         url = self.make_url(path, host)
+        # v100: auto-inject Authorization header
+        if self.api_key and "Authorization" not in (headers or {}):
+            headers = headers or {}
+            headers["Authorization"] = f"Bearer {self.api_key}"
         parse_body = False
         if method == "GET":
             response = requests.get(url, headers=headers, timeout=timeout)
@@ -419,6 +423,10 @@ class ServerProcess:
         host: str | None = None,
     ) -> Iterator[dict]:
         url = self.make_url(path, host)
+        # v100: auto-inject Authorization header
+        if self.api_key and "Authorization" not in (headers or {}):
+            headers = headers or {}
+            headers["Authorization"] = f"Bearer {self.api_key}"
         if method == "POST":
             response = requests.post(url, headers=headers, json=data, stream=True)
         else:

@@ -10,6 +10,11 @@ server = ServerPreset.tinyllama2()
 def create_server():
     global server
     server = ServerPreset.tinyllama2()
+    server.api_key = "sk-1234567890"  # v100: Use same API key as llama-server.sh
+
+    # v100: If external server is running, don't start new server
+    if os.environ.get("V100_EXTERNAL_SERVER") == "1":
+        server.external_server = True
 
 
 def test_server_start_simple():
