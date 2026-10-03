@@ -97,13 +97,6 @@ struct task_params {
     // web search deepen data) for response serialization; the kernel doesn't read it
     json        oaicompat_surface = nullptr;
 
-    // OpenAI Chat Completions: echo/store request fields (persisted when store=true)
-    bool oaicompat_chat_store    = false;
-    json oaicompat_chat_metadata = nullptr;
-    std::string oaicompat_chat_user;
-    std::string oaicompat_chat_safety_identifier;
-    std::string oaicompat_chat_service_tier;
-
     // OpenAI Completions: echo prompt into choice text; truncate best_of → n choices.
     bool    oaicompat_cmpl_echo     = false;
     int32_t oaicompat_cmpl_return_n = -1; // <0 → keep all generated choices

@@ -528,8 +528,8 @@ json server_task_result_cmpl_final::to_json_oaicompat() {
         {"id", oaicompat_cmpl_id}
     };
 
-    if (!generation_params.oaicompat_chat_user.empty()) {
-        res["user"] = generation_params.oaicompat_chat_user;
+    if (!json_value(generation_params.oaicompat_surface, "user", std::string()).empty()) {
+        res["user"] = json_value(generation_params.oaicompat_surface, "user", std::string());
     }
 
     // extra fields for debugging purposes
@@ -621,24 +621,28 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat() {
         {"id", oaicompat_cmpl_id}
     };
 
-    if (!generation_params.oaicompat_chat_service_tier.empty()) {
-        res["service_tier"] = generation_params.oaicompat_chat_service_tier;
+    const std::string chat_tier = json_value(generation_params.oaicompat_surface, "service_tier", std::string());
+    if (!chat_tier.empty()) {
+        res["service_tier"] = chat_tier;
         // official responses show priority for request fast or priority
-        if (res.at("service_tier").get<std::string>() == "fast") {
+        if (chat_tier == "fast") {
             res["service_tier"] = "priority";
         }
     }
 
-    if (generation_params.oaicompat_chat_store) {
+    if (json_value(generation_params.oaicompat_surface, "store", false)) {
         res["store"] = true;
-        if (!generation_params.oaicompat_chat_metadata.is_null()) {
-            res["metadata"] = generation_params.oaicompat_chat_metadata;
+        const json & chat_metadata = json_value(generation_params.oaicompat_surface, "metadata", json());
+        if (!chat_metadata.is_null()) {
+            res["metadata"] = chat_metadata;
         }
-        if (!generation_params.oaicompat_chat_user.empty()) {
-            res["user"] = generation_params.oaicompat_chat_user;
+        const std::string chat_user = json_value(generation_params.oaicompat_surface, "user", std::string());
+        if (!chat_user.empty()) {
+            res["user"] = chat_user;
         }
-        if (!generation_params.oaicompat_chat_safety_identifier.empty()) {
-            res["safety_identifier"] = generation_params.oaicompat_chat_safety_identifier;
+        const std::string chat_safety = json_value(generation_params.oaicompat_surface, "safety_identifier", std::string());
+        if (!chat_safety.empty()) {
+            res["safety_identifier"] = chat_safety;
         }
         server_chat_completions_remember(res);
     }
@@ -726,11 +730,12 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat_stream() {
     if (generation_params.include_usage) {
         deltas.back()["usage"] = nullptr;
     }
-    if (!generation_params.oaicompat_chat_service_tier.empty()) {
+    const std::string chat_tier = json_value(generation_params.oaicompat_surface, "service_tier", std::string());
+    if (!chat_tier.empty()) {
         json & last = deltas.back();
-        last["service_tier"] = generation_params.oaicompat_chat_service_tier;
+        last["service_tier"] = chat_tier;
         // official responses show priority for request fast or priority
-        if (last.at("service_tier").get<std::string>() == "fast") {
+        if (chat_tier == "fast") {
             last["service_tier"] = "priority";
         }
     }
@@ -761,7 +766,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat_stream() {
         deltas.front()["__verbose"] = to_json_non_oaicompat();
     }
 
-    if (generation_params.oaicompat_chat_store) {
+    if (json_value(generation_params.oaicompat_surface, "store", false)) {
         // Persist the full ChatCompletion object (retrieve/list are not chunk-based).
         (void) to_json_oaicompat_chat();
     }
