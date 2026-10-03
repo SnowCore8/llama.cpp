@@ -870,7 +870,8 @@ bool server_web_search_is_tool_type(const std::string & type) {
     return false;
 }
 
-server_web_search_options server_web_search_options_from_body(const json & body) {
+server_web_search_options server_web_search_options_from_body(
+        const json & body, const json & echo_web_tools) {
     server_web_search_options opt;
     opt.query = extract_last_user_text(body);
 
@@ -903,9 +904,9 @@ server_web_search_options server_web_search_options_from_body(const json & body)
         }
     }
 
-    // Echo tools kept from prior strip
-    if (body.contains("__oai_web_search_echo_tools") && body.at("__oai_web_search_echo_tools").is_array()) {
-        for (const auto & tool : body.at("__oai_web_search_echo_tools")) {
+    // Echo tools from parameter (avoids transport key)
+    if (echo_web_tools.is_array()) {
+        for (const auto & tool : echo_web_tools) {
             if (tool.is_object()) {
                 merge_filters_from_tool(tool, opt);
             }
@@ -1164,11 +1165,7 @@ void server_web_search_apply(json & body) {
         return;
     }
 
-    if (!echo_web_tools.empty()) {
-        body["__oai_web_search_echo_tools"] = echo_web_tools;
-    }
-
-    server_web_search_options opt = server_web_search_options_from_body(body);
+    server_web_search_options opt = server_web_search_options_from_body(body, echo_web_tools);
     json packed = server_web_search_run(opt);
 
     body["__oai_web_search"] = true;

@@ -1384,9 +1384,6 @@ server_surface_request parse_responses_to_surface_request(
         if (body.contains("__oai_web_search_n_requests")) {
             surface_data["web_search_n_requests"] = body.at("__oai_web_search_n_requests");
         }
-        if (body.contains("__oai_web_search_echo_tools")) {
-            surface_data["web_search_echo_tools"] = body.at("__oai_web_search_echo_tools");
-        }
     }
 
     // Convert Responses format to Chat completions format

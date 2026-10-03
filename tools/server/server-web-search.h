@@ -24,7 +24,10 @@ bool server_web_search_is_tool_type(const std::string & type);
 
 // Parse filters / search_context_size / user_location from Responses tool objects
 // and Chat web_search_options.
-server_web_search_options server_web_search_options_from_body(const json & body);
+// echo_web_tools: optional pre-extracted echo tools (avoids reading from body)
+server_web_search_options server_web_search_options_from_body(
+    const json & body,
+    const json & echo_web_tools = json::array());
 
 // Run local search pipeline. Returns:
 // {
