@@ -5162,16 +5162,18 @@ void server_routes::init_routes() {
         // First prepare the request (expand previous_response_id, etc.)
         json raw = json::parse(req.body);
         std::string ws_token = json_value(raw, "__oai_ws_local", std::string());
-        json body = server_responses_prepare_request(std::move(raw), ctx_server.vocab, meta->slot_n_ctx, ws_token);
+        auto prepared = server_responses_prepare_request(std::move(raw), ctx_server.vocab, meta->slot_n_ctx, ws_token);
 
         // Generate complete server_surface_request including prompt, files, params, and surface
         server_surface_request surface_req = parse_responses_to_surface_request(
-            body,
+            prepared.body,
             meta->chat_params,
             ctx_server.vocab,
             params,
             meta->logit_bias_eog,
-            files);
+            files,
+            prepared.prev_response_id,
+            prepared.conv_input);
 
         // Use parsed_body for handle_completions_impl, attach surface payload
         json body_parsed = surface_req.parsed_body;

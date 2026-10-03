@@ -1350,7 +1350,9 @@ server_surface_request parse_responses_to_surface_request(
     const llama_vocab * vocab,
     const common_params & params_base,
     const std::vector<llama_logit_bias> & logit_bias_eog,
-    std::vector<raw_buffer> & out_files) {
+    std::vector<raw_buffer> & out_files,
+    const std::string & prev_response_id,
+    const json & conv_input) {
     server_surface_request result;
 
     // Capture Responses-specific fields into surface payload before conversion
@@ -1361,11 +1363,12 @@ server_surface_request parse_responses_to_surface_request(
     if (body.contains("instructions")) {
         surface_data["resp_instructions"] = body.at("instructions");
     }
-    if (body.contains("__oai_prev_response_id")) {
-        surface_data["prev_response_id"] = body.at("__oai_prev_response_id");
+    // prev_response_id and conv_input passed as parameters (no transport keys)
+    if (!prev_response_id.empty()) {
+        surface_data["prev_response_id"] = prev_response_id;
     }
-    if (body.contains("__oai_conv_input")) {
-        surface_data["conv_input"] = body.at("__oai_conv_input");
+    if (!conv_input.is_null()) {
+        surface_data["conv_input"] = conv_input;
     }
     if (body.contains("__oai_ws_local")) {
         surface_data["ws_local"] = body.at("__oai_ws_local");

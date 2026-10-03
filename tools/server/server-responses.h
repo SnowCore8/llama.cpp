@@ -15,8 +15,14 @@
 // Also strips previous_response_id from the returned body.
 // When vocab/n_ctx_slot are set, truncation uses real tokenizer counts vs the slot context budget.
 // ws_token is the WebSocket connection token for connection-local store=false cache lookups.
-json server_responses_prepare_request(json body, const std::string & ws_token = "");
-json server_responses_prepare_request(
+struct server_responses_prepared {
+    json body;
+    std::string prev_response_id;  // for response echo (was __oai_prev_response_id)
+    json conv_input;               // for conversation store (was __oai_conv_input)
+};
+
+server_responses_prepared server_responses_prepare_request(json body, const std::string & ws_token = "");
+server_responses_prepared server_responses_prepare_request(
     json body,
     const llama_vocab * vocab,
     int32_t n_ctx_slot,

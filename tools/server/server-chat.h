@@ -24,13 +24,16 @@ server_surface_request parse_anthropic_to_surface_request(
 
 // Parse Responses request to server_surface_request
 // Generates complete server_surface_request including prompt, files, params, and surface payload
+// prev_response_id and conv_input are passed directly (no transport keys)
 server_surface_request parse_responses_to_surface_request(
     json & body,
     const server_chat_params & opt,
     const llama_vocab * vocab,
     const common_params & params_base,
     const std::vector<llama_logit_bias> & logit_bias_eog,
-    std::vector<raw_buffer> & out_files);
+    std::vector<raw_buffer> & out_files,
+    const std::string & prev_response_id = "",
+    const json & conv_input = nullptr);
 
 // Convert OpenAI Responses API format to OpenAI Chat Completions API format
 json server_chat_convert_responses_to_chatcmpl(const json & body);

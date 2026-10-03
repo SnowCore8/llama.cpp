@@ -556,15 +556,16 @@ static json server_responses_prompt_expand_input(const json & items, const json 
     return out;
 }
 
-json server_responses_prepare_request(json body, const std::string & ws_token) {
+server_responses_prepared server_responses_prepare_request(json body, const std::string & ws_token) {
     return server_responses_prepare_request(std::move(body), nullptr, 0, ws_token);
 }
 
-json server_responses_prepare_request(
+server_responses_prepared server_responses_prepare_request(
         json body,
         const llama_vocab * vocab,
         int32_t n_ctx_slot,
         const std::string & ws_token) {
+    server_responses_prepared result;
     // OpenAI Responses create requires `model`.
     // Optional `prompt.id` expands local templates under --openai-files-path/prompts/.
     if (!body.contains("model") || !body.at("model").is_string() ||
@@ -739,7 +740,8 @@ json server_responses_prepare_request(
         }
         expanded = true;
         // the Response object echoes previous_response_id; keep the request value for enrich
-        body["__oai_prev_response_id"] = prev_id;
+        // Return via server_responses_prepared.prev_response_id instead of body key
+        result.prev_response_id = prev_id;
         body.erase("previous_response_id");
     }
 
@@ -751,7 +753,8 @@ json server_responses_prepare_request(
     body["input"] = curr_input;
     if (!conv_id.empty()) {
         // only the request's own items join the conversation; the prepended history is already there
-        body["__oai_conv_input"] = curr_input;
+        // Return via server_responses_prepared.conv_input instead of body key
+        result.conv_input = curr_input;
     }
     for (const auto & item : curr_input) {
         new_input.push_back(item);
@@ -908,7 +911,8 @@ json server_responses_prepare_request(
         }
     }
 
-    return body;
+    result.body = std::move(body);
+    return result;
 }
 
 // A finished turn joins the conversation named on the response object (official:
@@ -1603,7 +1607,8 @@ json server_responses_compact(json body, const llama_vocab * vocab, int32_t n_ct
                               const std::string & ws_token) {
     // official compact accepts a narrower service_tier enum than create/chat
     server_openai_validate_compact_service_tier(body);
-    body = server_responses_prepare_request(std::move(body), vocab, n_ctx_slot, ws_token);
+    auto prepared = server_responses_prepare_request(std::move(body), vocab, n_ctx_slot, ws_token);
+    body = std::move(prepared.body);
 
     json input = server_responses_normalize_input(body.at("input"));
     json folded_input = server_responses_fold_input_compaction(input);
