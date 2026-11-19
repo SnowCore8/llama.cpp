@@ -265,3 +265,58 @@ def test_responses_error_envelope():
         assert e.body["type"] == "invalid_request_error"
         assert e.body["param"] == "temperature"
         assert e.body["code"] is None
+
+
+def test_responses_background_stream_reattach():
+    global server
+    server.n_ctx = 4096
+    server.n_slots = 1
+    server.start()
+    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
+
+    # occupy the only slot, the second response stays in progress while we attach to it
+    busy = client.responses.create(
+        model="gpt-4.1",
+        input="Book " * 20,
+        max_output_tokens=1024,
+        temperature=0.0,
+        background=True,
+    )
+    assert busy.status == "in_progress"
+
+    res = client.responses.create(
+        model="gpt-4.1",
+        input="Book",
+        max_output_tokens=32,
+        temperature=0.0,
+        background=True,
+    )
+    assert res.status == "in_progress"
+
+    events = []
+    with client.responses.retrieve(res.id, stream=True) as stream:
+        for event in stream:
+            events.append(event)
+            if len(events) == 2:
+                # the generation has not started yet, so this is a live subscription
+                assert client.responses.retrieve(res.id).status == "in_progress"
+
+    seqs = [event.sequence_number for event in events]
+    types = [event.type for event in events]
+    assert types[0] == "response.created"
+    assert seqs == list(range(len(seqs)))
+    assert "response.output_text.delta" in types
+    assert types[-1] in ("response.completed", "response.incomplete")
+    delta_text = "".join(event.delta for event in events if event.type == "response.output_text.delta")
+    assert delta_text == events[-1].response.output_text
+
+    # the log is kept after completion, a reconnect replays the same events
+    replay = list(client.responses.retrieve(res.id, stream=True))
+    assert [event.sequence_number for event in replay] == seqs
+    assert [event.type for event in replay] == types
+
+    # resuming after a sequence number never repeats an event
+    mid = seqs[len(seqs) // 2]
+    tail = list(client.responses.retrieve(res.id, stream=True, starting_after=mid))
+    assert [event.sequence_number for event in tail] == list(range(mid + 1, len(seqs)))
+    assert [event.type for event in tail] == types[mid + 1:]

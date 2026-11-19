@@ -8,6 +8,7 @@
 #include <filesystem>
 
 #include <algorithm>
+#include <chrono>
 #include <ctime>
 #include <stdexcept>
 
@@ -62,6 +63,76 @@ json normalize_input(const json & input) {
 }
 
 } // namespace
+
+//
+// server_responses_event_log
+//
+
+void server_responses_event_log::append(int64_t seq, std::string event) {
+    if (event.empty()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (done) {
+            return;
+        }
+        n_bytes += event.size();
+        events.emplace_back(seq, std::move(event));
+        // keep the newest events, the oldest ones are dropped when the cap is reached
+        while (n_bytes > max_bytes && events.size() > 1) {
+            n_bytes -= events.front().second.size();
+            events.pop_front();
+        }
+        first_seq = events.front().first;
+    }
+    cv.notify_all();
+}
+
+void server_responses_event_log::close() {
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        done = true;
+    }
+    cv.notify_all();
+}
+
+bool server_responses_event_log::is_done() const {
+    std::lock_guard<std::mutex> lock(mutex);
+    return done;
+}
+
+bool server_responses_event_log::validate(int64_t next_seq) const {
+    std::lock_guard<std::mutex> lock(mutex);
+    return next_seq >= first_seq;
+}
+
+bool server_responses_event_log::read(int64_t & next_seq, std::string & out, const std::function<bool()> & should_stop) {
+    std::unique_lock<std::mutex> lock(mutex);
+    while (true) {
+        if (should_stop && should_stop()) {
+            return false;
+        }
+        if (next_seq < first_seq) {
+            return false; // the reader fell behind the retained window
+        }
+        if (!events.empty() && next_seq >= events.front().first) {
+            const size_t index = (size_t) (next_seq - events.front().first);
+            if (index < events.size()) {
+                for (size_t i = index; i < events.size(); i++) {
+                    out += events[i].second;
+                }
+                next_seq = events.back().first + 1;
+                return true;
+            }
+        }
+        if (done) {
+            return false;
+        }
+        // wake up regularly to notice a dropped connection
+        cv.wait_for(lock, std::chrono::milliseconds(200));
+    }
+}
 
 json server_responses_stored::to_json() const {
     return json {
@@ -665,6 +736,11 @@ server_responses_context::server_responses_context(
         const std::string generated = this->req.reasoning.value("generate_summary", std::string());
         reasoning_summary = !summary.empty() || !generated.empty();
     }
+    // a background response is generated as a stream, its events can be replayed to new
+    // connections. background + stream is served synchronously and needs no log
+    if (this->req.background && !this->req.stream) {
+        event_log = std::make_shared<server_responses_event_log>();
+    }
 }
 
 json server_responses_context::push(json & events, const std::string & type, json data) const {
@@ -676,6 +752,22 @@ json server_responses_context::push(json & events, const std::string & type, jso
     };
     events.push_back(std::move(event));
     return events.back();
+}
+
+void server_responses_context::publish(const json & events) const {
+    if (!event_log) {
+        return;
+    }
+    auto publish_one = [this](const json & event) {
+        event_log->append(event.at("data").value("sequence_number", (int64_t) 0), format_oai_resp_sse(event));
+    };
+    if (events.is_array()) {
+        for (const auto & event : events) {
+            publish_one(event);
+        }
+    } else {
+        publish_one(events);
+    }
 }
 
 json server_responses_context::make_response(
@@ -1129,6 +1221,7 @@ json server_responses_context::consume(const server_task_result_cmpl_partial & r
             data["prompt_progress"] = result.progress.to_json();
         }
     }
+    publish(events);
     return events;
 }
 
@@ -1184,6 +1277,8 @@ json server_responses_context::finish(const server_task_result_cmpl_final & resu
     if (result.stats.is_set()) {
         events.back().at("data")["timings"] = result.stats.to_json();
     }
+    publish(events);
+    close_events();
     store_response(response);
     return events;
 }
@@ -1225,15 +1320,17 @@ json server_responses_context::failed_event(const std::string & message, const s
         entry.created_at  = created_at;
         store.put(id, std::move(entry));
     }
-    json data = json {
-        {"type",            "response.failed"},
-        {"sequence_number", seq++},
-        {"response",        response},
-    };
-    return json {
+    json event = json {
         {"event", "response.failed"},
-        {"data", std::move(data)},
+        {"data", json {
+            {"type",            "response.failed"},
+            {"sequence_number", seq++},
+            {"response",        response},
+        }},
     };
+    publish(event);
+    close_events();
+    return event;
 }
 
 void server_responses_context::store_response(const json & response) {
@@ -1275,6 +1372,12 @@ json server_responses_context::begin_background() {
     entry.input_items = req.effective_input;
     entry.created_at  = created_at;
     store.put(id, std::move(entry));
+    if (event_log) {
+        // publish the opening events right away, a subscriber can attach before the first token
+        json events = json::array();
+        ensure_started(events);
+        publish(events);
+    }
     return response;
 }
 
@@ -1284,6 +1387,10 @@ json server_responses_context::cancel() {
         return nullptr;
     }
     json response = make_response("cancelled", json::array(), nullptr, nullptr, nullptr);
+    {
+        std::lock_guard<std::mutex> lock(cancel_mutex);
+        cancelled_response = response;
+    }
     server_responses_stored entry;
     entry.response    = response;
     entry.input_items = req.effective_input;
@@ -1306,4 +1413,31 @@ void server_responses_context::fail(const std::string & message) {
     entry.input_items = req.effective_input;
     entry.created_at  = created_at;
     store.put(id, std::move(entry));
+    if (event_log) {
+        json events = json::array();
+        ensure_started(events);
+        push(events, "response.failed", json {{"response", response}});
+        publish(events);
+        close_events();
+    }
+}
+
+void server_responses_context::finish_cancelled() {
+    if (!event_log || event_log->is_done()) {
+        return;
+    }
+    json response;
+    {
+        std::lock_guard<std::mutex> lock(cancel_mutex);
+        response = cancelled_response;
+    }
+    if (response.is_null()) {
+        response = make_response("cancelled", json::array(), nullptr, nullptr, nullptr);
+    }
+    json events = json::array();
+    ensure_started(events);
+    // the stored replay maps a cancelled response to the completed event, keep the live stream equal
+    push(events, "response.completed", json {{"response", response}});
+    publish(events);
+    close_events();
 }

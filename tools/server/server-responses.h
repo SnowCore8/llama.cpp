@@ -4,11 +4,16 @@
 #include "server-task.h"
 
 #include <atomic>
+#include <condition_variable>
+#include <cstddef>
 #include <cstdint>
+#include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // OpenAI Responses API request, parsed without going through chat completions
@@ -92,6 +97,31 @@ json server_responses_build_params(
         common_chat_session & session,
         std::vector<raw_buffer> & files);
 
+// rendered SSE events of one background response, kept so that a new connection can resume
+// the stream from a sequence number. the generation thread is the only writer
+struct server_responses_event_log {
+    mutable std::mutex mutex;
+    std::condition_variable cv;
+    // sequence_number -> rendered SSE bytes, sequence numbers are contiguous
+    std::deque<std::pair<int64_t, std::string>> events;
+    int64_t first_seq = 0; // sequence number of the oldest retained event, next expected when empty
+    bool done = false;
+    size_t n_bytes = 0;
+    size_t max_bytes = 4 * 1024 * 1024;
+
+    // append one event, drop the oldest ones once the log grows past max_bytes
+    void append(int64_t seq, std::string event);
+    // no more events will be appended
+    void close();
+    bool is_done() const;
+    // true if a reader starting at next_seq has not missed any retained event
+    bool validate(int64_t next_seq) const;
+    // block until an event at or after next_seq exists, copy everything available to out and
+    // advance next_seq. returns false when the log is done and drained, when the reader fell
+    // behind the retained window, or when should_stop() fires
+    bool read(int64_t & next_seq, std::string & out, const std::function<bool()> & should_stop);
+};
+
 // per-request response state, shared by the non-stream and stream paths
 struct server_responses_context {
     server_responses_context(
@@ -102,6 +132,9 @@ struct server_responses_context {
             server_conversations_store * conversations = nullptr);
 
     const std::string & get_id() const { return id; }
+
+    // resumable SSE event log, only set for background responses
+    std::shared_ptr<server_responses_event_log> event_log;
 
     // SSE events for one partial result
     json consume(const server_task_result_cmpl_partial & result);
@@ -116,6 +149,14 @@ struct server_responses_context {
     json begin_background();
     json cancel();
     void fail(const std::string & message);
+    // emit the terminal event for a cancelled background response and close the event log
+    void finish_cancelled();
+    // close the event log, no-op when there is none
+    void close_events() {
+        if (event_log) {
+            event_log->close();
+        }
+    }
 
 private:
     struct text_item {
@@ -156,8 +197,12 @@ private:
     std::atomic<bool> cancelled{false};
     std::atomic<bool> stored{false};
     bool conversation_appended = false;
+    std::mutex cancel_mutex;
+    json cancelled_response = nullptr;
 
     json push(json & events, const std::string & type, json data) const;
+    // render events into the resumable log, no-op when the log is not enabled
+    void publish(const json & events) const;
     void ensure_started(json & events);
     void apply_diffs(json & events, const std::vector<common_chat_msg_diff> & diffs);
     void add_reasoning_delta(json & events, const std::string & delta);

@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cinttypes>
+#include <ctime>
 #include <deque>
 #include <exception>
 #include <memory>
@@ -44,6 +45,42 @@
 #endif
 
 constexpr int HTTP_POLLING_SECONDS = 1;
+// how long the events of a finished background response stay available for a reconnect
+constexpr int64_t RESPONSES_LOG_TTL_SECONDS = 300;
+// how many finished event logs are kept at most, oldest are dropped first
+constexpr size_t  RESPONSES_LOG_MAX_DONE    = 64;
+
+// drop the event logs of finished background responses once the replay window is over
+static void prune_responses_jobs(std::unordered_map<std::string, std::shared_ptr<server_responses_background_job>> & jobs, int64_t now) {
+    size_t n_done = 0;
+    for (auto it = jobs.begin(); it != jobs.end(); ) {
+        const int64_t done_at = it->second->done_at;
+        if (done_at != 0 && now - done_at >= RESPONSES_LOG_TTL_SECONDS) {
+            it = jobs.erase(it);
+        } else {
+            if (done_at != 0) {
+                n_done++;
+            }
+            ++it;
+        }
+    }
+    while (n_done > RESPONSES_LOG_MAX_DONE) {
+        auto oldest = jobs.end();
+        for (auto it = jobs.begin(); it != jobs.end(); ++it) {
+            if (it->second->done_at == 0) {
+                continue;
+            }
+            if (oldest == jobs.end() || it->second->done_at < oldest->second->done_at) {
+                oldest = it;
+            }
+        }
+        if (oldest == jobs.end()) {
+            break;
+        }
+        jobs.erase(oldest);
+        n_done--;
+    }
+}
 
 static common_speculative_output_limits server_output_limits(const common_params & params) {
     if (!params.mmproj.path.empty()) {
@@ -6522,35 +6559,60 @@ void server_routes::init_routes() {
             job->ctx = resp_ctx;
             {
                 std::lock_guard<std::mutex> lock(responses_jobs_mutex);
+                prune_responses_jobs(responses_jobs, (int64_t) std::time(0));
                 responses_jobs[resp_ctx->get_id()] = job;
             }
             const json initial = resp_ctx->begin_background();
+
+            // the generation is driven as a stream, but on this thread: the connection threads
+            // only read the recorded events
+            data["stream"] = true;
 
             std::thread([this, resp_ctx, job, data = std::move(data), files = std::move(files), session = std::move(session)]() mutable {
                 std::function<bool()> should_stop = [job]() {
                     return job->cancelled.load();
                 };
-                server_http_req bg_req{ {}, {}, "/v1/responses", "", "", {}, should_stop };
-                server_http_res_ptr bg_res = handle_completions_impl(
-                    bg_req,
-                    SERVER_TASK_TYPE_COMPLETION,
-                    data,
-                    files,
-                    TASK_RESPONSE_TYPE_OAI_RESP,
-                    session,
-                    resp_ctx);
-                if (bg_res != nullptr && bg_res->status != 200 && !job->cancelled.load()) {
-                    std::string message = "generation failed";
-                    try {
-                        const json error_body = json::parse(bg_res->data);
-                        const json error = error_body.value("error", json::object());
-                        message = error.value("message", message);
-                    } catch (const std::exception &) {
+                server_http_res_ptr bg_res;
+                try {
+                    server_http_req bg_req{ {}, {}, "/v1/responses", "", "", {}, should_stop };
+                    bg_res = handle_completions_impl(
+                        bg_req,
+                        SERVER_TASK_TYPE_COMPLETION,
+                        data,
+                        files,
+                        TASK_RESPONSE_TYPE_OAI_RESP,
+                        session,
+                        resp_ctx);
+                    if (bg_res != nullptr && bg_res->is_stream()) {
+                        // drain the response here, every chunk is already recorded in resp_ctx
+                        std::string chunk;
+                        while (bg_res->next(chunk)) {
+                        }
                     }
-                    resp_ctx->fail(message);
+                    if (bg_res != nullptr && bg_res->status != 200 && !job->cancelled.load()) {
+                        std::string message = "generation failed";
+                        try {
+                            const json error_body = json::parse(bg_res->data);
+                            const json error = error_body.value("error", json::object());
+                            message = error.value("message", message);
+                        } catch (const std::exception &) {
+                        }
+                        resp_ctx->fail(message);
+                    }
+                } catch (const std::exception & e) {
+                    resp_ctx->fail(e.what());
                 }
+                if (job->cancelled.load()) {
+                    resp_ctx->finish_cancelled();
+                } else {
+                    resp_ctx->close_events();
+                }
+                // keep the log around, a client may reconnect after the generation ended
                 std::lock_guard<std::mutex> lock(responses_jobs_mutex);
-                responses_jobs.erase(resp_ctx->get_id());
+                const auto it = responses_jobs.find(resp_ctx->get_id());
+                if (it != responses_jobs.end() && it->second == job) {
+                    it->second->done_at = (int64_t) std::time(0);
+                }
             }).detach();
 
             res->ok(initial);
@@ -6574,9 +6636,11 @@ void server_routes::init_routes() {
             }
         }
         if (job != nullptr) {
-            job->cancelled.store(true);
+            // cancel first so the generation thread publishes the terminal event with the
+            // recorded cancelled response
             json cancelled = job->ctx->cancel();
             if (!cancelled.is_null()) {
+                job->cancelled.store(true);
                 res->ok(cancelled);
                 return res;
             }
@@ -6630,6 +6694,43 @@ void server_routes::init_routes() {
     this->get_responses_oai = [this](const server_http_req & req) {
         auto res = create_response();
         const std::string id = req.get_param("id");
+
+        // a background response records its events, attach to that log while it is around: it is
+        // live during the generation and kept for a short window after it ended
+        if (req.get_param("stream", "") == "true") {
+            std::shared_ptr<server_responses_background_job> job;
+            {
+                std::lock_guard<std::mutex> lock(responses_jobs_mutex);
+                const auto it = responses_jobs.find(id);
+                if (it != responses_jobs.end()) {
+                    job = it->second;
+                }
+            }
+            if (job != nullptr && job->ctx->event_log) {
+                int64_t after = -1;
+                const std::string starting_after = req.get_param("starting_after");
+                if (!starting_after.empty()) {
+                    try {
+                        after = std::stoll(starting_after);
+                    } catch (const std::exception &) {
+                        res->error(format_error_response("'starting_after' must be an integer", ERROR_TYPE_INVALID_REQUEST));
+                        return res;
+                    }
+                }
+                auto log = job->ctx->event_log;
+                auto next_seq = std::make_shared<int64_t>(after + 1);
+                if (!log->validate(*next_seq)) {
+                    res->error(format_error_response("'starting_after' is older than the retained events", ERROR_TYPE_INVALID_REQUEST));
+                    return res;
+                }
+                res->content_type = "text/event-stream";
+                res->next = [log, next_seq, &req](std::string & output) -> bool {
+                    return log->read(*next_seq, output, req.should_stop);
+                };
+                return res;
+            }
+        }
+
         server_responses_stored stored;
         if (!responses_store->get(id, stored)) {
             res->status = 404;
@@ -6720,6 +6821,11 @@ void server_routes::init_routes() {
                 {"code", "response_not_found"},
             }}});
             return res;
+        }
+        {
+            // drop the event log too, a deleted response must not stay subscribable
+            std::lock_guard<std::mutex> lock(responses_jobs_mutex);
+            responses_jobs.erase(id);
         }
         res->ok(json {
             {"id", id},

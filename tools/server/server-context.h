@@ -69,6 +69,8 @@ using server_state_callback_t = std::function<void(server_state, json /* payload
 struct server_responses_background_job {
     std::shared_ptr<server_responses_context> ctx;
     std::atomic<bool> cancelled{false};
+    // unix seconds when the generation ended, 0 while running; guarded by responses_jobs_mutex
+    int64_t done_at = 0;
 };
 
 struct server_context {
