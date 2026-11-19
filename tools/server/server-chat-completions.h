@@ -5,6 +5,7 @@
 #include "json.h"
 
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -22,6 +23,7 @@ struct server_chat_completions_request {
     bool store = false;
     bool parallel_tool_calls = true;
     int n = 1;
+    std::vector<std::string> custom_tools; // names of the requested type=custom tools
 };
 
 struct server_chat_completions_stored {
@@ -74,8 +76,8 @@ struct server_chat_completions_context {
     void finish(json & response);
     // streaming: one final choice at a time, store once all choices are present
     void finish_stream(json response);
-    // enforce parallel_tool_calls=false on streamed chunks
-    json filter_chunks(json chunks) const;
+    // rewrite custom tool calls and enforce parallel_tool_calls=false on streamed chunks
+    json filter_chunks(json chunks);
 
 private:
     struct pending_stream {
@@ -85,10 +87,19 @@ private:
         int64_t completion_tokens = 0;
     };
 
+    // streamed custom tool call, keyed by (choice index, tool call index)
+    struct pending_custom_tool_call {
+        std::string id;
+        std::string name;
+        std::string arguments;
+    };
+
     server_chat_completions_store & store;
     server_chat_completions_request req;
     std::unordered_map<std::string, pending_stream> pending;
+    std::map<std::pair<int, int>, pending_custom_tool_call> pending_custom_tool_calls;
 
+    bool is_custom_tool(const std::string & name) const;
     void decorate(json & response) const;
     void store_response(const json & response);
     json make_messages(const json & response) const;

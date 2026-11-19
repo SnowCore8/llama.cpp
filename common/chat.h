@@ -224,6 +224,13 @@ struct common_chat_msg_delimiters {
     common_chat_msg_spans split(const llama_tokens & tokens, const std::map<size_t, size_t> & skips = {}) const;
 };
 
+// input format of an OpenAI custom tool
+struct common_chat_custom_format {
+    std::string type = "text"; // "text" or "grammar"
+    std::string syntax;        // "lark" or "regex", when type == "grammar"
+    std::string definition;    // grammar definition, when type == "grammar"
+};
+
 struct common_chat_tool {
     std::string name;
     std::string description;
@@ -231,6 +238,10 @@ struct common_chat_tool {
 
     // withheld from the system prompt, a tool_reference reveals it later in the conversation
     bool defer_loading = false;
+
+    // custom tools take free-form input instead of JSON arguments
+    bool is_custom = false;
+    common_chat_custom_format custom_format = {};
 };
 
 enum common_chat_tool_choice {

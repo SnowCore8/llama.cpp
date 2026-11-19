@@ -8,6 +8,7 @@
 #include "../src/llama-grammar.h"
 #include "../src/unicode.h"
 #include "../tools/server/server-chat.h"
+#include "server-chat-completions.h"
 #include "chat-auto-parser.h"
 #include "chat-peg-parser.h"
 #include "chat.h"
@@ -8224,6 +8225,244 @@ static void test_reasoning_token_count() {
     }
 }
 
+static void test_custom_tools() {
+    LOG_DBG("%s\n", __func__);
+
+    const json tools = json::array({
+        json {
+            {"type", "function"},
+            {"function", json {
+                {"name", "get_weather"},
+                {"description", "Get the weather"},
+                {"parameters", json {{"type", "object"}, {"properties", json::object()}}},
+            }},
+        },
+        json {
+            {"type", "custom"},
+            {"custom", json {
+                {"name", "run_code"},
+                {"description", "Run python code"},
+                {"format", json {{"type", "text"}}},
+            }},
+        },
+        json {
+            {"type", "custom"},
+            {"custom", json {
+                {"name", "emit_json"},
+                {"format", json {{"type", "grammar"}, {"grammar", json {{"syntax", "lark"}, {"definition", "start: /.+/"}}}}},
+            }},
+        },
+    });
+
+    const auto parsed = common_chat_tools_parse_oaicompat(tools);
+    assert_equals((size_t) 3, parsed.size());
+    assert_equals(false, parsed[0].is_custom);
+    assert_equals(true, parsed[1].is_custom);
+    assert_equals(std::string("run_code"), parsed[1].name);
+    assert_equals(std::string("Run python code"), parsed[1].description);
+    assert_equals(std::string("text"), parsed[1].custom_format.type);
+    assert_equals(std::string("grammar"), parsed[2].custom_format.type);
+    assert_equals(std::string("lark"), parsed[2].custom_format.syntax);
+    assert_equals(std::string("start: /.+/"), parsed[2].custom_format.definition);
+
+    // custom tools are exposed to the templates as function tools with a single string argument
+    const json rendered = common_chat_tools_to_json_oaicompat(parsed);
+    assert_equals(std::string("function"), rendered[1].at("type").get<std::string>());
+    const auto & params = rendered[1].at("function").at("parameters");
+    assert_equals(std::string("string"), params.at("properties").at("input").at("type").get<std::string>());
+    assert_equals(std::string("input"), params.at("required").at(0).get<std::string>());
+
+    // invalid custom tool definitions are rejected
+    const auto expect_tools_error = [](const json & bad) {
+        bool thrown = false;
+        try {
+            common_chat_tools_parse_oaicompat(bad);
+        } catch (const std::exception &) {
+            thrown = true;
+        }
+        if (!thrown) {
+            throw std::runtime_error("Expected the tool definition to be rejected");
+        }
+    };
+    expect_tools_error(json::array({ json {{"type", "custom"}, {"custom", json {{"description", "missing name"}}}} }));
+    expect_tools_error(json::array({ json {{"type", "custom"}, {"custom", json {{"name", "x"}, {"format", json {{"type", "json"}}}}}} }));
+    expect_tools_error(json::array({ json {{"type", "custom"}, {"custom", json {{"name", "x"}, {"format", json {{"type", "grammar"}, {"grammar", json {{"syntax", "ebnf"}, {"definition", "x"}}}}}}}} }));
+    expect_tools_error(json::array({ json {{"type", "custom"}, {"custom", json {{"name", "x"}, {"format", json {{"type", "grammar"}, {"grammar", json {{"syntax", "lark"}, {"definition", ""}}}}}}}} }));
+    expect_tools_error(json::array({ json {{"type", "web_search"}} }));
+
+    // a custom tool call in the history is parsed back into the synthetic function call
+    const json messages = json::array({
+        json {{"role", "user"}, {"content", "run it"}},
+        json {{"role", "assistant"}, {"tool_calls", json::array({ json {
+            {"id", "call_1"},
+            {"type", "custom"},
+            {"custom", json {{"name", "run_code"}, {"input", "print(1)"}}},
+        } })}},
+        json {{"role", "tool"}, {"tool_call_id", "call_1"}, {"content", "ok"}},
+    });
+    const auto msgs = common_chat_msgs_parse_oaicompat(messages);
+    assert_equals((size_t) 3, msgs.size());
+    assert_equals((size_t) 1, msgs[1].tool_calls.size());
+    assert_equals(std::string("run_code"), msgs[1].tool_calls[0].name);
+    const json args = json::parse(msgs[1].tool_calls[0].arguments);
+    assert_equals(std::string("print(1)"), args.at("input").get<std::string>());
+
+    // the templates still see a normal function call
+    const json rendered_msgs = common_chat_msgs_to_json_oaicompat(msgs);
+    const auto & tc = rendered_msgs.at(1).at("tool_calls").at(0);
+    assert_equals(std::string("function"), tc.at("type").get<std::string>());
+    assert_equals(std::string("run_code"), tc.at("function").at("name").get<std::string>());
+}
+
+static void test_custom_tools_chat_context() {
+    LOG_DBG("%s\n", __func__);
+
+    server_chat_completions_store store;
+
+    const json body = json {
+        {"model", "test"},
+        {"parallel_tool_calls", false},
+        {"messages", json::array({ json {{"role", "user"}, {"content", "run"}} })},
+        {"tools", json::array({ json {
+            {"type", "custom"},
+            {"custom", json {{"name", "run_code"}, {"format", json {{"type", "text"}}}}},
+        } })},
+    };
+    const auto req = server_chat_completions_parse_request(body);
+    assert_equals((size_t) 1, req.custom_tools.size());
+    assert_equals(std::string("run_code"), req.custom_tools[0]);
+
+    server_chat_completions_context ctx(store, req);
+
+    // non-stream: the function-shaped tool call is rewritten to the custom shape
+    json response = json {
+        {"id", "chatcmpl-test"},
+        {"choices", json::array({ json {
+            {"index", 0},
+            {"finish_reason", "tool_calls"},
+            {"message", json {
+                {"role", "assistant"},
+                {"content", nullptr},
+                {"tool_calls", json::array({
+                    json {{"id", "call_1"}, {"type", "function"}, {"function", json {{"name", "run_code"}, {"arguments", json("{\"input\":\"print(1)\"}")}}}},
+                    json {{"id", "call_2"}, {"type", "function"}, {"function", json {{"name", "get_weather"}, {"arguments", json("{}")}}}},
+                })},
+            }},
+        } })},
+        {"usage", json {{"completion_tokens", 4}, {"prompt_tokens", 8}, {"total_tokens", 12}}},
+    };
+    ctx.finish(response);
+    const auto & calls = response.at("choices").at(0).at("message").at("tool_calls");
+    assert_equals((size_t) 1, calls.size()); // parallel_tool_calls = false keeps the first call only
+    assert_equals(std::string("custom"), calls[0].at("type").get<std::string>());
+    assert_equals(std::string("call_1"), calls[0].at("id").get<std::string>());
+    assert_equals(std::string("run_code"), calls[0].at("custom").at("name").get<std::string>());
+    assert_equals(std::string("print(1)"), calls[0].at("custom").at("input").get<std::string>());
+
+    // streaming: the input fragments are buffered and sent as one custom delta before the finish chunk
+    const auto make_chunk = [](json choices) {
+        json chunk {
+            {"id", "chatcmpl-test"},
+            {"object", "chat.completion.chunk"},
+            {"created", 1},
+            {"model", "test"},
+            {"system_fingerprint", "b1"},
+        };
+        chunk["choices"] = std::move(choices);
+        return chunk;
+    };
+    const auto make_choice = [](json delta, json finish_reason = nullptr) {
+        return json {
+            {"index", 0},
+            {"finish_reason", std::move(finish_reason)},
+            {"delta", std::move(delta)},
+        };
+    };
+    const auto make_tool_call = [](int index, const std::string & id, const std::string & name, const std::string & arguments) {
+        json tool_call {{"index", index}};
+        if (!id.empty()) {
+            tool_call["id"]   = id;
+            tool_call["type"] = "function";
+        }
+        json function = json::object();
+        if (!name.empty()) {
+            function["name"] = name;
+        }
+        if (!arguments.empty()) {
+            function["arguments"] = arguments;
+        }
+        tool_call["function"] = std::move(function);
+        return tool_call;
+    };
+
+    json chunks = json::array({
+        make_chunk(json::array({ make_choice(json {{"role", "assistant"}}) })),
+        make_chunk(json::array({ make_choice(json {{"tool_calls", json::array({
+            make_tool_call(0, "call_1", "run_code", "{\"input\":\"print("),
+            make_tool_call(1, "call_2", "run_code", "{\"input\":\"other\"}"),
+        })}}) })),
+        make_chunk(json::array({ make_choice(json {{"tool_calls", json::array({
+            make_tool_call(0, "", "", "1)\"}"),
+        })}}) })),
+        make_chunk(json::array({ make_choice(json::object(), "tool_calls") })),
+    });
+
+    const json filtered = ctx.filter_chunks(std::move(chunks));
+    std::string input;
+    bool saw_header = false;
+    bool saw_function_call = false;
+    size_t flush_pos  = std::string::npos;
+    size_t finish_pos = std::string::npos;
+    for (size_t i = 0; i < filtered.size(); i++) {
+        const auto & chunk = filtered.at(i);
+        if (!chunk.contains("choices") || !chunk.at("choices").is_array()) {
+            continue;
+        }
+        for (const auto & choice : chunk.at("choices")) {
+            if (!choice.is_object()) {
+                continue;
+            }
+            if (choice.contains("finish_reason") && !choice.at("finish_reason").is_null()) {
+                finish_pos = i;
+            }
+            if (!choice.contains("delta") || !choice.at("delta").contains("tool_calls")) {
+                continue;
+            }
+            for (const auto & tc : choice.at("delta").at("tool_calls")) {
+                if (tc.value("type", std::string()) == "function") {
+                    saw_function_call = true;
+                }
+                if (tc.value("type", std::string()) == "custom") {
+                    saw_header = true;
+                    assert_equals(std::string("call_1"), tc.value("id", std::string()));
+                }
+                if (tc.contains("custom") && tc.at("custom").contains("input")) {
+                    input += tc.at("custom").at("input").get<std::string>();
+                    flush_pos = i;
+                }
+            }
+        }
+    }
+    assert_equals(true, saw_header);
+    assert_equals(false, saw_function_call);
+    assert_equals(std::string("print(1)"), input);
+    GGML_ASSERT(flush_pos != std::string::npos && finish_pos != std::string::npos);
+    GGML_ASSERT(flush_pos + 1 == finish_pos && "custom input must be sent right before the finish chunk");
+
+    // function tool calls are not touched
+    const json fn_body = json {
+        {"model", "test"},
+        {"messages", json::array({ json {{"role", "user"}, {"content", "run"}} })},
+        {"tools", json::array({ json {{"type", "function"}, {"function", json {{"name", "get_weather"}, {"parameters", json::object()}}}} })},
+    };
+    server_chat_completions_context fn_ctx(store, server_chat_completions_parse_request(fn_body));
+    json fn_chunk = make_chunk(json::array({ make_choice(json {{"tool_calls", json::array({
+        make_tool_call(0, "call_1", "get_weather", "{}"),
+    })}}) }));
+    const json fn_filtered = fn_ctx.filter_chunks(fn_chunk);
+    assert_equals(fn_chunk.dump(), fn_filtered.dump());
+}
+
 static void test_chat_json_depth() {
     LOG_DBG("%s\n", __func__);
     const auto arrays = [](size_t n) {
@@ -8543,6 +8782,8 @@ int main(int argc, char ** argv) {
         test_prompt_parts();
         test_chat_session();
         test_reasoning_token_count();
+        test_custom_tools();
+        test_custom_tools_chat_context();
         test_chat_json_depth();
         test_reasoning_budget_tokens_per_request();
         test_reasoning_budget_message_per_request();

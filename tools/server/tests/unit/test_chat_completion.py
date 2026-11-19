@@ -736,3 +736,156 @@ def test_chat_error_envelope():
         assert e.body["type"] == "invalid_request_error"
         assert e.body["param"] == "temperature"
         assert e.body["code"] is None
+
+
+CUSTOM_TOOL = {
+    "type": "custom",
+    "custom": {
+        "name": "run_code",
+        "description": "Run python code",
+        "format": {"type": "text"},
+    },
+}
+
+QWEN35_TEMPLATE = "../../../models/templates/Qwen3.5-4B.jinja"
+
+# Qwen3.5 XML tool call layout, used to drive a deterministic custom tool call
+CUSTOM_TOOL_CALL_COMPLETE = (
+    "<tool_call>\n<function=run_code>\n<parameter=input>\n"
+    "print(1)\n</parameter>\n</function>\n</tool_call>"
+)
+CUSTOM_TOOL_CALL_OPEN = "<tool_call>\n<function=run_code>\n<parameter=input>\n"
+
+
+def start_custom_tool_server():
+    global server
+    server.jinja = True
+    server.chat_template_file = QWEN35_TEMPLATE
+    server.n_ctx = 2048
+    server.n_slots = 1
+    server.temperature = 0.0
+    server.start()
+
+
+def test_custom_tools_request_validation():
+    start_custom_tool_server()
+    base = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 1,
+    }
+
+    def expect_400(payload, needle):
+        res = server.make_request("POST", "/chat/completions", data=payload)
+        assert res.status_code == 400, res.body
+        assert res.body["error"]["type"] == "invalid_request_error"
+        assert needle in res.body["error"]["message"], res.body
+
+    expect_400({**base, "tools": [{"type": "custom", "custom": {}}]}, "custom.name")
+    expect_400({**base, "tools": [{"type": "custom", "custom": {"name": "x", "format": {"type": "json"}}}]}, "custom.format.type")
+    expect_400({**base, "tools": [{"type": "custom", "custom": {"name": "x", "format": {"type": "grammar", "grammar": {"syntax": "ebnf", "definition": "x"}}}}]}, "custom.format.grammar.syntax")
+    expect_400({**base, "tools": [{"type": "custom", "custom": {"name": "x", "format": {"type": "grammar", "grammar": {"syntax": "lark", "definition": ""}}}}]}, "custom.format.grammar.definition")
+    expect_400({**base, "tools": [{"type": "web_search"}]}, "Unsupported tool type")
+    expect_400({**base, "tools": [CUSTOM_TOOL], "tool_choice": {"type": "custom", "custom": {"name": "missing"}}}, "unknown tool")
+
+    # valid custom formats are accepted
+    for fmt in ({"type": "text"}, {"type": "grammar", "grammar": {"syntax": "lark", "definition": "start: /.+/"}}):
+        tool = {"type": "custom", "custom": {"name": "run_code", "description": "Run code", "format": fmt}}
+        res = server.make_request("POST", "/chat/completions", data={**base, "tools": [tool]})
+        assert res.status_code == 200, res.body
+
+    # a named custom tool choice keeps the tool and rewrites the choice to required
+    res = server.make_request("POST", "/chat/completions", data={
+        **base,
+        "tools": [CUSTOM_TOOL],
+        "tool_choice": {"type": "custom", "custom": {"name": "run_code"}},
+    })
+    assert res.status_code == 200, res.body
+
+
+def test_custom_tool_call_response():
+    start_custom_tool_server()
+    res = server.make_request("POST", "/chat/completions", data={
+        "messages": [
+            {"role": "user", "content": "Run print(1)"},
+            {"role": "assistant", "content": CUSTOM_TOOL_CALL_COMPLETE},
+        ],
+        "continue_final_message": "content",
+        "add_generation_prompt": False,
+        "tools": [CUSTOM_TOOL],
+        "tool_choice": "required",
+        "parallel_tool_calls": False,
+        "max_tokens": 8,
+        "chat_template_kwargs": {"enable_thinking": False},
+    })
+    assert res.status_code == 200, res.body
+    tool_calls = res.body["choices"][0]["message"].get("tool_calls")
+    assert tool_calls is not None and len(tool_calls) == 1, res.body
+    tool_call = tool_calls[0]
+    assert tool_call["type"] == "custom", tool_call
+    assert tool_call["custom"]["name"] == "run_code", tool_call
+    assert tool_call["custom"]["input"] == "print(1)", tool_call
+    assert tool_call.get("id"), tool_call
+    assert "function" not in tool_call, tool_call
+
+
+def test_custom_tool_call_stream():
+    start_custom_tool_server()
+    tool_calls = {}
+    finish_reason = None
+    for chunk in server.make_stream_request("POST", "/chat/completions", data={
+        "messages": [
+            {"role": "user", "content": "Run print(1)"},
+            {"role": "assistant", "content": CUSTOM_TOOL_CALL_OPEN},
+        ],
+        "continue_final_message": "content",
+        "add_generation_prompt": False,
+        "tools": [CUSTOM_TOOL],
+        "tool_choice": "required",
+        "parallel_tool_calls": False,
+        "max_tokens": 8,
+        "stream": True,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }):
+        for choice in chunk.get("choices", []):
+            delta = choice.get("delta") or {}
+            for tool_call in delta.get("tool_calls") or []:
+                assert "function" not in tool_call, tool_call
+                index = tool_call.get("index", 0)
+                entry = tool_calls.setdefault(index, {"types": set(), "name": None, "id": None, "inputs": []})
+                if tool_call.get("type") is not None:
+                    entry["types"].add(tool_call["type"])
+                custom = tool_call.get("custom") or {}
+                if custom.get("name") is not None:
+                    entry["name"] = custom["name"]
+                if tool_call.get("id") is not None:
+                    entry["id"] = tool_call["id"]
+                if custom.get("input") is not None:
+                    entry["inputs"].append(custom["input"])
+            if choice.get("finish_reason") is not None:
+                finish_reason = choice["finish_reason"]
+
+    assert len(tool_calls) == 1, tool_calls
+    (_, entry), = tool_calls.items()
+    assert entry["types"] == {"custom"}, entry
+    assert entry["name"] == "run_code", entry
+    assert entry["id"], entry
+    assert entry["inputs"] and all(isinstance(part, str) for part in entry["inputs"]), entry
+    assert finish_reason in ("length", "tool_calls"), finish_reason
+
+
+def test_custom_tool_result_backfill():
+    start_custom_tool_server()
+    res = server.make_request("POST", "/chat/completions", data={
+        "messages": [
+            {"role": "user", "content": "Run print(1)"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_1", "type": "custom", "custom": {"name": "run_code", "input": "print(1)"}},
+            ]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "1"},
+            {"role": "user", "content": "Thanks"},
+        ],
+        "tools": [CUSTOM_TOOL],
+        "max_tokens": 2,
+    })
+    assert res.status_code == 200, res.body
+    assert res.body["choices"][0]["message"]["role"] == "assistant"

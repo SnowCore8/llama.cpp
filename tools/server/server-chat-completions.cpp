@@ -15,10 +15,68 @@ std::string chat_tool_name(const json & tool) {
     if (!tool.is_object()) {
         return "";
     }
+    if (tool.contains("custom") && tool.at("custom").is_object()) {
+        return tool.at("custom").value("name", std::string());
+    }
     if (tool.contains("function") && tool.at("function").is_object()) {
         return tool.at("function").value("name", std::string());
     }
     return tool.value("name", std::string());
+}
+
+std::string chat_tool_type(const json & tool) {
+    return tool.is_object() ? tool.value("type", std::string("function")) : std::string();
+}
+
+bool is_custom_tool_name(const std::vector<std::string> & names, const std::string & name) {
+    return !name.empty() && std::find(names.begin(), names.end(), name) != names.end();
+}
+
+// the model writes custom tool input as the synthetic {"input": "..."} function arguments
+std::string custom_tool_input_from_arguments(const json & arguments) {
+    std::string raw;
+    if (arguments.is_string()) {
+        raw = arguments.get<std::string>();
+    } else if (arguments.is_object() || arguments.is_array()) {
+        raw = arguments.dump();
+    } else {
+        return "";
+    }
+    if (raw.empty()) {
+        return raw;
+    }
+    try {
+        const json parsed = json::parse(raw);
+        if (parsed.is_object() && parsed.contains("input")) {
+            const auto & input = parsed.at("input");
+            return input.is_string() ? input.get<std::string>() : input.dump();
+        }
+        if (parsed.is_string()) {
+            return parsed.get<std::string>();
+        }
+    } catch (const std::exception &) {
+        // not valid JSON, the generated text is the input as-is
+    }
+    return raw;
+}
+
+json custom_tool_delta_header(int index, const std::string & id, const std::string & name) {
+    json tool_call {
+        {"index", index},
+        {"type", "custom"},
+        {"custom", json {{"name", name}}},
+    };
+    if (!id.empty()) {
+        tool_call["id"] = id;
+    }
+    return tool_call;
+}
+
+json custom_tool_delta_input(int index, const std::string & name, const std::string & input) {
+    return json {
+        {"index", index},
+        {"custom", json {{"name", name}, {"input", input}}},
+    };
 }
 
 int64_t response_completion_tokens(const json & response) {
@@ -353,14 +411,11 @@ server_chat_completions_request server_chat_completions_parse_request(const json
     if (body.contains("prediction") && !body.at("prediction").is_null()) {
         throw std::invalid_argument("'prediction' is not supported");
     }
-    if (body.contains("tools") && body.at("tools").is_array()) {
-        for (const auto & tool : body.at("tools")) {
-            if (!tool.is_object()) {
-                throw std::invalid_argument("'tools' entries must be objects");
-            }
-            const std::string type = tool.value("type", std::string("function"));
-            if (type != "function") {
-                throw std::invalid_argument("unsupported tool type: " + type);
+    if (body.contains("tools") && !body.at("tools").is_null()) {
+        // the shared parser validates function and custom tools, including the custom format
+        for (const auto & tool : common_chat_tools_parse_oaicompat(body.at("tools"))) {
+            if (tool.is_custom) {
+                req.custom_tools.push_back(tool.name);
             }
         }
     }
@@ -449,18 +504,19 @@ void server_chat_completions_normalize_request(json & body) {
     }
 
     const std::string type = choice.value("type", std::string());
-    if (type == "function") {
+    if (type == "function" || type == "custom") {
+        const char * key = type == "function" ? "function" : "custom";
         std::string name = choice.value("name", std::string());
-        if (name.empty() && choice.contains("function") && choice.at("function").is_object()) {
-            name = choice.at("function").value("name", std::string());
+        if (name.empty() && choice.contains(key) && choice.at(key).is_object()) {
+            name = choice.at(key).value("name", std::string());
         }
         if (name.empty()) {
-            throw std::invalid_argument("'tool_choice' function requires a 'name'");
+            throw std::invalid_argument("'tool_choice' " + type + " requires a 'name'");
         }
         json filtered = json::array();
         if (body.contains("tools") && body.at("tools").is_array()) {
             for (const auto & tool : body.at("tools")) {
-                if (chat_tool_name(tool) == name) {
+                if (chat_tool_name(tool) == name && chat_tool_type(tool) == type) {
                     filtered.push_back(tool);
                 }
             }
@@ -507,6 +563,10 @@ server_chat_completions_context::server_chat_completions_context(
     req(std::move(req)) {
 }
 
+bool server_chat_completions_context::is_custom_tool(const std::string & name) const {
+    return is_custom_tool_name(req.custom_tools, name);
+}
+
 void server_chat_completions_context::decorate(json & response) const {
     // sum the exact count of each choice; the temporary field is removed here
     int64_t n_reasoning   = 0;
@@ -527,6 +587,31 @@ void server_chat_completions_context::decorate(json & response) const {
                 json kept = json::array();
                 kept.push_back(message.at("tool_calls")[0]);
                 message["tool_calls"] = std::move(kept);
+            }
+            if (message.contains("tool_calls") && message.at("tool_calls").is_array()) {
+                // custom tools are generated as function calls with a single string argument
+                json converted = json::array();
+                for (auto & tool_call : message.at("tool_calls")) {
+                    if (tool_call.is_object() && tool_call.value("type", std::string()) == "function" &&
+                            tool_call.contains("function") && tool_call.at("function").is_object() &&
+                            is_custom_tool(tool_call.at("function").value("name", std::string()))) {
+                        const auto & function = tool_call.at("function");
+                        json custom_call {
+                            {"type", "custom"},
+                            {"custom", json {
+                                {"name", function.value("name", std::string())},
+                                {"input", custom_tool_input_from_arguments(function.value("arguments", json("")))},
+                            }},
+                        };
+                        if (tool_call.contains("id")) {
+                            custom_call["id"] = tool_call.at("id");
+                        }
+                        converted.push_back(std::move(custom_call));
+                        continue;
+                    }
+                    converted.push_back(tool_call);
+                }
+                message["tool_calls"] = std::move(converted);
             }
             if (choice.contains("n_reasoning_tokens") && choice.at("n_reasoning_tokens").is_number_integer()) {
                 n_reasoning += choice.at("n_reasoning_tokens").get<int64_t>();
@@ -579,57 +664,111 @@ void server_chat_completions_context::decorate(json & response) const {
 }
 
 
-json server_chat_completions_context::filter_chunks(json chunks) const {
+json server_chat_completions_context::filter_chunks(json chunks) {
     auto decorate_chunk = [this](json & chunk) {
         if (chunk.is_object() && !req.service_tier.empty()) {
             chunk["service_tier"] = req.service_tier;
         }
     };
-    if (req.parallel_tool_calls) {
-        if (chunks.is_array()) {
-            for (auto & chunk : chunks) {
-                decorate_chunk(chunk);
+
+    json out = json::array();
+
+    // custom tool input is buffered and sent right before the finish chunk, in one custom delta
+    auto flush_custom_tool_calls = [&](const json & base, int choice_index) {
+        json tool_calls = json::array();
+        for (auto it = pending_custom_tool_calls.begin(); it != pending_custom_tool_calls.end();) {
+            if (it->first.first != choice_index) {
+                ++it;
+                continue;
             }
-        } else {
-            decorate_chunk(chunks);
+            tool_calls.push_back(custom_tool_delta_input(it->first.second, it->second.name,
+                        custom_tool_input_from_arguments(it->second.arguments)));
+            it = pending_custom_tool_calls.erase(it);
         }
-        return chunks;
-    }
-    auto filter_chunk = [this, &decorate_chunk](json & chunk) {
+        if (tool_calls.empty()) {
+            return;
+        }
+        json flush = json::object();
+        for (const char * key : { "id", "created", "model", "system_fingerprint", "object" }) {
+            if (base.contains(key)) {
+                flush[key] = base.at(key);
+            }
+        }
+        flush["choices"] = json::array({ json {
+            {"finish_reason", nullptr},
+            {"index", choice_index},
+            {"delta", json {{"tool_calls", std::move(tool_calls)}}},
+        } });
+        decorate_chunk(flush);
+        out.push_back(std::move(flush));
+    };
+
+    auto process_chunk = [&](json & chunk) {
         decorate_chunk(chunk);
         if (!chunk.is_object() || !chunk.contains("choices") || !chunk.at("choices").is_array()) {
             return;
         }
         for (auto & choice : chunk["choices"]) {
-            if (!choice.is_object() || !choice.contains("delta") || !choice.at("delta").is_object()) {
+            if (!choice.is_object()) {
                 continue;
             }
-            json & delta = choice["delta"];
-            if (!delta.contains("tool_calls") || !delta.at("tool_calls").is_array()) {
-                continue;
-            }
-            json kept = json::array();
-            for (const auto & tool_call : delta.at("tool_calls")) {
-                if (tool_call.value("index", 0) == 0) {
-                    kept.push_back(tool_call);
+            const int choice_index = choice.value("index", 0);
+            if (choice.contains("delta") && choice.at("delta").is_object()) {
+                json & delta = choice["delta"];
+                if (delta.contains("tool_calls") && delta.at("tool_calls").is_array()) {
+                    json kept = json::array();
+                    for (auto & tool_call : delta.at("tool_calls")) {
+                        if (!tool_call.is_object()) {
+                            kept.push_back(tool_call);
+                            continue;
+                        }
+                        const int tool_index = tool_call.value("index", 0);
+                        if (!req.parallel_tool_calls && tool_index != 0) {
+                            continue;
+                        }
+                        std::string name;
+                        std::string arguments;
+                        if (tool_call.contains("function") && tool_call.at("function").is_object()) {
+                            name      = tool_call.at("function").value("name", std::string());
+                            arguments = tool_call.at("function").value("arguments", std::string());
+                        }
+                        const auto key = std::make_pair(choice_index, tool_index);
+                        const auto it  = pending_custom_tool_calls.find(key);
+                        if (it != pending_custom_tool_calls.end()) {
+                            it->second.arguments += arguments;
+                        } else if (!name.empty() && is_custom_tool(name)) {
+                            auto & pending   = pending_custom_tool_calls[key];
+                            pending.id        = tool_call.value("id", std::string());
+                            pending.name      = name;
+                            pending.arguments = arguments;
+                            kept.push_back(custom_tool_delta_header(tool_index, pending.id, pending.name));
+                        } else {
+                            kept.push_back(tool_call);
+                        }
+                    }
+                    if (kept.empty()) {
+                        delta.erase("tool_calls");
+                    } else {
+                        delta["tool_calls"] = std::move(kept);
+                    }
                 }
             }
-            if (kept.empty()) {
-                delta.erase("tool_calls");
-            } else {
-                delta["tool_calls"] = std::move(kept);
+            if (choice.contains("finish_reason") && !choice.at("finish_reason").is_null()) {
+                flush_custom_tool_calls(chunk, choice_index);
             }
         }
     };
 
-    if (chunks.is_array()) {
-        for (auto & chunk : chunks) {
-            filter_chunk(chunk);
-        }
-    } else {
-        filter_chunk(chunks);
+    const bool chunks_is_array = chunks.is_array();
+    json items = chunks_is_array ? std::move(chunks) : json::array({ std::move(chunks) });
+    for (auto & chunk : items) {
+        process_chunk(chunk);
+        out.push_back(std::move(chunk));
     }
-    return chunks;
+    if (!chunks_is_array && out.size() == 1) {
+        return out[0];
+    }
+    return out;
 }
 
 json server_chat_completions_context::make_messages(const json & response) const {

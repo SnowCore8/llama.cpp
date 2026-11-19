@@ -399,27 +399,47 @@ std::vector<common_chat_msg> common_chat_msgs_parse_oaicompat(const json & messa
             }
             if (has_tool_calls) {
                 for (const auto & tool_call : message.at("tool_calls")) {
+                    if (!tool_call.is_object()) {
+                        throw std::invalid_argument("Expected tool call to be an object, got " + tool_call.dump());
+                    }
                     common_chat_tool_call tc;
                     if (!tool_call.contains("type")) {
                         throw std::invalid_argument("Missing tool call type: " + tool_call.dump());
                     }
                     const auto & type = tool_call.at("type");
-                    if (type != "function") {
-                        throw std::invalid_argument("Unsupported tool call type: " + tool_call.dump());
-                    }
-                    if (!tool_call.contains("function")) {
-                        throw std::invalid_argument("Missing tool call function: " + tool_call.dump());
-                    }
-                    const auto & fc = tool_call.at("function");
-                    if (!fc.contains("name")) {
-                        throw std::invalid_argument("Missing tool call name: " + tool_call.dump());
-                    }
-                    tc.name           = fc.at("name");
-                    const auto & args = fc.at("arguments");
-                    if (args.is_string()) {
-                        tc.arguments = args;
+                    if (type == "custom") {
+                        if (!tool_call.contains("custom") || !tool_call.at("custom").is_object()) {
+                            throw std::invalid_argument("Missing tool call custom: " + tool_call.dump());
+                        }
+                        const auto & custom = tool_call.at("custom");
+                        if (!custom.contains("name") || !custom.at("name").is_string()) {
+                            throw std::invalid_argument("Missing custom tool call name: " + tool_call.dump());
+                        }
+                        tc.name = custom.at("name").get<std::string>();
+                        // the templates render function calls, so keep the synthetic single string argument
+                        std::string input;
+                        if (custom.contains("input") && !custom.at("input").is_null()) {
+                            input = custom.at("input").is_string() ? custom.at("input").get<std::string>()
+                                                                   : custom.at("input").dump();
+                        }
+                        tc.arguments = json { {"input", input} }.dump();
+                    } else if (type == "function") {
+                        if (!tool_call.contains("function")) {
+                            throw std::invalid_argument("Missing tool call function: " + tool_call.dump());
+                        }
+                        const auto & fc = tool_call.at("function");
+                        if (!fc.contains("name")) {
+                            throw std::invalid_argument("Missing tool call name: " + tool_call.dump());
+                        }
+                        tc.name           = fc.at("name");
+                        const auto & args = fc.at("arguments");
+                        if (args.is_string()) {
+                            tc.arguments = args;
+                        } else {
+                            tc.arguments = args.dump();
+                        }
                     } else {
-                        tc.arguments = args.dump();
+                        throw std::invalid_argument("Unsupported tool call type: " + tool_call.dump());
                     }
                     if (tool_call.contains("id")) {
                         tc.id = tool_call.at("id");
@@ -450,19 +470,25 @@ std::vector<common_chat_msg> common_chat_msgs_parse_oaicompat(const json & messa
                     }
                 }
                 if (has_tool_calls) {
-                    // per tool call: keys besides type/function/id, and function keys besides name/arguments
+                    // per tool call: keys besides type/function/custom/id, and function keys besides name/arguments
                     json tc_extra = json::array();
                     bool any      = false;
                     for (const auto & tool_call : message.at("tool_calls")) {
                         json e = json::object();
+                        if (!tool_call.is_object()) {
+                            tc_extra.push_back(e);
+                            continue;
+                        }
                         for (const auto & [k, v] : tool_call.items()) {
-                            if (k != "type" && k != "function" && k != "id") {
+                            if (k != "type" && k != "function" && k != "custom" && k != "id") {
                                 e[k] = v;
                             }
                         }
-                        for (const auto & [k, v] : tool_call.at("function").items()) {
-                            if (k != "name" && k != "arguments") {
-                                e["function"][k] = v;
+                        if (tool_call.contains("function") && tool_call.at("function").is_object()) {
+                            for (const auto & [k, v] : tool_call.at("function").items()) {
+                                if (k != "name" && k != "arguments") {
+                                    e["function"][k] = v;
+                                }
                             }
                         }
                         any = any || !e.empty();
@@ -623,10 +649,31 @@ json common_chat_tools_to_json_oaicompat(const std::vector<common_chat_tool> & t
 
     auto result = json::array();
     for (const auto & tool : tools) {
+        json parameters;
+        if (tool.is_custom) {
+            // templates and tool-call grammars only know function tools, so a custom tool is
+            // exposed as a function with a single string parameter; the response layer restores
+            // the custom shape and unwraps the input
+            parameters = {
+                { "type", "object" },
+                { "properties", json {
+                    { "input", json {
+                        { "type", "string" },
+                        { "description", tool.custom_format.type == "grammar"
+                            ? "The input for the custom tool, matching the requested grammar."
+                            : "The input for the custom tool, as free-form text." },
+                    } },
+                } },
+                { "required", json::array({ "input" }) },
+                { "additionalProperties", false },
+            };
+        } else {
+            parameters = json::parse(tool.parameters);
+        }
         json function {
             { "name",        tool.name },
             { "description", tool.description },
-            { "parameters",  json::parse(tool.parameters) },
+            { "parameters",  std::move(parameters) },
         };
         if (tool.defer_loading) {
             function["defer_loading"] = true;
@@ -649,6 +696,93 @@ json common_chat_tool_parameters(const json & function) {
     return json{{"type", "object"}, {"properties", json::object()}};
 }
 
+static common_chat_tool common_chat_tool_parse_oaicompat(const json & tool) {
+    if (!tool.is_object()) {
+        throw std::invalid_argument("Expected tool to be an object, got " + tool.dump());
+    }
+    if (!tool.contains("type")) {
+        throw std::invalid_argument("Missing tool type: " + tool.dump());
+    }
+    const auto & type = tool.at("type");
+    if (!type.is_string()) {
+        throw std::invalid_argument("Unsupported tool type: " + tool.dump());
+    }
+
+    if (type == "custom") {
+        if (!tool.contains("custom") || !tool.at("custom").is_object()) {
+            throw std::invalid_argument("Missing 'custom' in custom tool: " + tool.dump());
+        }
+        const auto & custom = tool.at("custom");
+        common_chat_tool res;
+        res.is_custom = true;
+        if (!custom.contains("name") || !custom.at("name").is_string() ||
+                custom.at("name").get<std::string>().empty()) {
+            throw std::invalid_argument("'custom.name' must be a non-empty string");
+        }
+        res.name = custom.at("name").get<std::string>();
+        if (custom.contains("description")) {
+            if (!custom.at("description").is_string()) {
+                throw std::invalid_argument("'custom.description' must be a string");
+            }
+            res.description = custom.at("description").get<std::string>();
+        }
+        if (custom.contains("format")) {
+            const auto & format = custom.at("format");
+            if (!format.is_object()) {
+                throw std::invalid_argument("'custom.format' must be an object");
+            }
+            if (!format.contains("type") || !format.at("type").is_string()) {
+                throw std::invalid_argument("Missing 'custom.format.type'");
+            }
+            const std::string format_type = format.at("type").get<std::string>();
+            if (format_type != "text" && format_type != "grammar") {
+                throw std::invalid_argument("'custom.format.type' must be \"text\" or \"grammar\", got: " + format_type);
+            }
+            res.custom_format.type = format_type;
+            if (format_type == "grammar") {
+                if (!format.contains("grammar") || !format.at("grammar").is_object()) {
+                    throw std::invalid_argument("Missing 'custom.format.grammar' for the grammar format");
+                }
+                const auto & grammar = format.at("grammar");
+                if (!grammar.contains("syntax") || !grammar.at("syntax").is_string() ||
+                        (grammar.at("syntax") != "lark" && grammar.at("syntax") != "regex")) {
+                    throw std::invalid_argument("'custom.format.grammar.syntax' must be \"lark\" or \"regex\"");
+                }
+                if (!grammar.contains("definition") || !grammar.at("definition").is_string() ||
+                        grammar.at("definition").get<std::string>().empty()) {
+                    throw std::invalid_argument("'custom.format.grammar.definition' must be a non-empty string");
+                }
+                res.custom_format.syntax     = grammar.at("syntax").get<std::string>();
+                res.custom_format.definition = grammar.at("definition").get<std::string>();
+            }
+        }
+        return res;
+    }
+
+    if (type != "function") {
+        throw std::invalid_argument("Unsupported tool type: " + tool.dump());
+    }
+    if (!tool.contains("function")) {
+        throw std::invalid_argument("Missing tool function: " + tool.dump());
+    }
+
+    const auto & function = tool.at("function");
+
+    // "defer_loading" sits on the function, or on the tool next to "type"; the function wins
+    const json & defer = function.contains("defer_loading") ? function.at("defer_loading")
+                                                            : tool.value("defer_loading", json(false));
+    if (!defer.is_boolean()) {
+        throw std::invalid_argument("Expected 'defer_loading' to be a boolean, got " + defer.dump());
+    }
+
+    common_chat_tool res;
+    res.name          = function.at("name");
+    res.description   = function.value("description", "");
+    res.parameters    = function.value("parameters", json::object()).dump();
+    res.defer_loading = defer.get<bool>();
+    return res;
+}
+
 std::vector<common_chat_tool> common_chat_tools_parse_oaicompat(const json & tools) {
     std::vector<common_chat_tool> result;
 
@@ -658,32 +792,7 @@ std::vector<common_chat_tool> common_chat_tools_parse_oaicompat(const json & too
                 throw std::invalid_argument("Expected 'tools' to be an array, got " + tools.dump());
             }
             for (const auto & tool : tools) {
-                if (!tool.contains("type")) {
-                    throw std::invalid_argument("Missing tool type: " + tool.dump());
-                }
-                const auto & type = tool.at("type");
-                if (!type.is_string() || type != "function") {
-                    throw std::invalid_argument("Unsupported tool type: " + tool.dump());
-                }
-                if (!tool.contains("function")) {
-                    throw std::invalid_argument("Missing tool function: " + tool.dump());
-                }
-
-                const auto & function = tool.at("function");
-
-                // "defer_loading" sits on the function, or on the tool next to "type"; the function wins
-                const json & defer = function.contains("defer_loading") ? function.at("defer_loading")
-                                                                        : tool.value("defer_loading", json(false));
-                if (!defer.is_boolean()) {
-                    throw std::invalid_argument("Expected 'defer_loading' to be a boolean, got " + defer.dump());
-                }
-
-                result.push_back({
-                    /* .name = */ function.at("name"),
-                    /* .description = */ function.value("description", ""),
-                    /* .parameters = */ function.value("parameters", json::object()).dump(),
-                    /* .defer_loading = */ defer.get<bool>(),
-                });
+                result.push_back(common_chat_tool_parse_oaicompat(tool));
             }
         }
     } catch (const std::exception & e) {
