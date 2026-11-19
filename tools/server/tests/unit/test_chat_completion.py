@@ -487,7 +487,8 @@ def test_context_size_exceeded():
     })
     assert res.status_code == 400
     assert "error" in res.body
-    assert res.body["error"]["type"] == "exceed_context_size_error"
+    assert res.body["error"]["type"] == "invalid_request_error"
+    assert res.body["error"]["code"] == "context_length_exceeded"
     assert res.body["error"]["n_prompt_tokens"] > 0
     assert server.n_ctx is not None
     assert server.n_slots is not None
@@ -509,7 +510,8 @@ def test_context_size_exceeded_stream():
     except ServerError as e:
         assert e.code == 400
         assert "error" in e.body
-        assert e.body["error"]["type"] == "exceed_context_size_error"
+        assert e.body["error"]["type"] == "invalid_request_error"
+        assert e.body["error"]["code"] == "context_length_exceeded"
         assert e.body["error"]["n_prompt_tokens"] > 0
         assert server.n_ctx is not None
         assert server.n_slots is not None
@@ -735,7 +737,7 @@ def test_chat_error_envelope():
         assert e.status_code == 400
         assert e.body["type"] == "invalid_request_error"
         assert e.body["param"] == "temperature"
-        assert e.body["code"] is None
+        assert e.body["code"] == "invalid_value"
 
 
 CUSTOM_TOOL = {

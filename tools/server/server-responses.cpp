@@ -355,6 +355,15 @@ server_responses_request server_responses_parse_request(const json & body) {
                 throw std::invalid_argument("tool entries must be objects");
             }
             const std::string type = tool.value("type", std::string());
+            if (type == "custom") {
+                const json chat_tool = json {
+                    {"type", "custom"},
+                    {"custom", tool},
+                };
+                const auto parsed = common_chat_tools_parse_oaicompat(json::array({chat_tool}));
+                req.tools_parsed.push_back(parsed.front());
+                continue;
+            }
             if (type != "function") {
                 throw std::invalid_argument("unsupported tool type: " + type);
             }
@@ -386,12 +395,15 @@ server_responses_request server_responses_parse_request(const json & body) {
         }
     } else if (req.tool_choice.is_object()) {
         const std::string type = req.tool_choice.value("type", std::string());
-        if (type != "function") {
+        if (type != "function" && type != "custom") {
             throw std::invalid_argument("unsupported 'tool_choice' type: " + type);
         }
         req.tool_choice_name = req.tool_choice.value("name", std::string());
+        if (req.tool_choice_name.empty() && req.tool_choice.contains("custom")) {
+            req.tool_choice_name = json_value(req.tool_choice.at("custom"), "name", std::string());
+        }
         if (req.tool_choice_name.empty()) {
-            throw std::invalid_argument("'tool_choice' function requires a 'name'");
+            throw std::invalid_argument("'tool_choice' " + type + " requires a 'name'");
         }
         req.tool_choice_parsed = COMMON_CHAT_TOOL_CHOICE_REQUIRED;
     } else {
@@ -459,7 +471,8 @@ json server_responses_build_params(
         const server_responses_request & req,
         common_chat_session & session,
         std::vector<raw_buffer> & files,
-        server_files_store * files_store) {
+        server_files_store * files_store,
+        int n_ctx) {
     common_chat_templates_inputs inputs;
     inputs.use_jinja             = opt.use_jinja;
     inputs.reasoning_format      = opt.reasoning_format;
@@ -600,7 +613,23 @@ json server_responses_build_params(
                 } })},
             };
         }
-        if (type == "function_call_output") {
+        if (type == "custom_tool_call") {
+            const std::string input = item.value("input", std::string());
+            const json arguments = json {{"input", input}};
+            return json {
+                {"role", "assistant"},
+                {"content", nullptr},
+                {"tool_calls", json::array({ json {
+                    {"id", item.value("call_id", item.value("id", std::string()))},
+                    {"type", "function"},
+                    {"function", json {
+                        {"name", item.value("name", std::string())},
+                        {"arguments", arguments.dump()},
+                    }},
+                } })},
+            };
+        }
+        if (type == "function_call_output" || type == "custom_tool_call_output") {
             const json output = item.value("output", json(""));
             return json {
                 {"role", "tool"},
@@ -715,7 +744,24 @@ json server_responses_build_params(
     }
 
     common_chat_session_params session_params;
-    session = common_chat_session(opt.tmpls.get(), vocab, inputs, session_params);
+    auto rebuild_session = [&]() {
+        session = common_chat_session(opt.tmpls.get(), vocab, inputs, session_params);
+        return (int) common_tokenize(vocab, session.prompt().str(), true, true).size();
+    };
+    int n_prompt = rebuild_session();
+
+    if (req.truncation == "auto" && n_ctx > 0 && n_prompt > 0) {
+        const int reserve = req.max_output_tokens > 0 ? req.max_output_tokens : 256;
+        const int budget  = std::max(1, n_ctx - reserve - 32);
+        while (n_prompt > budget && inputs.messages.size() > 1) {
+            auto it = inputs.messages.begin();
+            if (it->role == "system" && inputs.messages.size() > 1) {
+                ++it;
+            }
+            inputs.messages.erase(it);
+            n_prompt = rebuild_session();
+        }
+    }
 
     json data;
     data["prompt"]      = session.prompt().str();
@@ -755,6 +801,11 @@ server_responses_context::server_responses_context(
     model_name(std::move(model_name)),
     vocab(vocab),
     conversations(conversations) {
+    for (const auto & tool : this->req.tools_parsed) {
+        if (tool.is_custom) {
+            custom_tool_names.insert(tool.name);
+        }
+    }
     id         = "resp_" + random_string();
     created_at = (int64_t) std::time(0);
     if (this->req.reasoning.is_object()) {
@@ -911,6 +962,33 @@ json server_responses_context::function_call_item(
     };
 }
 
+json server_responses_context::custom_tool_call_item(
+        const std::string & item_id,
+        const std::string & call_id,
+        const std::string & name,
+        const std::string & input,
+        const std::string & status) const {
+    (void) status;
+    return json {
+        {"id",      item_id},
+        {"type",    "custom_tool_call"},
+        {"call_id", call_id},
+        {"name",    name},
+        {"input",   input},
+    };
+}
+
+std::string server_responses_context::custom_tool_input(const std::string & arguments) const {
+    try {
+        const json parsed = json::parse(arguments);
+        if (parsed.is_object() && parsed.contains("input") && parsed.at("input").is_string()) {
+            return parsed.at("input").get<std::string>();
+        }
+    } catch (const std::exception &) {
+    }
+    return arguments;
+}
+
 json server_responses_context::output_from_msg(const common_chat_msg & msg) const {
     json output = json::array();
     if (!msg.reasoning_content.empty()) {
@@ -921,7 +999,12 @@ json server_responses_context::output_from_msg(const common_chat_msg & msg) cons
     }
     for (const auto & tool_call : msg.tool_calls) {
         const std::string call_id = tool_call.id.empty() ? "call_" + random_string() : tool_call.id;
-        output.push_back(function_call_item("fc_" + random_string(), call_id, tool_call.name, tool_call.arguments, "completed"));
+        if (custom_tool_names.count(tool_call.name) > 0) {
+            output.push_back(custom_tool_call_item("ctc_" + random_string(), call_id, tool_call.name,
+                custom_tool_input(tool_call.arguments), "completed"));
+        } else {
+            output.push_back(function_call_item("fc_" + random_string(), call_id, tool_call.name, tool_call.arguments, "completed"));
+        }
         if (!req.parallel_tool_calls) {
             break;
         }
@@ -939,7 +1022,11 @@ json server_responses_context::output_from_stream() const {
     }
     for (const auto & tool : tools) {
         if (tool.added) {
-            items.emplace_back(tool.output_index, function_call_item(tool.item_id, tool.call_id, tool.name, tool.arguments, "completed"));
+            if (tool.is_custom) {
+                items.emplace_back(tool.output_index, custom_tool_call_item(tool.item_id, tool.call_id, tool.name, tool.input, "completed"));
+            } else {
+                items.emplace_back(tool.output_index, function_call_item(tool.item_id, tool.call_id, tool.name, tool.arguments, "completed"));
+            }
         }
     }
     std::sort(items.begin(), items.end(), [](const auto & a, const auto & b) { return a.first < b.first; });
@@ -1077,16 +1164,19 @@ void server_responses_context::add_tool_delta(json & events, size_t index, const
         if (delta.name.empty()) {
             return;
         }
-        tool.item_id      = "fc_" + random_string();
+        tool.is_custom    = custom_tool_names.count(delta.name) > 0;
+        tool.item_id      = std::string(tool.is_custom ? "ctc_" : "fc_") + random_string();
         tool.call_id      = delta.id.empty() ? "call_" + random_string() : delta.id;
         tool.name         = delta.name;
         tool.output_index = next_output_index++;
         tool.added        = true;
         push(events, "response.output_item.added", json {
             {"output_index", tool.output_index},
-            {"item", function_call_item(tool.item_id, tool.call_id, tool.name, "", "in_progress")},
+            {"item", tool.is_custom
+                ? custom_tool_call_item(tool.item_id, tool.call_id, tool.name, "", "in_progress")
+                : function_call_item(tool.item_id, tool.call_id, tool.name, "", "in_progress")},
         });
-        if (!tool.arguments.empty()) {
+        if (!tool.is_custom && !tool.arguments.empty()) {
             push(events, "response.function_call_arguments.delta", json {
                 {"item_id",      tool.item_id},
                 {"output_index", tool.output_index},
@@ -1101,11 +1191,13 @@ void server_responses_context::add_tool_delta(json & events, size_t index, const
     }
     if (!delta.arguments.empty()) {
         tool.arguments += delta.arguments;
-        push(events, "response.function_call_arguments.delta", json {
-            {"item_id",      tool.item_id},
-            {"output_index", tool.output_index},
-            {"delta",        delta.arguments},
-        });
+        if (!tool.is_custom) {
+            push(events, "response.function_call_arguments.delta", json {
+                {"item_id",      tool.item_id},
+                {"output_index", tool.output_index},
+                {"delta",        delta.arguments},
+            });
+        }
     }
 }
 
@@ -1197,15 +1289,35 @@ void server_responses_context::finalize_items(json & events) {
             continue;
         }
         tool.done = true;
-        push(events, "response.function_call_arguments.done", json {
-            {"item_id",      tool.item_id},
-            {"output_index", tool.output_index},
-            {"arguments",    tool.arguments},
-        });
-        push(events, "response.output_item.done", json {
-            {"output_index", tool.output_index},
-            {"item", function_call_item(tool.item_id, tool.call_id, tool.name, tool.arguments, "completed")},
-        });
+        if (tool.is_custom) {
+            tool.input = custom_tool_input(tool.arguments);
+            if (!tool.input.empty()) {
+                push(events, "response.custom_tool_call_input.delta", json {
+                    {"item_id",      tool.item_id},
+                    {"output_index", tool.output_index},
+                    {"delta",        tool.input},
+                });
+            }
+            push(events, "response.custom_tool_call_input.done", json {
+                {"item_id",      tool.item_id},
+                {"output_index", tool.output_index},
+                {"input",        tool.input},
+            });
+            push(events, "response.output_item.done", json {
+                {"output_index", tool.output_index},
+                {"item", custom_tool_call_item(tool.item_id, tool.call_id, tool.name, tool.input, "completed")},
+            });
+        } else {
+            push(events, "response.function_call_arguments.done", json {
+                {"item_id",      tool.item_id},
+                {"output_index", tool.output_index},
+                {"arguments",    tool.arguments},
+            });
+            push(events, "response.output_item.done", json {
+                {"output_index", tool.output_index},
+                {"item", function_call_item(tool.item_id, tool.call_id, tool.name, tool.arguments, "completed")},
+            });
+        }
     }
 }
 

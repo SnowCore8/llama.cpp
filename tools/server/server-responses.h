@@ -13,6 +13,7 @@ struct server_files_store;
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -99,7 +100,8 @@ json server_responses_build_params(
         const server_responses_request & req,
         common_chat_session & session,
         std::vector<raw_buffer> & files,
-        server_files_store * files_store = nullptr);
+        server_files_store * files_store = nullptr,
+        int n_ctx = -1);
 
 // rendered SSE events of one background response, kept so that a new connection can resume
 // the stream from a sequence number. the generation thread is the only writer
@@ -182,7 +184,9 @@ private:
         std::string call_id;
         std::string name;
         std::string arguments;
+        std::string input;
         size_t output_index = 0;
+        bool is_custom = false;
         bool added = false;
         bool done = false;
     };
@@ -211,6 +215,7 @@ private:
     text_item reasoning;
     text_item message;
     std::vector<tool_item> tools;
+    std::set<std::string> custom_tool_names;
     std::atomic<bool> stored{false};
     std::atomic<bool> deleted{false};
     bool conversation_appended = false;
@@ -252,5 +257,12 @@ private:
             const std::string & name,
             const std::string & arguments,
             const std::string & status) const;
+    json custom_tool_call_item(
+            const std::string & item_id,
+            const std::string & call_id,
+            const std::string & name,
+            const std::string & input,
+            const std::string & status) const;
+    std::string custom_tool_input(const std::string & arguments) const;
     void store_response(const json & response);
 };

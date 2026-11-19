@@ -1518,6 +1518,51 @@ static void test_files_http(testing & t) {
     t.assert_equal("missing file status", 400, server_files_http::create(store, bad_create)->status);
 }
 
+
+static void test_responses_custom_tools(testing & t) {
+    json body = {
+        {"model", "m"},
+        {"input", "hi"},
+        {"tools", json::array({ json {
+            {"type", "custom"},
+            {"name", "run_code"},
+            {"description", "Run code"},
+            {"format", json {
+                {"type", "grammar"},
+                {"grammar", json {
+                    {"syntax", "lark"},
+                    {"definition", "start: /.+/"},
+                }},
+            }},
+        } })},
+        {"tool_choice", json {
+            {"type", "custom"},
+            {"name", "run_code"},
+        }},
+    };
+
+    server_responses_request req = server_responses_parse_request(body);
+    t.assert_equal("custom tools", (size_t) 1, req.tools_parsed.size());
+    t.assert_true ("is custom", req.tools_parsed.at(0).is_custom);
+    t.assert_equal("custom name", std::string("run_code"), req.tools_parsed.at(0).name);
+    t.assert_equal("custom format", std::string("grammar"), req.tools_parsed.at(0).custom_format.type);
+    t.assert_equal("custom syntax", std::string("lark"), req.tools_parsed.at(0).custom_format.syntax);
+    t.assert_equal("custom choice", std::string("run_code"), req.tool_choice_name);
+
+    bool thrown = false;
+    body["tools"] = json::array({ json {
+        {"type", "custom"},
+        {"name", "bad"},
+        {"format", json {{"type", "json"}}},
+    } });
+    try {
+        server_responses_parse_request(body);
+    } catch (const std::exception &) {
+        thrown = true;
+    }
+    t.assert_true("custom format rejected", thrown);
+}
+
 int main(int argc, char ** argv) {
     testing t;
 
@@ -1550,6 +1595,7 @@ int main(int argc, char ** argv) {
     t.test("responses_stream",    test_responses_stream);
     t.test("responses_non_stream", test_responses_non_stream);
     t.test("responses_tools_convert", test_responses_tools_convert);
+    t.test("responses_custom_tools", test_responses_custom_tools);
     t.test("chat_completions_parse",  test_chat_completions_parse);
     t.test("chat_completions_store",  test_chat_completions_store);
     t.test("openai_store_persistence", test_openai_store_persistence);

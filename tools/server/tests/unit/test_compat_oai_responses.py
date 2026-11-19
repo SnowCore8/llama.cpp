@@ -264,7 +264,7 @@ def test_responses_error_envelope():
         assert e.status_code == 400
         assert e.body["type"] == "invalid_request_error"
         assert e.body["param"] == "temperature"
-        assert e.body["code"] is None
+        assert e.body["code"] == "invalid_value"
 
 
 def test_responses_background_stream_reattach():
@@ -504,3 +504,21 @@ def test_responses_log_ttl_sweeper(monkeypatch):
     assert replay[-1].type in ("response.completed", "response.incomplete")
     # only the replay log is dropped, the stored response itself stays readable
     assert client.responses.retrieve(res.id).status in ("completed", "incomplete")
+
+
+def test_responses_truncation_auto():
+    global server
+    server.n_ctx = 256
+    server.n_slots = 1
+    server.start()
+
+    long_chunk = "word " * 20
+    input_items = [{"role": "user", "content": long_chunk} for _ in range(20)]
+    input_items.append({"role": "user", "content": "Say hi"})
+    res = server.make_request("POST", "/responses", data={
+        "model": "gpt-4.1",
+        "input": input_items,
+        "max_output_tokens": 4,
+        "truncation": "auto",
+    })
+    assert res.status_code == 200, res.body

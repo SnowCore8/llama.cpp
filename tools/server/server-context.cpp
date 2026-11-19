@@ -5391,7 +5391,14 @@ static json format_openai_error_from_json(const json & err) {
     const std::string message = json_value(err, "message", std::string("request failed"));
     const std::string type    = json_value(err, "type", std::string("server_error"));
     const int status          = json_value(err, "code", 500);
-    json out = format_openai_error(message, error_type_from_name(type), "", nullptr, status);
+
+    error_type error_type_value = error_type_from_name(type);
+    std::string code;
+    if (type == "exceed_context_size_error") {
+        error_type_value = ERROR_TYPE_INVALID_REQUEST;
+        code = "context_length_exceeded";
+    }
+    json out = format_openai_error(message, error_type_value, code, nullptr, status);
     // keep surface-specific fields such as n_prompt_tokens and n_ctx
     for (const auto & [key, value] : err.items()) {
         if (key == "code" || key == "type" || key == "message" || key == "http_status") {
@@ -5405,7 +5412,16 @@ static json format_openai_error_from_json(const json & err) {
 static json format_openai_invalid_request(const std::exception & e) {
     const std::string message = e.what();
     const std::string param = error_param_from_message(message);
-    return format_openai_error(message, ERROR_TYPE_INVALID_REQUEST, "",
+
+    std::string code = "invalid_value";
+    if (message.find("required") != std::string::npos || message.find("requires") != std::string::npos) {
+        code = "missing_required_parameter";
+    } else if (message.find("not found") != std::string::npos) {
+        code = "not_found";
+    } else if (message.find("exceeds") != std::string::npos || message.find("context size") != std::string::npos) {
+        code = "context_length_exceeded";
+    }
+    return format_openai_error(message, ERROR_TYPE_INVALID_REQUEST, code,
         param.empty() ? json(nullptr) : json(param));
 }
 
@@ -6587,7 +6603,7 @@ void server_routes::init_routes() {
             server_responses_resolve_input(rreq, *responses_store, conversations_store.get());
             common_chat_session session;
             std::vector<raw_buffer> files;
-            json data = server_responses_build_params(ctx_server.vocab, meta->chat_params, rreq, session, files, files_store.get());
+            json data = server_responses_build_params(ctx_server.vocab, meta->chat_params, rreq, session, files, files_store.get(), meta->slot_n_ctx);
             auto resp_ctx = std::make_shared<server_responses_context>(
                 *responses_store, std::move(rreq), meta->model_name, ctx_server.vocab, conversations_store.get());
 
@@ -6729,7 +6745,7 @@ void server_routes::init_routes() {
             server_responses_resolve_input(rreq, *responses_store, conversations_store.get());
             common_chat_session session;
             std::vector<raw_buffer> files;
-            json data = server_responses_build_params(ctx_server.vocab, meta->chat_params, rreq, session, files, files_store.get());
+            json data = server_responses_build_params(ctx_server.vocab, meta->chat_params, rreq, session, files, files_store.get(), meta->slot_n_ctx);
             const json & prompt = data.at("prompt");
             size_t n_tokens;
             if (ctx_server.mctx != nullptr && !files.empty()) {
