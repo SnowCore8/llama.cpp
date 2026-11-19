@@ -5,7 +5,7 @@
 #include "../tools/server/server-decision.h"
 #include "../tools/server/server-schema.h"
 #include "../tools/server/server-responses.h"
-#include "../tools/server/server-chat.h"
+#include "../tools/server/server-chat-completions.h"
 
 #include <algorithm>
 #include <cmath>
@@ -950,6 +950,134 @@ static void test_responses_tools_convert(testing & t) {
     t.assert_true ("strict default", converted.at(0).at("function").at("strict").get<bool>());
 }
 
+
+//
+// server_chat_completions
+//
+
+static void test_chat_completions_parse(testing & t) {
+    json body = {
+        {"model", "m"},
+        {"messages", json::array({ json { {"role", "user"}, {"content", "hi"} } })},
+        {"store", true},
+        {"n", 2},
+        {"metadata", json { {"k", "v"} }},
+        {"service_tier", "default"},
+    };
+    server_chat_completions_request req = server_chat_completions_parse_request(body);
+    t.assert_true ("store",     req.store);
+    t.assert_equal("n",         2, req.n);
+    t.assert_equal("user",      std::string(""), req.user);
+    t.assert_equal("tier",      std::string("default"), req.service_tier);
+    t.assert_true ("metadata",  !req.metadata.is_null());
+    t.assert_equal("messages",  (size_t) 1, req.messages.size());
+
+    bool thrown = false;
+    json bad = body;
+    bad["n"] = 0;
+    try {
+        server_chat_completions_parse_request(bad);
+    } catch (const std::exception &) {
+        thrown = true;
+    }
+    t.assert_true("n bound", thrown);
+
+    thrown = false;
+    bad = body;
+    bad["metadata"] = json { {"k", 1} };
+    try {
+        server_chat_completions_parse_request(bad);
+    } catch (const std::exception &) {
+        thrown = true;
+    }
+    t.assert_true("metadata type", thrown);
+
+    json normalize = {
+        {"messages", json::array({ json { {"role", "user"}, {"content", "hi"} } })},
+        {"tools", json::array({
+            json { {"type", "function"}, {"function", json { {"name", "a"} }} },
+            json { {"type", "function"}, {"function", json { {"name", "b"} }} },
+        })},
+        {"tool_choice", json {
+            {"type", "function"},
+            {"function", json { {"name", "a"} }},
+        }},
+    };
+    server_chat_completions_normalize_request(normalize);
+    t.assert_equal("filtered tools", (size_t) 1, normalize.at("tools").size());
+    t.assert_equal("forced choice",  std::string("required"), normalize.at("tool_choice").get<std::string>());
+}
+
+static void test_chat_completions_store(testing & t) {
+    server_chat_completions_store store;
+
+    server_chat_completions_request req;
+    req.model        = "m";
+    req.store        = true;
+    req.metadata     = json { {"k", "v"} };
+    req.service_tier = "default";
+
+    server_chat_completions_context ctx(store, req, nullptr);
+
+    json response = {
+        {"id", "chatcmpl-test"},
+        {"object", "chat.completion"},
+        {"created", 1},
+        {"model", "m"},
+        {"choices", json::array({ json {
+            {"index", 0},
+            {"finish_reason", "stop"},
+            {"message", json { {"role", "assistant"}, {"content", "hi"} }},
+        } })},
+        {"usage", json {
+            {"prompt_tokens", 3},
+            {"completion_tokens", 2},
+            {"total_tokens", 5},
+        }},
+    };
+    ctx.finish(response);
+
+    t.assert_true("refusal",  response.at("choices")[0].at("message").contains("refusal"));
+    t.assert_true("usage details", response.at("usage").contains("completion_tokens_details"));
+    t.assert_true("metadata", response.contains("metadata"));
+
+    server_chat_completions_stored stored;
+    t.assert_true("stored", store.get("chatcmpl-test", stored));
+    t.assert_equal("stored messages", (size_t) 1, stored.messages.size());
+    t.assert_true("message id", stored.messages[0].value("id", std::string()).rfind("msg_", 0) == 0);
+
+    t.assert_true("update metadata", store.update_metadata("chatcmpl-test", json { {"k", "v2"} }));
+    t.assert_true("updated", store.get("chatcmpl-test", stored));
+    t.assert_equal("updated value", std::string("v2"), stored.response.at("metadata").at("k").get<std::string>());
+    t.assert_equal("list size", (size_t) 1, store.list().size());
+    t.assert_true("erase", store.erase("chatcmpl-test"));
+
+    // streaming merge: two choices must land in one stored response
+    server_chat_completions_request stream_req;
+    stream_req.store = true;
+    stream_req.n     = 2;
+    server_chat_completions_context stream_ctx(store, stream_req, nullptr);
+
+    json chunk0 = {
+        {"id", "chatcmpl-stream"},
+        {"model", "m"},
+        {"choices", json::array({ json {
+            {"index", 0},
+            {"message", json { {"role", "assistant"}, {"content", "a"} }},
+        } })},
+        {"usage", json { {"prompt_tokens", 4}, {"completion_tokens", 1}, {"total_tokens", 5} }},
+    };
+    json chunk1 = chunk0;
+    chunk1["choices"][0]["index"]   = 1;
+    chunk1["choices"][0]["message"]["content"] = "b";
+    stream_ctx.finish_stream(chunk0);
+    t.assert_true("not stored before all choices", !store.get("chatcmpl-stream", stored));
+    stream_ctx.finish_stream(chunk1);
+    t.assert_true("stream stored", store.get("chatcmpl-stream", stored));
+    t.assert_equal("merged choices", (size_t) 2, stored.response.at("choices").size());
+    t.assert_equal("merged usage", 2, stored.response.at("usage").at("completion_tokens").get<int>());
+}
+
 int main(int argc, char ** argv) {
     testing t;
 
@@ -982,6 +1110,8 @@ int main(int argc, char ** argv) {
     t.test("responses_stream",    test_responses_stream);
     t.test("responses_non_stream", test_responses_non_stream);
     t.test("responses_tools_convert", test_responses_tools_convert);
+    t.test("chat_completions_parse",  test_chat_completions_parse);
+    t.test("chat_completions_store",  test_chat_completions_store);
 
     return t.summary();
 }

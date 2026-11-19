@@ -1,0 +1,81 @@
+#pragma once
+
+#include "server-common.h"
+
+#include "json.h"
+
+#include <cstdint>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// OpenAI Chat Completions request fields the native response layer needs
+struct server_chat_completions_request {
+    std::string model;
+    json messages = json::array();
+    json metadata = nullptr;
+    std::string user;
+    std::string safety_identifier;
+    std::string service_tier;
+    bool store = false;
+    int n = 1;
+};
+
+struct server_chat_completions_stored {
+    json response = nullptr;
+    json request_messages = json::array();
+    json messages = json::array();
+    json metadata = nullptr;
+    std::string user;
+    std::string safety_identifier;
+    int64_t created_at = 0;
+};
+
+// in-memory store for stored chat completions
+struct server_chat_completions_store {
+    mutable std::mutex mutex;
+    std::unordered_map<std::string, server_chat_completions_stored> items;
+    size_t max_items = 1024;
+
+    bool get(const std::string & id, server_chat_completions_stored & out) const;
+    void put(const std::string & id, server_chat_completions_stored item);
+    bool erase(const std::string & id);
+    bool update_metadata(const std::string & id, const json & metadata);
+    std::vector<std::pair<std::string, server_chat_completions_stored>> list() const;
+};
+
+server_chat_completions_request server_chat_completions_parse_request(const json & body);
+
+// rewrite named / allowed tool choices into the shape understood by the shared parser
+void server_chat_completions_normalize_request(json & body);
+
+struct server_chat_completions_context {
+    server_chat_completions_context(
+            server_chat_completions_store & store,
+            server_chat_completions_request req,
+            const llama_vocab * vocab);
+
+    // non-stream response: decorate fields and store if requested
+    void finish(json & response);
+    // streaming: one final choice at a time, store once all choices are present
+    void finish_stream(json response);
+
+private:
+    struct pending_stream {
+        json response = nullptr;
+        std::unordered_map<int, json> choices;
+        int64_t prompt_tokens = 0;
+        int64_t completion_tokens = 0;
+    };
+
+    server_chat_completions_store & store;
+    server_chat_completions_request req;
+    const llama_vocab * vocab;
+    std::unordered_map<std::string, pending_stream> pending;
+
+    void decorate(json & response) const;
+    void store_response(const json & response);
+    json make_messages(const json & response) const;
+};

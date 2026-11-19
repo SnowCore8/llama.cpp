@@ -133,26 +133,6 @@ json normalize_input(const json & input) {
     return items;
 }
 
-void validate_metadata(const json & metadata) {
-    if (metadata.is_null()) {
-        return;
-    }
-    if (!metadata.is_object()) {
-        throw std::invalid_argument("'metadata' must be an object");
-    }
-    if (metadata.size() > 16) {
-        throw std::invalid_argument("'metadata' supports at most 16 key-value pairs");
-    }
-    for (const auto & [key, value] : metadata.items()) {
-        if (key.size() > 64) {
-            throw std::invalid_argument("'metadata' keys support at most 64 characters");
-        }
-        if (!value.is_string() || value.get<std::string>().size() > 512) {
-            throw std::invalid_argument("'metadata' values must be strings of at most 512 characters");
-        }
-    }
-}
-
 } // namespace
 
 bool server_responses_store::get(const std::string & id, server_responses_stored & out) const {
@@ -250,7 +230,7 @@ server_responses_request server_responses_parse_request(const json & body) {
             }
         }
     }
-    validate_metadata(req.metadata);
+    server_validate_metadata(req.metadata);
 
     if (body.contains("tools")) {
         const json & tools = body.at("tools");

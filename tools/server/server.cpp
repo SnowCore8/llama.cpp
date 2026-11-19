@@ -183,6 +183,14 @@ static void server_register_routes(server_http_context & ctx_http, server_routes
     ctx_http.post("/v1/completions",           ex_wrapper(routes.post_completions_oai));
     ctx_http.post("/chat/completions",         ex_wrapper(routes.post_chat_completions));
     ctx_http.post("/v1/chat/completions",      ex_wrapper(routes.post_chat_completions));
+    ctx_http.get ("/chat/completions",         ex_wrapper(routes.get_chat_completions));
+    ctx_http.get ("/v1/chat/completions",      ex_wrapper(routes.get_chat_completions));
+    ctx_http.get ("/chat/completions/:id",     ex_wrapper(routes.get_chat_completion));
+    ctx_http.get ("/v1/chat/completions/:id",  ex_wrapper(routes.get_chat_completion));
+    ctx_http.get ("/chat/completions/:id/messages",    ex_wrapper(routes.get_chat_completion_messages));
+    ctx_http.get ("/v1/chat/completions/:id/messages", ex_wrapper(routes.get_chat_completion_messages));
+    ctx_http.del ("/chat/completions/:id",     ex_wrapper(routes.del_chat_completion));
+    ctx_http.del ("/v1/chat/completions/:id",  ex_wrapper(routes.del_chat_completion));
     ctx_http.post("/v1/chat/completions/control", ex_wrapper(routes.post_control));
     ctx_http.post("/v1/responses",             ex_wrapper(routes.post_responses_oai));
     ctx_http.post("/responses",                ex_wrapper(routes.post_responses_oai));
@@ -216,6 +224,8 @@ static void server_register_routes(server_http_context & ctx_http, server_routes
     ctx_http.post("/v1/chat/completions/input_tokens", ex_wrapper(routes.post_chat_completions_tok));
     ctx_http.post("/responses/input_tokens",           ex_wrapper(routes.post_responses_tok_oai));
     ctx_http.post("/v1/responses/input_tokens",        ex_wrapper(routes.post_responses_tok_oai));
+    ctx_http.post("/chat/completions/:id",             ex_wrapper(routes.post_chat_completion_update));
+    ctx_http.post("/v1/chat/completions/:id",          ex_wrapper(routes.post_chat_completion_update));
     ctx_http.post("/v1/messages/count_tokens",         ex_wrapper(routes.post_anthropic_count_tokens)); // anthropic token counting
     // LoRA adapters hotswap
     ctx_http.get ("/lora-adapters",            ex_wrapper(routes.get_lora_adapters));

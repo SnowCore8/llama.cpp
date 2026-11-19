@@ -13,6 +13,8 @@ add_library(${TARGET} STATIC
     server-queue.h
     server-responses.cpp
     server-responses.h
+    server-chat-completions.cpp
+    server-chat-completions.h
     server-common.cpp
     server-common.h
     server-decision.cpp

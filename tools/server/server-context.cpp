@@ -5343,7 +5343,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             const std::vector<raw_buffer> & files,
             task_response_type res_type,
             const common_chat_session & chat_session,
-            std::shared_ptr<server_responses_context> resp_ctx) {
+            std::shared_ptr<server_responses_context> resp_ctx,
+            std::shared_ptr<server_chat_completions_context> chat_ctx) {
     GGML_ASSERT(type == SERVER_TASK_TYPE_COMPLETION || type == SERVER_TASK_TYPE_INFILL);
 
     auto res = create_response();
@@ -5455,6 +5456,9 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             GGML_ASSERT(!arr.empty() && "empty results");
             if (arr.size() == 1) {
                 // if single request, return single object instead of array
+                if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT && chat_ctx != nullptr) {
+                    chat_ctx->finish(arr[0]);
+                }
                 res->ok(arr[0]);
             } else if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT || res_type == TASK_RESPONSE_TYPE_OAI_CMPL) {
                 // if multiple results in OAI format, we need to re-format them
@@ -5472,6 +5476,9 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                 usage["completion_tokens"] = n_completion_tokens;
                 usage["total_tokens"]      = usage["prompt_tokens"].get<int64_t>() + n_completion_tokens;
 
+                if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT && chat_ctx != nullptr) {
+                    chat_ctx->finish(arr[0]);
+                }
                 res->ok(arr[0]);
             } else {
                 // multi-results, non-OAI compat
@@ -5497,6 +5504,12 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             dynamic_cast<server_task_result_cmpl_partial*>(first_result.get()) != nullptr ||
             dynamic_cast<server_task_result_cmpl_final*>  (first_result.get()) != nullptr
         );
+
+        if (chat_ctx != nullptr && res_type == TASK_RESPONSE_TYPE_OAI_CHAT) {
+            if (auto * final = dynamic_cast<server_task_result_cmpl_final *>(first_result.get())) {
+                chat_ctx->finish_stream(final->to_json_oaicompat_chat());
+            }
+        }
 
         // next responses are streamed
         // to be sent immediately
@@ -5524,7 +5537,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         }
         res->status = 200;
         res->content_type = "text/event-stream";
-        res->set_next([res_this = res.get(), res_type, sse_ping_interval, resp_ctx](std::string & output) -> bool {
+        res->set_next([res_this = res.get(), res_type, sse_ping_interval, resp_ctx, chat_ctx](std::string & output) -> bool {
             auto format_error = [resp_ctx](task_response_type res_type, const json & res_json) {
                 if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
                     return format_anthropic_sse({
@@ -5613,6 +5626,11 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                         dynamic_cast<server_task_result_cmpl_partial*>(result.get()) != nullptr
                         || dynamic_cast<server_task_result_cmpl_final*>(result.get()) != nullptr
                     );
+                    if (chat_ctx != nullptr && res_type == TASK_RESPONSE_TYPE_OAI_CHAT) {
+                        if (auto * final = dynamic_cast<server_task_result_cmpl_final *>(result.get())) {
+                            chat_ctx->finish_stream(final->to_json_oaicompat_chat());
+                        }
+                    }
                     if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
                         GGML_ASSERT(resp_ctx != nullptr);
                         json res_json;
@@ -6088,22 +6106,284 @@ void server_routes::init_routes() {
 
     this->post_chat_completions = [this](const server_http_req & req) {
         auto res = create_response();
-        std::vector<raw_buffer> files;
-        json body = json::parse(req.body);
-        common_chat_session session;
-        json body_parsed = oaicompat_chat_params_parse(
-            ctx_server.vocab,
-            body,
-            meta->chat_params,
-            files,
-            session);
-        return handle_completions_impl(
-            req,
-            SERVER_TASK_TYPE_COMPLETION,
-            body_parsed,
-            files,
-            TASK_RESPONSE_TYPE_OAI_CHAT,
-            session);
+        try {
+            json body = json::parse(req.body);
+            server_chat_completions_request creq = server_chat_completions_parse_request(body);
+            server_chat_completions_normalize_request(body);
+            std::vector<raw_buffer> files;
+            common_chat_session session;
+            json body_parsed = oaicompat_chat_params_parse(
+                ctx_server.vocab,
+                body,
+                meta->chat_params,
+                files,
+                session);
+            auto chat_ctx = std::make_shared<server_chat_completions_context>(
+                *chat_completions_store, std::move(creq), ctx_server.vocab);
+            return handle_completions_impl(
+                req,
+                SERVER_TASK_TYPE_COMPLETION,
+                body_parsed,
+                files,
+                TASK_RESPONSE_TYPE_OAI_CHAT,
+                session,
+                nullptr,
+                std::move(chat_ctx));
+        } catch (const std::exception & e) {
+            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+    };
+
+    this->get_chat_completions = [this](const server_http_req & req) {
+        auto res = create_response();
+        auto stored_items = chat_completions_store->list();
+        std::sort(stored_items.begin(), stored_items.end(), [](const auto & a, const auto & b) {
+            if (a.second.created_at != b.second.created_at) {
+                return a.second.created_at < b.second.created_at;
+            }
+            return a.first < b.first;
+        });
+        const std::string order = req.get_param("order", "asc");
+        if (order == "desc") {
+            std::reverse(stored_items.begin(), stored_items.end());
+        } else if (order != "asc") {
+            res->error(format_error_response("'order' must be asc or desc", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        const std::string model_filter = req.get_param("model");
+        json metadata_filter = nullptr;
+        const std::string metadata_param = req.get_param("metadata");
+        if (!metadata_param.empty()) {
+            try {
+                metadata_filter = json::parse(metadata_param);
+            } catch (const std::exception &) {
+                res->error(format_error_response("'metadata' must be a JSON object", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+        } else {
+            json bracket_filter = json::object();
+            for (const auto & [key, value] : req.params) {
+                if (key.size() > 10 && key.rfind("metadata[", 0) == 0 && key.back() == ']') {
+                    bracket_filter[key.substr(9, key.size() - 10)] = value;
+                }
+            }
+            if (!bracket_filter.empty()) {
+                metadata_filter = bracket_filter;
+            }
+        }
+
+        auto metadata_matches = [](const json & candidate, const json & filter) {
+            if (filter.is_null()) {
+                return true;
+            }
+            if (!filter.is_object() || !candidate.is_object()) {
+                return false;
+            }
+            for (const auto & [key, value] : filter.items()) {
+                bool found = false;
+                for (const auto & [candidate_key, candidate_value] : candidate.items()) {
+                    if (candidate_key == key) {
+                        found = candidate_value == value;
+                        break;
+                    }
+                }
+                if (!found) {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        std::vector<std::pair<std::string, server_chat_completions_stored>> filtered;
+        for (auto & item : stored_items) {
+            if (!model_filter.empty()) {
+                const std::string model = item.second.response.is_object() ? item.second.response.value("model", std::string()) : std::string();
+                if (model != model_filter) {
+                    continue;
+                }
+            }
+            if (!metadata_matches(item.second.metadata, metadata_filter)) {
+                continue;
+            }
+            filtered.push_back(item);
+        }
+
+        size_t start = 0;
+        const std::string after = req.get_param("after");
+        if (!after.empty()) {
+            const auto it = std::find_if(filtered.begin(), filtered.end(), [&](const auto & item) { return item.first == after; });
+            if (it != filtered.end()) {
+                start = (size_t) (it - filtered.begin()) + 1;
+            } else {
+                start = filtered.size();
+            }
+        }
+        int limit = 20;
+        const std::string limit_param = req.get_param("limit");
+        if (!limit_param.empty()) {
+            try {
+                limit = std::stoi(limit_param);
+            } catch (const std::exception &) {
+                res->error(format_error_response("'limit' must be an integer", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+        }
+        limit = std::max(1, std::min(limit, 100));
+
+        json data    = json::array();
+        json first_id = nullptr;
+        json last_id  = nullptr;
+        for (size_t i = start; i < filtered.size() && (int) data.size() < limit; i++) {
+            if (first_id.is_null()) {
+                first_id = filtered[i].first;
+            }
+            last_id = filtered[i].first;
+            data.push_back(filtered[i].second.response);
+        }
+        res->ok(json {
+            {"object", "list"},
+            {"data", data},
+            {"first_id", first_id},
+            {"last_id", last_id},
+            {"has_more", start + data.size() < filtered.size()},
+        });
+        return res;
+    };
+
+    this->get_chat_completion = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string id = req.get_param("id");
+        server_chat_completions_stored stored;
+        if (!chat_completions_store->get(id, stored)) {
+            res->status = 404;
+            res->data = safe_json_to_str(json {{"error", json {
+                {"message", "Chat completion not found: " + id},
+                {"type", "invalid_request_error"},
+                {"param", nullptr},
+                {"code", "not_found"},
+            }}});
+            return res;
+        }
+        res->ok(stored.response);
+        return res;
+    };
+
+    this->post_chat_completion_update = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string id = req.get_param("id");
+        try {
+            const json body = json::parse(req.body);
+            const json metadata = body.value("metadata", json(nullptr));
+            server_validate_metadata(metadata);
+            if (!chat_completions_store->update_metadata(id, metadata)) {
+                res->status = 404;
+                res->data = safe_json_to_str(json {{"error", json {
+                    {"message", "Chat completion not found: " + id},
+                    {"type", "invalid_request_error"},
+                    {"param", nullptr},
+                    {"code", "not_found"},
+                }}});
+                return res;
+            }
+            server_chat_completions_stored stored;
+            chat_completions_store->get(id, stored);
+            res->ok(stored.response);
+            return res;
+        } catch (const std::exception & e) {
+            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+    };
+
+    this->del_chat_completion = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string id = req.get_param("id");
+        if (!chat_completions_store->erase(id)) {
+            res->status = 404;
+            res->data = safe_json_to_str(json {{"error", json {
+                {"message", "Chat completion not found: " + id},
+                {"type", "invalid_request_error"},
+                {"param", nullptr},
+                {"code", "not_found"},
+            }}});
+            return res;
+        }
+        res->ok(json {
+            {"id", id},
+            {"object", "chat.completion.deleted"},
+            {"deleted", true},
+        });
+        return res;
+    };
+
+    this->get_chat_completion_messages = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string id = req.get_param("id");
+        server_chat_completions_stored stored;
+        if (!chat_completions_store->get(id, stored)) {
+            res->status = 404;
+            res->data = safe_json_to_str(json {{"error", json {
+                {"message", "Chat completion not found: " + id},
+                {"type", "invalid_request_error"},
+                {"param", nullptr},
+                {"code", "not_found"},
+            }}});
+            return res;
+        }
+        std::vector<json> messages;
+        if (stored.messages.is_array()) {
+            for (const auto & message : stored.messages) {
+                messages.push_back(message);
+            }
+        }
+        const std::string order = req.get_param("order", "asc");
+        if (order == "desc") {
+            std::reverse(messages.begin(), messages.end());
+        } else if (order != "asc") {
+            res->error(format_error_response("'order' must be asc or desc", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        size_t start = 0;
+        const std::string after = req.get_param("after");
+        if (!after.empty()) {
+            for (size_t i = 0; i < messages.size(); i++) {
+                if (messages[i].value("id", std::string()) == after) {
+                    start = i + 1;
+                    break;
+                }
+            }
+        }
+        int limit = 20;
+        const std::string limit_param = req.get_param("limit");
+        if (!limit_param.empty()) {
+            try {
+                limit = std::stoi(limit_param);
+            } catch (const std::exception &) {
+                res->error(format_error_response("'limit' must be an integer", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+        }
+        limit = std::max(1, std::min(limit, 100));
+        json data = json::array();
+        json first_id = nullptr;
+        json last_id  = nullptr;
+        for (size_t i = start; i < messages.size() && (int) data.size() < limit; i++) {
+            if (first_id.is_null()) {
+                first_id = messages[i].value("id", json(nullptr));
+            }
+            last_id = messages[i].value("id", json(nullptr));
+            data.push_back(messages[i]);
+        }
+        res->ok(json {
+            {"object", "list"},
+            {"data", data},
+            {"first_id", first_id},
+            {"last_id", last_id},
+            {"has_more", start + data.size() < messages.size()},
+        });
+        return res;
     };
 
     this->post_chat_completions_tok = [this](const server_http_req & req) {

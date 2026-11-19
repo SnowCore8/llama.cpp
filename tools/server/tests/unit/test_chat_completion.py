@@ -1,5 +1,5 @@
 import pytest
-from openai import OpenAI
+from openai import OpenAI, NotFoundError
 from utils import *
 
 server: ServerProcess
@@ -631,3 +631,79 @@ def test_verbose_debug():
             assert "Book" in res.body["__verbose"]["prompt"]
         else:
             assert "__verbose" not in res.body
+
+
+def test_chat_completion_store_crud():
+    global server
+    server.start()
+    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
+
+    res = client.chat.completions.create(
+        model="gpt-4.1",
+        messages=[{"role": "user", "content": "Once upon a time"}],
+        max_completion_tokens=8,
+        temperature=0.0,
+        store=True,
+        metadata={"k": "v"},
+    )
+    assert res.metadata == {"k": "v"}
+    assert res.choices[0].message.refusal is None
+    assert res.usage.completion_tokens_details is not None
+
+    got = client.chat.completions.retrieve(res.id)
+    assert got.id == res.id
+
+    updated = client.chat.completions.update(res.id, metadata={"k": "v2"})
+    assert updated.metadata == {"k": "v2"}
+
+    listed = client.chat.completions.list(limit=10)
+    assert any(item.id == res.id for item in listed.data)
+
+    messages = client.chat.completions.messages.list(res.id)
+    assert len(messages.data) == 1
+    assert messages.data[0].role == "assistant"
+
+    deleted = client.chat.completions.delete(res.id)
+    assert deleted.deleted is True
+    with pytest.raises(NotFoundError):
+        client.chat.completions.retrieve(res.id)
+
+
+def test_chat_completion_store_stream():
+    global server
+    server.start()
+    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
+
+    stream = client.chat.completions.create(
+        model="gpt-4.1",
+        messages=[{"role": "user", "content": "Once"}],
+        max_completion_tokens=4,
+        temperature=0.0,
+        stream=True,
+        stream_options={"include_usage": True},
+        store=True,
+    )
+    completion_id = None
+    usage = None
+    for chunk in stream:
+        completion_id = chunk.id
+        if chunk.usage is not None:
+            usage = chunk.usage
+    assert completion_id is not None
+    assert usage is not None
+    assert client.chat.completions.retrieve(completion_id).id == completion_id
+
+
+def test_chat_completion_store_disabled():
+    global server
+    server.start()
+    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
+
+    res = client.chat.completions.create(
+        model="gpt-4.1",
+        messages=[{"role": "user", "content": "Once"}],
+        max_completion_tokens=2,
+        temperature=0.0,
+    )
+    with pytest.raises(NotFoundError):
+        client.chat.completions.retrieve(res.id)

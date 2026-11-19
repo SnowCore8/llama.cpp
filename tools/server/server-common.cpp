@@ -94,6 +94,26 @@ std::filesystem::path get_server_exec_path() {
 #endif
 }
 
+void server_validate_metadata(const json & metadata) {
+    if (metadata.is_null()) {
+        return;
+    }
+    if (!metadata.is_object()) {
+        throw std::invalid_argument("'metadata' must be an object");
+    }
+    if (metadata.size() > 16) {
+        throw std::invalid_argument("'metadata' supports at most 16 key-value pairs");
+    }
+    for (const auto & [key, value] : metadata.items()) {
+        if (key.size() > 64) {
+            throw std::invalid_argument("'metadata' keys support at most 64 characters");
+        }
+        if (!value.is_string() || value.get<std::string>().size() > 512) {
+            throw std::invalid_argument("'metadata' values must be strings of at most 512 characters");
+        }
+    }
+}
+
 json format_error_response(const std::string & message, const enum error_type type) {
     std::string type_str;
     int code = 500;
