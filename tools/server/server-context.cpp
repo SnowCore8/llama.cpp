@@ -5323,8 +5323,10 @@ struct server_res_generator : server_res_spipe {
         data = safe_json_to_str(response_data);
     }
     void error(const json & error_data) {
-        status = json_value(error_data, "code", 500);
-        data = safe_json_to_str({{ "error", error_data }});
+        status = json_value(error_data, "http_status", json_value(error_data, "code", 500));
+        json body = error_data;
+        body.erase("http_status");
+        data = safe_json_to_str({{ "error", body }});
     }
 };
 
@@ -5335,6 +5337,13 @@ void server_context::set_state_callback(server_state_callback_t callback) {
 //
 // server_routes
 //
+
+static json format_openai_invalid_request(const std::exception & e) {
+    const std::string message = e.what();
+    const std::string param = error_param_from_message(message);
+    return format_openai_error(message, ERROR_TYPE_INVALID_REQUEST, "",
+        param.empty() ? json(nullptr) : json(param));
+}
 
 std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             const server_http_req & req,
@@ -5426,7 +5435,11 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
 
         rd.post_tasks(std::move(tasks), chat_session);
     } catch (const std::exception & e) {
-        res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+        if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT || res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
+            res->error(format_openai_invalid_request(e));
+        } else {
+            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+        }
         return res;
     }
 
@@ -6151,7 +6164,7 @@ void server_routes::init_routes() {
                 nullptr,
                 std::move(chat_ctx));
         } catch (const std::exception & e) {
-            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+            res->error(format_openai_invalid_request(e));
             return res;
         }
     };
@@ -6313,7 +6326,7 @@ void server_routes::init_routes() {
             res->ok(stored.response);
             return res;
         } catch (const std::exception & e) {
-            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+            res->error(format_openai_invalid_request(e));
             return res;
         }
     };
@@ -6511,7 +6524,7 @@ void server_routes::init_routes() {
             res->ok(initial);
             return res;
         } catch (const std::exception & e) {
-            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+            res->error(format_openai_invalid_request(e));
             return res;
         }
     };
@@ -6577,7 +6590,7 @@ void server_routes::init_routes() {
             });
             return res;
         } catch (const std::exception & e) {
-            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+            res->error(format_openai_invalid_request(e));
             return res;
         }
     };
@@ -6765,7 +6778,7 @@ void server_routes::init_routes() {
             res->ok(conversation_public_json(conversation));
             return res;
         } catch (const std::exception & e) {
-            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+            res->error(format_openai_invalid_request(e));
             return res;
         }
     };
@@ -6809,7 +6822,7 @@ void server_routes::init_routes() {
             res->ok(conversation_public_json(conversation));
             return res;
         } catch (const std::exception & e) {
-            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+            res->error(format_openai_invalid_request(e));
             return res;
         }
     };
@@ -6872,7 +6885,7 @@ void server_routes::init_routes() {
             });
             return res;
         } catch (const std::exception & e) {
-            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+            res->error(format_openai_invalid_request(e));
             return res;
         }
     };
@@ -6908,7 +6921,7 @@ void server_routes::init_routes() {
                 return res;
             }
         } catch (const std::exception & e) {
-            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+            res->error(format_openai_invalid_request(e));
             return res;
         }
         res->ok(json {

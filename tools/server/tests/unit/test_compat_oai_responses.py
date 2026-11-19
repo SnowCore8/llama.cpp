@@ -1,7 +1,7 @@
 import time
 
 import pytest
-from openai import OpenAI, NotFoundError
+from openai import OpenAI, BadRequestError, NotFoundError
 from utils import *
 
 server: ServerProcess
@@ -251,3 +251,17 @@ def test_responses_retrieve_stream_replay():
     types = [event.type for event in stream]
     assert types[0] == "response.created"
     assert types[-1] in ("response.completed", "response.incomplete")
+
+
+def test_responses_error_envelope():
+    global server
+    server.start()
+    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
+    try:
+        client.responses.create(model="gpt-4.1", input="hi", temperature=3.0)
+        assert False
+    except BadRequestError as e:
+        assert e.status_code == 400
+        assert e.body["type"] == "invalid_request_error"
+        assert e.body["param"] == "temperature"
+        assert e.body["code"] is None

@@ -1,5 +1,5 @@
 import pytest
-from openai import OpenAI, NotFoundError
+from openai import OpenAI, BadRequestError, NotFoundError
 from utils import *
 
 server: ServerProcess
@@ -707,3 +707,21 @@ def test_chat_completion_store_disabled():
     )
     with pytest.raises(NotFoundError):
         client.chat.completions.retrieve(res.id)
+
+
+def test_chat_error_envelope():
+    global server
+    server.start()
+    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
+    try:
+        client.chat.completions.create(
+            model="gpt-4.1",
+            messages=[{"role": "user", "content": "hi"}],
+            temperature=3.0,
+        )
+        assert False
+    except BadRequestError as e:
+        assert e.status_code == 400
+        assert e.body["type"] == "invalid_request_error"
+        assert e.body["param"] == "temperature"
+        assert e.body["code"] is None

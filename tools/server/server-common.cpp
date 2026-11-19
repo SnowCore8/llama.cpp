@@ -114,48 +114,78 @@ void server_validate_metadata(const json & metadata) {
     }
 }
 
-json format_error_response(const std::string & message, const enum error_type type) {
-    std::string type_str;
-    int code = 500;
+static void error_type_info(const enum error_type type, std::string & type_str, int & status) {
+    status = 500;
     switch (type) {
         case ERROR_TYPE_INVALID_REQUEST:
             type_str = "invalid_request_error";
-            code = 400;
+            status = 400;
             break;
         case ERROR_TYPE_AUTHENTICATION:
             type_str = "authentication_error";
-            code = 401;
+            status = 401;
             break;
         case ERROR_TYPE_NOT_FOUND:
             type_str = "not_found_error";
-            code = 404;
+            status = 404;
             break;
         case ERROR_TYPE_SERVER:
             type_str = "server_error";
-            code = 500;
+            status = 500;
             break;
         case ERROR_TYPE_PERMISSION:
             type_str = "permission_error";
-            code = 403;
+            status = 403;
             break;
         case ERROR_TYPE_NOT_SUPPORTED:
             type_str = "not_supported_error";
-            code = 501;
+            status = 501;
             break;
         case ERROR_TYPE_UNAVAILABLE:
             type_str = "unavailable_error";
-            code = 503;
+            status = 503;
             break;
         case ERROR_TYPE_EXCEED_CONTEXT_SIZE:
             type_str = "exceed_context_size_error";
-            code = 400;
+            status = 400;
             break;
     }
+}
+
+json format_error_response(const std::string & message, const enum error_type type) {
+    std::string type_str;
+    int status;
+    error_type_info(type, type_str, status);
     return json {
-        {"code", code},
+        {"code", status},
         {"message", message},
         {"type", type_str},
     };
+}
+
+json format_openai_error(const std::string & message, const enum error_type type, const std::string & code, const json & param) {
+    std::string type_str;
+    int status;
+    error_type_info(type, type_str, status);
+    return json {
+        {"http_status", status},
+        {"message", message},
+        {"type", type_str},
+        {"param", param},
+        {"code", code.empty() ? json(nullptr) : json(code)},
+    };
+}
+
+std::string error_param_from_message(const std::string & message) {
+    const size_t begin = message.find('\'');
+    if (begin == std::string::npos) {
+        return "";
+    }
+    const size_t end = message.find('\'', begin + 1);
+    if (end == std::string::npos || end == begin + 1) {
+        return "";
+    }
+    return message.substr(begin + 1, end - begin - 1);
 }
 
 //

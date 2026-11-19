@@ -1418,6 +1418,17 @@ static void test_responses_failed_event(testing & t) {
     t.assert_true("failed stored", store.get(ctx.get_id(), stored));
 }
 
+
+static void test_openai_error_shape(testing & t) {
+    const std::string message = "'temperature' is out of range";
+    const json err = format_openai_error(message, ERROR_TYPE_INVALID_REQUEST, "", json("temperature"));
+    t.assert_equal("http status", 400, err.at("http_status").get<int>());
+    t.assert_equal("type",        std::string("invalid_request_error"), err.at("type").get<std::string>());
+    t.assert_equal("param",       std::string("temperature"), err.at("param").get<std::string>());
+    t.assert_true ("code null",   err.at("code").is_null());
+    t.assert_equal("extracted",   std::string("temperature"), error_param_from_message(message));
+}
+
 int main(int argc, char ** argv) {
     testing t;
 
@@ -1459,6 +1470,7 @@ int main(int argc, char ** argv) {
     t.test("responses_reasoning_summary", test_responses_reasoning_summary);
     t.test("responses_logprobs",        test_responses_logprobs);
     t.test("responses_failed_event",    test_responses_failed_event);
+    t.test("openai_error_shape",        test_openai_error_shape);
 
     return t.summary();
 }
