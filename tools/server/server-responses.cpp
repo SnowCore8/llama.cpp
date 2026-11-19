@@ -1,4 +1,5 @@
 #include "server-responses.h"
+#include "server-files.h"
 #include "server-conversations.h"
 #include "server-openai-store.h"
 
@@ -95,11 +96,6 @@ void server_responses_event_log::close() {
         done = true;
     }
     cv.notify_all();
-}
-
-bool server_responses_event_log::is_done() const {
-    std::lock_guard<std::mutex> lock(mutex);
-    return done;
 }
 
 bool server_responses_event_log::validate(int64_t next_seq) const {
@@ -425,7 +421,8 @@ server_responses_request server_responses_parse_request(const json & body) {
     return req;
 }
 
-void server_responses_resolve_input(server_responses_request & req, server_responses_store & store, server_conversations_store * conversations) {
+void server_responses_resolve_input(server_responses_request & req, server_responses_store & store,
+        server_conversations_store * conversations) {
     json items = json::array();
     if (!req.conversation_id.empty()) {
         server_conversation conversation;
@@ -461,7 +458,8 @@ json server_responses_build_params(
         const server_chat_params & opt,
         const server_responses_request & req,
         common_chat_session & session,
-        std::vector<raw_buffer> & files) {
+        std::vector<raw_buffer> & files,
+        server_files_store * files_store) {
     common_chat_templates_inputs inputs;
     inputs.use_jinja             = opt.use_jinja;
     inputs.reasoning_format      = opt.reasoning_format;
@@ -470,7 +468,7 @@ json server_responses_build_params(
     inputs.chat_template_kwargs  = opt.chat_template_kwargs;
     inputs.enable_thinking       = opt.enable_thinking;
 
-    auto convert_item = [](const json & item) -> json {
+    auto convert_item = [files_store](const json & item) -> json {
         if (!item.is_object()) {
             throw std::invalid_argument("input items must be objects");
         }
@@ -497,9 +495,25 @@ json server_responses_build_params(
                             {"text", part.value("text", std::string())},
                         });
                     } else if (part_type == "input_image") {
-                        const std::string url = part.value("image_url", part.value("url", std::string()));
+                        std::string url = part.value("image_url", part.value("url", std::string()));
                         if (url.empty()) {
-                            throw std::invalid_argument("input_image requires 'image_url'");
+                            const std::string file_id = part.value("file_id", std::string());
+                            if (!file_id.empty()) {
+                                if (files_store == nullptr) {
+                                    throw std::invalid_argument("file_id is not available on this server");
+                                }
+                                server_file file;
+                                raw_buffer data;
+                                if (!files_store->get(file_id, file) || !files_store->content(file_id, data)) {
+                                    throw std::invalid_argument("file not found: " + file_id);
+                                }
+                                const std::string content_type = file.content_type.empty() ? "application/octet-stream" : file.content_type;
+                                const std::string raw(reinterpret_cast<const char *>(data.data()), data.size());
+                                url = "data:" + content_type + ";base64," + base64::encode(raw);
+                            }
+                        }
+                        if (url.empty()) {
+                            throw std::invalid_argument("input_image requires 'image_url' or 'file_id'");
                         }
                         parts.push_back(json {
                             {"type", "image_url"},
@@ -512,24 +526,36 @@ json server_responses_build_params(
                         });
                     } else if (part_type == "input_file") {
                         const std::string file_data = part.value("file_data", std::string());
-                        if (file_data.empty()) {
-                            throw std::invalid_argument("input_file requires 'file_data'; file_id and file_url are not supported");
-                        }
+                        const std::string file_id   = part.value("file_id", std::string());
                         std::string decoded;
-                        try {
-                            if (file_data.rfind("data:", 0) == 0) {
-                                const size_t comma = file_data.find(',');
-                                if (comma == std::string::npos) {
-                                    throw std::invalid_argument("invalid input_file data URI");
-                                }
-                                const std::string header = file_data.substr(0, comma);
-                                const std::string payload = file_data.substr(comma + 1);
-                                decoded = header.find("base64") != std::string::npos ? base64::decode(payload) : payload;
-                            } else {
-                                decoded = base64::decode(file_data);
+                        if (!file_id.empty()) {
+                            if (files_store == nullptr) {
+                                throw std::invalid_argument("file_id is not available on this server");
                             }
-                        } catch (const std::exception &) {
-                            throw std::invalid_argument("input_file data is not valid base64");
+                            server_file file;
+                            raw_buffer content;
+                            if (!files_store->get(file_id, file) || !files_store->content(file_id, content)) {
+                                throw std::invalid_argument("file not found: " + file_id);
+                            }
+                            decoded.assign(content.begin(), content.end());
+                        } else if (!file_data.empty()) {
+                            try {
+                                if (file_data.rfind("data:", 0) == 0) {
+                                    const size_t comma = file_data.find(',');
+                                    if (comma == std::string::npos) {
+                                        throw std::invalid_argument("invalid input_file data URI");
+                                    }
+                                    const std::string header = file_data.substr(0, comma);
+                                    const std::string payload = file_data.substr(comma + 1);
+                                    decoded = header.find("base64") != std::string::npos ? base64::decode(payload) : payload;
+                                } else {
+                                    decoded = base64::decode(file_data);
+                                }
+                            } catch (const std::exception &) {
+                                throw std::invalid_argument("input_file data is not valid base64");
+                            }
+                        } else {
+                            throw std::invalid_argument("input_file requires 'file_data' or 'file_id'");
                         }
                         bool is_text = true;
                         for (const unsigned char c : decoded) {
@@ -737,8 +763,8 @@ server_responses_context::server_responses_context(
         reasoning_summary = !summary.empty() || !generated.empty();
     }
     // a background response is generated as a stream, its events can be replayed to new
-    // connections. background + stream is served synchronously and needs no log
-    if (this->req.background && !this->req.stream) {
+    // connections. the POST connection of background + stream reads the same log
+    if (this->req.background) {
         event_log = std::make_shared<server_responses_event_log>();
     }
 }
@@ -1221,6 +1247,9 @@ json server_responses_context::consume(const server_task_result_cmpl_partial & r
 
 json server_responses_context::finish(const server_task_result_cmpl_final & result) {
     json events = json::array();
+    if (!claim_terminal(terminal_state::finished)) {
+        return events; // cancellation won while the final result was in flight
+    }
     ensure_started(events);
     apply_diffs(events, result.oaicompat_msg_diffs);
 
@@ -1271,9 +1300,10 @@ json server_responses_context::finish(const server_task_result_cmpl_final & resu
     if (result.stats.is_set()) {
         events.back().at("data")["timings"] = result.stats.to_json();
     }
+    store_response(response);
     publish(events);
     close_events();
-    store_response(response);
+    commit_terminal();
     return events;
 }
 
@@ -1302,12 +1332,15 @@ json server_responses_context::final_response(const server_task_result_cmpl_fina
 }
 
 json server_responses_context::failed_event(const std::string & message, const std::string & code) {
+    if (!claim_terminal(terminal_state::finished)) {
+        return nullptr; // another path already owns the terminal state
+    }
     json error = json {
         {"code",    code.empty() ? std::string("server_error") : code},
         {"message", message},
     };
     json response = make_response("failed", json::array(), nullptr, error, nullptr);
-    if (req.store && !stored.exchange(true)) {
+    if (!deleted.load() && req.store && !stored.exchange(true)) {
         server_responses_stored entry;
         entry.response    = response;
         entry.input_items = req.effective_input;
@@ -1324,11 +1357,12 @@ json server_responses_context::failed_event(const std::string & message, const s
     };
     publish(event);
     close_events();
+    commit_terminal();
     return event;
 }
 
 void server_responses_context::store_response(const json & response) {
-    if (cancelled.load()) {
+    if (deleted.load()) {
         return;
     }
     if (conversations != nullptr && !req.conversation_id.empty() && !conversation_appended) {
@@ -1375,38 +1409,49 @@ json server_responses_context::begin_background() {
     return response;
 }
 
-json server_responses_context::cancel() {
-    cancelled.store(true);
-    if (stored.exchange(true)) {
+bool server_responses_context::claim_terminal(terminal_state state, json response) {
+    std::lock_guard<std::mutex> lock(terminal_mutex);
+    if (terminal != terminal_state::none) {
+        return false;
+    }
+    terminal          = state;
+    terminal_response = std::move(response);
+    return true;
+}
+
+void server_responses_context::commit_terminal() {
+    {
+        std::lock_guard<std::mutex> lock(terminal_mutex);
+        terminal_committed = true;
+    }
+    terminal_cv.notify_all();
+}
+
+json server_responses_context::wait_terminal() {
+    std::unique_lock<std::mutex> lock(terminal_mutex);
+    // the generation thread commits the terminal state, do not block forever if it got stuck
+    if (!terminal_cv.wait_for(lock, std::chrono::seconds(5), [this] { return terminal_committed; })) {
         return nullptr;
     }
-    json response = make_response("cancelled", json::array(), nullptr, nullptr, nullptr);
-    {
-        std::lock_guard<std::mutex> lock(cancel_mutex);
-        cancelled_response = response;
-    }
-    server_responses_stored entry;
-    entry.response    = response;
-    entry.input_items = req.effective_input;
-    entry.created_at  = created_at;
-    store.put(id, std::move(entry));
-    return response;
+    return terminal == terminal_state::cancelled ? terminal_response : json(nullptr);
 }
 
 void server_responses_context::fail(const std::string & message) {
-    if (stored.exchange(true)) {
-        return;
+    if (!claim_terminal(terminal_state::finished)) {
+        return; // another path already owns the terminal state
     }
     json error = json {
         {"code",    "server_error"},
         {"message", message},
     };
     json response = make_response("failed", json::array(), nullptr, error, nullptr);
-    server_responses_stored entry;
-    entry.response    = response;
-    entry.input_items = req.effective_input;
-    entry.created_at  = created_at;
-    store.put(id, std::move(entry));
+    if (!deleted.load() && req.store && !stored.exchange(true)) {
+        server_responses_stored entry;
+        entry.response    = response;
+        entry.input_items = req.effective_input;
+        entry.created_at  = created_at;
+        store.put(id, std::move(entry));
+    }
     if (event_log) {
         json events = json::array();
         ensure_started(events);
@@ -1414,19 +1459,20 @@ void server_responses_context::fail(const std::string & message) {
         publish(events);
         close_events();
     }
+    commit_terminal();
 }
 
 void server_responses_context::finish_cancelled() {
-    if (!event_log || event_log->is_done()) {
-        return;
+    json response = make_response("cancelled", json::array(), nullptr, nullptr, nullptr);
+    if (!claim_terminal(terminal_state::cancelled, response)) {
+        return; // the generation reached another terminal state first
     }
-    json response;
-    {
-        std::lock_guard<std::mutex> lock(cancel_mutex);
-        response = cancelled_response;
-    }
-    if (response.is_null()) {
-        response = make_response("cancelled", json::array(), nullptr, nullptr, nullptr);
+    if (!deleted.load() && req.store && !stored.exchange(true)) {
+        server_responses_stored entry;
+        entry.response    = response;
+        entry.input_items = req.effective_input;
+        entry.created_at  = created_at;
+        store.put(id, std::move(entry));
     }
     json events = json::array();
     ensure_started(events);
@@ -1434,4 +1480,5 @@ void server_responses_context::finish_cancelled() {
     push(events, "response.completed", json {{"response", response}});
     publish(events);
     close_events();
+    commit_terminal();
 }

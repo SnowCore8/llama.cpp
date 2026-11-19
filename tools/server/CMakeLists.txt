@@ -17,6 +17,10 @@ add_library(${TARGET} STATIC
     server-chat-completions.h
     server-openai-store.cpp
     server-openai-store.h
+    server-files.cpp
+    server-files.h
+    server-files-http.cpp
+    server-files-http.h
     server-conversations.cpp
     server-conversations.h
     server-common.cpp

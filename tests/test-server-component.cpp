@@ -7,6 +7,8 @@
 #include "../tools/server/server-responses.h"
 #include "../tools/server/server-chat-completions.h"
 #include "../tools/server/server-conversations.h"
+#include "../tools/server/server-files.h"
+#include "../tools/server/server-files-http.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1429,6 +1431,93 @@ static void test_openai_error_shape(testing & t) {
     t.assert_equal("extracted",   std::string("temperature"), error_param_from_message(message));
 }
 
+
+static void test_files_store(testing & t) {
+    const std::string dir = (std::filesystem::temp_directory_path() / ("llama-files-" + random_string())).string();
+    {
+        server_files_store store(dir, 8, 2);
+        server_file file;
+        std::string error;
+        const raw_buffer data = {'h', 'e', 'l', 'l', 'o'};
+
+        t.assert_true ("create", store.create("hello.txt", "assistants", "text/plain", data, file, error));
+        t.assert_equal("bytes", 5, file.bytes);
+        t.assert_equal("filename", std::string("hello.txt"), file.filename);
+
+        server_file loaded;
+        t.assert_true("get", store.get(file.id, loaded));
+        raw_buffer content;
+        t.assert_true("content", store.content(file.id, content));
+        t.assert_equal("content bytes", 5, (int) content.size());
+
+        server_files_store reopened(dir, 8, 2);
+        t.assert_true("reopened get", reopened.get(file.id, loaded));
+
+        const raw_buffer too_big(9, 'x');
+        server_file rejected;
+        t.assert_true("size limit", !store.create("big.bin", "assistants", "application/octet-stream", too_big, rejected, error));
+
+        server_file second;
+        const raw_buffer one = {'x'};
+        t.assert_true("second", store.create("two.txt", "assistants", "text/plain", one, second, error));
+        const raw_buffer two = {'y', 'y'};
+        t.assert_true("entry limit", !store.create("three.txt", "assistants", "text/plain", two, rejected, error));
+
+        std::vector<server_file> files;
+        bool has_more = false;
+        t.assert_true("list", store.list("assistants", "", 1, false, files, has_more));
+        t.assert_equal("list size", 1, (int) files.size());
+        t.assert_true("has more", has_more);
+
+        t.assert_true("remove", store.remove(file.id, loaded));
+        t.assert_true("removed get", !store.get(file.id, loaded));
+    }
+    std::filesystem::remove_all(dir);
+}
+
+
+static void test_files_http(testing & t) {
+    server_files_store store("", 16, 4);
+    std::function<bool()> stop = [] { return false; };
+
+    server_http_req create_req{{}, {}, "/v1/files", "", "{\"purpose\":\"assistants\"}", {}, stop};
+    create_req.files["file"] = uploaded_file{{'h', 'i'}, "hi.txt", "text/plain"};
+    auto created = server_files_http::create(store, create_req);
+    t.assert_equal("create status", 200, created->status);
+
+    json created_json = json::parse(created->data);
+    const std::string id = created_json.value("id", std::string());
+    t.assert_true("file id", !id.empty());
+    t.assert_equal("file object", std::string("file"), created_json.value("object", std::string()));
+
+    server_http_req list_req{{}, {}, "/v1/files", "", "", {}, stop};
+    list_req.params["purpose"] = "assistants";
+    auto listed = server_files_http::list(store, list_req);
+    t.assert_equal("list status", 200, listed->status);
+    json listed_json = json::parse(listed->data);
+    t.assert_equal("list size", 1, (int) listed_json.at("data").size());
+
+    server_http_req get_req{{}, {}, "/v1/files/" + id, "", "", {}, stop};
+    get_req.params["id"] = id;
+    auto got = server_files_http::get(store, get_req);
+    t.assert_equal("get status", 200, got->status);
+
+    server_http_req content_req = get_req;
+    content_req.path = "/v1/files/" + id + "/content";
+    auto content = server_files_http::content(store, content_req);
+    t.assert_equal("content status", 200, content->status);
+    t.assert_equal("content body", std::string("hi"), content->data);
+
+    auto deleted = server_files_http::del(store, get_req);
+    t.assert_equal("delete status", 200, deleted->status);
+    auto missing = server_files_http::get(store, get_req);
+    t.assert_equal("missing status", 404, missing->status);
+
+    server_http_req bad_create = create_req;
+    bad_create.files.clear();
+    t.assert_equal("missing file status", 400, server_files_http::create(store, bad_create)->status);
+}
+
 int main(int argc, char ** argv) {
     testing t;
 
@@ -1471,6 +1560,8 @@ int main(int argc, char ** argv) {
     t.test("responses_logprobs",        test_responses_logprobs);
     t.test("responses_failed_event",    test_responses_failed_event);
     t.test("openai_error_shape",        test_openai_error_shape);
+    t.test("files_store",               test_files_store);
+    t.test("files_http",                test_files_http);
 
     return t.summary();
 }

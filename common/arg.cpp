@@ -3686,6 +3686,16 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_OPENAI_STORE_TTL"));
     add_opt(common_arg(
+        {"--openai-files-max-bytes"}, "N",
+        string_format("maximum size of one uploaded OpenAI file in bytes (default: %d, 0 = unlimited)", params.openai_files_max_bytes),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("--openai-files-max-bytes must be non-negative");
+            }
+            params.openai_files_max_bytes = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_OPENAI_FILES_MAX_BYTES"));
+    add_opt(common_arg(
         {"--media-path"}, "PATH",
         "directory for loading local media files; files can be accessed via file:// URLs using relative paths (default: disabled)",
         [](common_params & params, const std::string & value) {

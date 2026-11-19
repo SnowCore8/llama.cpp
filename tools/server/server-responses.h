@@ -3,6 +3,8 @@
 #include "server-common.h"
 #include "server-task.h"
 
+struct server_files_store;
+
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
@@ -87,7 +89,8 @@ server_responses_request server_responses_parse_request(const json & body);
 struct server_conversations_store;
 
 // resolve previous_response_id / conversation and build effective_input, throws on unknown id
-void server_responses_resolve_input(server_responses_request & req, server_responses_store & store, server_conversations_store * conversations = nullptr);
+void server_responses_resolve_input(server_responses_request & req, server_responses_store & store,
+        server_conversations_store * conversations = nullptr);
 
 // build prompt and sampling parameters for the engine
 json server_responses_build_params(
@@ -95,7 +98,8 @@ json server_responses_build_params(
         const server_chat_params & opt,
         const server_responses_request & req,
         common_chat_session & session,
-        std::vector<raw_buffer> & files);
+        std::vector<raw_buffer> & files,
+        server_files_store * files_store = nullptr);
 
 // rendered SSE events of one background response, kept so that a new connection can resume
 // the stream from a sequence number. the generation thread is the only writer
@@ -113,7 +117,6 @@ struct server_responses_event_log {
     void append(int64_t seq, std::string event);
     // no more events will be appended
     void close();
-    bool is_done() const;
     // true if a reader starting at next_seq has not missed any retained event
     bool validate(int64_t next_seq) const;
     // block until an event at or after next_seq exists, copy everything available to out and
@@ -147,7 +150,6 @@ struct server_responses_context {
 
     // background lifecycle
     json begin_background();
-    json cancel();
     void fail(const std::string & message);
     // emit the terminal event for a cancelled background response and close the event log
     void finish_cancelled();
@@ -156,6 +158,13 @@ struct server_responses_context {
         if (event_log) {
             event_log->close();
         }
+    }
+    // wait until the terminal state is stored and published, returns the cancelled response when
+    // the cancellation won and nullptr otherwise
+    json wait_terminal();
+    // a deleted response must not be written back by the generation thread
+    void mark_deleted() {
+        deleted.store(true);
     }
 
 private:
@@ -178,6 +187,14 @@ private:
         bool done = false;
     };
 
+    // terminal state of a background response. the first path to claim it is the only one that
+    // stores and publishes the terminal response, so subscribers and the store cannot disagree
+    enum class terminal_state {
+        none,
+        finished,  // completed, incomplete or failed
+        cancelled,
+    };
+
     server_responses_store & store;
     server_responses_request req;
     std::string model_name;
@@ -194,11 +211,19 @@ private:
     text_item reasoning;
     text_item message;
     std::vector<tool_item> tools;
-    std::atomic<bool> cancelled{false};
     std::atomic<bool> stored{false};
+    std::atomic<bool> deleted{false};
     bool conversation_appended = false;
-    std::mutex cancel_mutex;
-    json cancelled_response = nullptr;
+    mutable std::mutex terminal_mutex;
+    std::condition_variable terminal_cv;
+    terminal_state terminal = terminal_state::none;
+    bool terminal_committed = false;
+    json terminal_response = nullptr;
+
+    // claim the terminal state, false when another path already claimed it
+    bool claim_terminal(terminal_state state, json response = nullptr);
+    // wake up everyone waiting for the terminal state, only after it was stored and published
+    void commit_terminal();
 
     json push(json & events, const std::string & type, json data) const;
     // render events into the resumable log, no-op when the log is not enabled

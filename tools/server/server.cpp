@@ -1,5 +1,7 @@
 #include "server-connect.h"
 #include "server-context.h"
+#include "server-files-http.h"
+#include "server-files.h"
 #include "server-http.h"
 #include "server-models.h"
 #include "server-cors-proxy.h"
@@ -170,6 +172,27 @@ static bool server_prepare_params(common_params & params, server_role_type role_
 }
 
 // the API of every server; a router points the handlers in routes at its proxies before calling this
+static void server_register_files_routes(server_http_context & ctx_http, server_routes & routes) {
+    auto store = routes.get_files_store();
+
+    auto create  = [store](const server_http_req & req) { return server_files_http::create(*store, req); };
+    auto list    = [store](const server_http_req & req) { return server_files_http::list(*store, req); };
+    auto get     = [store](const server_http_req & req) { return server_files_http::get(*store, req); };
+    auto del     = [store](const server_http_req & req) { return server_files_http::del(*store, req); };
+    auto content = [store](const server_http_req & req) { return server_files_http::content(*store, req); };
+
+    ctx_http.post("/v1/files",             ex_wrapper(create));
+    ctx_http.post("/files",                ex_wrapper(create));
+    ctx_http.get ("/v1/files",             ex_wrapper(list));
+    ctx_http.get ("/files",                ex_wrapper(list));
+    ctx_http.get ("/v1/files/:id/content", ex_wrapper(content));
+    ctx_http.get ("/files/:id/content",    ex_wrapper(content));
+    ctx_http.get ("/v1/files/:id",         ex_wrapper(get));
+    ctx_http.get ("/files/:id",            ex_wrapper(get));
+    ctx_http.del ("/v1/files/:id",         ex_wrapper(del));
+    ctx_http.del ("/files/:id",            ex_wrapper(del));
+}
+
 static void server_register_routes(server_http_context & ctx_http, server_routes & routes) {
     ctx_http.get ("/health",                   ex_wrapper(routes.get_health)); // public endpoint (no API key check)
     ctx_http.get ("/v1/health",                ex_wrapper(routes.get_health)); // public endpoint (no API key check)
@@ -612,6 +635,7 @@ static int server_run_router(common_params & params, int argc, char ** argv, con
     ctx_http.del ("/models",               ex_wrapper(models_routes->del_router_models));
 
     server_register_routes(ctx_http, routes);
+    server_register_files_routes(ctx_http, routes);
     server_register_stream_routes(ctx_http,
         models_routes->router_stream_get,
         models_routes->router_streams_lookup,
@@ -714,6 +738,7 @@ static int server_run_instance(common_params & params, server_role & role, commo
     }
 
     server_register_routes(ctx_http, routes);
+    server_register_files_routes(ctx_http, routes);
     server_register_stream_routes(ctx_http,
         server_stream_make_get_handler(),
         server_stream_make_lookup_handler(),

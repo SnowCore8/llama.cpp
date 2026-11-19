@@ -726,6 +726,7 @@ struct common_params {
     std::string openai_files_path; // directory for persisted OpenAI Responses / Chat Completions objects
     int openai_store_max = 1024;   // max entries per OpenAI store (0 = unlimited)
     int openai_store_ttl = 86400;  // store entry TTL in seconds (0 = no TTL)
+    int openai_files_max_bytes = 64 * 1024 * 1024; // max size of one uploaded file
     bool media_allow_private_urls = false; // allow http(s) media URLs on local or private addresses
 
     float slot_prompt_similarity = 0.1f;

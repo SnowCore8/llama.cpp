@@ -338,4 +338,169 @@ def test_responses_annotations_and_file_id():
         assert False
     except BadRequestError as e:
         assert e.status_code == 400
-        assert "file_id" in e.body["message"]
+        assert "file not found" in e.body["message"]
+
+    uploaded = client.files.create(file=("notes.txt", b"Book"), purpose="assistants")
+    assert uploaded.object == "file"
+    try:
+        res = client.responses.create(
+            model="gpt-4.1",
+            input=[{"role": "user", "content": [
+                {"type": "input_file", "file_id": uploaded.id},
+                {"type": "input_text", "text": "Say hi"},
+            ]}],
+            max_output_tokens=4,
+            temperature=0.0,
+        )
+        assert res.output_text
+    finally:
+        client.files.delete(uploaded.id)
+
+
+def test_responses_background_stream_subscribe():
+    global server
+    server.n_ctx = 2048
+    server.n_slots = 1
+    server.start()
+    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
+
+    events = []
+    with client.responses.create(
+        model="gpt-4.1",
+        input="Book " * 20,
+        max_output_tokens=512,
+        temperature=0.0,
+        background=True,
+        stream=True,
+    ) as stream:
+        for event in stream:
+            events.append(event)
+            if len(events) == 2:
+                res_id = events[0].response.id
+                # the POST connection is only the first subscriber: the response is stored and
+                # another connection can attach while it is still running
+                assert client.responses.retrieve(res_id).status == "in_progress"
+
+    seqs = [event.sequence_number for event in events]
+    types = [event.type for event in events]
+    assert types[0] == "response.created"
+    assert seqs == list(range(len(seqs)))
+    assert "response.output_text.delta" in types
+    assert types[-1] in ("response.completed", "response.incomplete")
+
+    # a GET subscriber reads the same log, from the start or from a sequence number
+    replay = list(client.responses.retrieve(res_id, stream=True))
+    assert [event.sequence_number for event in replay] == seqs
+    assert [event.type for event in replay] == types
+
+    mid = seqs[len(seqs) // 2]
+    tail = list(client.responses.retrieve(res_id, stream=True, starting_after=mid))
+    assert [event.sequence_number for event in tail] == list(range(mid + 1, len(seqs)))
+
+
+def test_responses_cancel_stream_consistent():
+    global server
+    server.n_ctx = 2048
+    server.n_slots = 1
+    server.start()
+    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
+
+    res = client.responses.create(
+        model="gpt-4.1",
+        input="Book " * 20,
+        max_output_tokens=512,
+        temperature=0.0,
+        background=True,
+    )
+    assert res.status == "in_progress"
+
+    events = []
+    with client.responses.retrieve(res.id, stream=True) as stream:
+        for event in stream:
+            events.append(event)
+            if len(events) == 3:
+                cancelled = client.responses.cancel(res.id)
+                assert cancelled.status == "cancelled"
+                # the store is already cancelled before the subscriber gets the terminal event
+                assert client.responses.retrieve(res.id).status == "cancelled"
+
+    assert events[-1].type == "response.completed"
+    assert events[-1].response.status == "cancelled"
+    assert [event.sequence_number for event in events] == list(range(len(events)))
+
+
+def test_responses_delete_in_progress():
+    global server
+    server.n_ctx = 2048
+    server.n_slots = 1
+    server.start()
+    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
+
+    res = client.responses.create(
+        model="gpt-4.1",
+        input="Book " * 20,
+        max_output_tokens=512,
+        temperature=0.0,
+        background=True,
+    )
+    assert res.status == "in_progress"
+
+    events = []
+    with client.responses.retrieve(res.id, stream=True) as stream:
+        for event in stream:
+            events.append(event)
+            if len(events) == 3:
+                assert client.responses.delete(res.id) is None
+                with pytest.raises(NotFoundError):
+                    client.responses.retrieve(res.id)
+
+    # the delete cancels the generation, the subscriber still sees the terminal event
+    assert events[-1].type == "response.completed"
+    assert events[-1].response.status == "cancelled"
+    # and the cancelled response is not written back into the store
+    time.sleep(1.5)
+    with pytest.raises(NotFoundError):
+        client.responses.retrieve(res.id)
+
+
+def test_responses_log_ttl_sweeper(monkeypatch):
+    global server
+    # a two second replay window lets the test observe the sweeper without waiting 5 minutes
+    monkeypatch.setenv("LLAMA_SERVER_RESPONSES_TTL", "2")
+    server.n_ctx = 512
+    server.start()
+    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
+
+    res = client.responses.create(
+        model="gpt-4.1",
+        input="Book",
+        max_output_tokens=8,
+        temperature=0.0,
+        background=True,
+    )
+
+    got = res
+    for _ in range(100):
+        got = client.responses.retrieve(res.id)
+        if got.status in ("completed", "incomplete"):
+            break
+        time.sleep(0.02)
+    assert got.status in ("completed", "incomplete")
+
+    # right after completion the recorded events are still served
+    recorded = list(client.responses.retrieve(res.id, stream=True))
+    assert any(event.type == "response.output_text.delta" for event in recorded)
+
+    # the sweeper drops the log, then GET falls back to the synthesized replay without deltas
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        time.sleep(0.5)
+        replay = list(client.responses.retrieve(res.id, stream=True))
+        if not any(event.type == "response.output_text.delta" for event in replay):
+            break
+    else:
+        raise AssertionError("the event log was not evicted by the TTL sweeper")
+    assert replay[0].type == "response.created"
+    assert replay[-1].type in ("response.completed", "response.incomplete")
+    # only the replay log is dropped, the stored response itself stays readable
+    assert client.responses.retrieve(res.id).status in ("completed", "incomplete")

@@ -6,14 +6,17 @@
 #include "server-responses.h"
 #include "server-chat-completions.h"
 #include "server-conversations.h"
+#include "server-files.h"
 
 #include "json.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <memory>
 #include <mutex>
 #include <set>
+#include <thread>
 #include <unordered_map>
 
 struct server_context_impl; // private implementation
@@ -110,6 +113,7 @@ struct server_res_generator;
 
 struct server_routes {
     server_routes(const common_params & params, server_context & ctx_server);
+    ~server_routes();
 
     void init_routes();
 
@@ -117,6 +121,8 @@ struct server_routes {
     void update_meta(const server_context & ctx_server) {
         this->meta = std::make_unique<server_context_meta>(ctx_server.get_meta());
     }
+
+    std::shared_ptr<server_files_store> get_files_store() const { return files_store; }
 
     // handlers using lambda function, so that they can capture `this` without `std::bind`
     // they won't be called until ctx_http.is_ready is set to true
@@ -192,8 +198,16 @@ private:
     std::shared_ptr<server_responses_store> responses_store;
     std::shared_ptr<server_chat_completions_store> chat_completions_store;
     std::shared_ptr<server_conversations_store> conversations_store;
+    std::shared_ptr<server_files_store> files_store;
     std::mutex responses_jobs_mutex;
     std::unordered_map<std::string, std::shared_ptr<server_responses_background_job>> responses_jobs;
+    // drops the event logs of finished background responses, see responses_sweeper_loop()
+    std::thread responses_sweeper;
+    std::atomic<bool> responses_sweeper_stop{false};
+    std::mutex responses_sweeper_mutex;
+    std::condition_variable responses_sweeper_cv;
+    int64_t responses_log_ttl = 300; // seconds, LLAMA_SERVER_RESPONSES_TTL overrides it for tests
+    void responses_sweeper_loop();
 
     // using unique_ptr to allow late initialization of const
     std::unique_ptr<const server_context_meta> meta;

@@ -24,8 +24,10 @@
 #include "base64.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cinttypes>
+#include <cstdlib>
 #include <ctime>
 #include <deque>
 #include <exception>
@@ -45,17 +47,16 @@
 #endif
 
 constexpr int HTTP_POLLING_SECONDS = 1;
-// how long the events of a finished background response stay available for a reconnect
-constexpr int64_t RESPONSES_LOG_TTL_SECONDS = 300;
 // how many finished event logs are kept at most, oldest are dropped first
-constexpr size_t  RESPONSES_LOG_MAX_DONE    = 64;
+constexpr size_t RESPONSES_LOG_MAX_DONE = 64;
 
 // drop the event logs of finished background responses once the replay window is over
-static void prune_responses_jobs(std::unordered_map<std::string, std::shared_ptr<server_responses_background_job>> & jobs, int64_t now) {
+static void prune_responses_jobs(std::unordered_map<std::string, std::shared_ptr<server_responses_background_job>> & jobs,
+        int64_t now, int64_t ttl_seconds) {
     size_t n_done = 0;
     for (auto it = jobs.begin(); it != jobs.end(); ) {
         const int64_t done_at = it->second->done_at;
-        if (done_at != 0 && now - done_at >= RESPONSES_LOG_TTL_SECONDS) {
+        if (done_at != 0 && now - done_at >= ttl_seconds) {
             it = jobs.erase(it);
         } else {
             if (done_at != 0) {
@@ -5638,7 +5639,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                 } else if (res_type == TASK_RESPONSE_TYPE_OAI_RESP && resp_ctx != nullptr) {
                     const std::string message = json_value(res_json, "message", std::string("internal error"));
                     const std::string code    = json_value(res_json, "type", std::string());
-                    return format_oai_resp_sse(resp_ctx->failed_event(message, code));
+                    const json event = resp_ctx->failed_event(message, code);
+                    return event.is_null() ? std::string() : format_oai_resp_sse(event);
                 } else if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT) {
                     return format_oai_sse(json {{ "error", format_openai_error_from_json(res_json) }});
                 } else {
@@ -5779,13 +5781,50 @@ server_routes::server_routes(const common_params & params, server_context & ctx_
         params.openai_files_path, (size_t) params.openai_store_max, (int64_t) params.openai_store_ttl);
     conversations_store = std::make_shared<server_conversations_store>(
         params.openai_files_path, (size_t) params.openai_store_max, (int64_t) params.openai_store_ttl);
+    files_store = std::make_shared<server_files_store>(
+        params.openai_files_path, (size_t) params.openai_files_max_bytes, (size_t) params.openai_store_max);
     init_routes();
+
+    // a short replay window is handy for tests, the default keeps a finished response resumable
+    if (const char * ttl = std::getenv("LLAMA_SERVER_RESPONSES_TTL")) {
+        try {
+            responses_log_ttl = std::max<int64_t>(1, std::min<int64_t>(86400, std::stoll(ttl)));
+        } catch (const std::exception &) {
+        }
+    }
+    responses_sweeper = std::thread([this] { responses_sweeper_loop(); });
 
     // note: this must be registered before load_model()
     //       so that on sleep phase, the callback is called before ctx is destroyed
     queue_tasks.on_sleeping_state([this](bool is_sleeping) {
         update_cached_responses(is_sleeping);
     });
+}
+
+server_routes::~server_routes() {
+    responses_sweeper_stop.store(true);
+    responses_sweeper_cv.notify_all();
+    if (responses_sweeper.joinable()) {
+        responses_sweeper.join();
+    }
+}
+
+void server_routes::responses_sweeper_loop() {
+    // wake often enough to drop a log close to its TTL, but never more than once per second
+    const int64_t interval_ms = std::max<int64_t>(1000, std::min<int64_t>(30000, responses_log_ttl * 500));
+    while (!responses_sweeper_stop.load()) {
+        {
+            std::unique_lock<std::mutex> lock(responses_sweeper_mutex);
+            responses_sweeper_cv.wait_for(lock, std::chrono::milliseconds(interval_ms), [this] {
+                return responses_sweeper_stop.load();
+            });
+        }
+        if (responses_sweeper_stop.load()) {
+            break;
+        }
+        std::lock_guard<std::mutex> lock(responses_jobs_mutex);
+        prune_responses_jobs(responses_jobs, (int64_t) std::time(0), responses_log_ttl);
+    }
 }
 
 static json get_res_model_info(const server_context_meta & meta) {
@@ -6548,11 +6587,11 @@ void server_routes::init_routes() {
             server_responses_resolve_input(rreq, *responses_store, conversations_store.get());
             common_chat_session session;
             std::vector<raw_buffer> files;
-            json data = server_responses_build_params(ctx_server.vocab, meta->chat_params, rreq, session, files);
+            json data = server_responses_build_params(ctx_server.vocab, meta->chat_params, rreq, session, files, files_store.get());
             auto resp_ctx = std::make_shared<server_responses_context>(
                 *responses_store, std::move(rreq), meta->model_name, ctx_server.vocab, conversations_store.get());
 
-            if (!background || stream_mode) {
+            if (!background) {
                 return handle_completions_impl(
                     req,
                     SERVER_TASK_TYPE_COMPLETION,
@@ -6567,7 +6606,7 @@ void server_routes::init_routes() {
             job->ctx = resp_ctx;
             {
                 std::lock_guard<std::mutex> lock(responses_jobs_mutex);
-                prune_responses_jobs(responses_jobs, (int64_t) std::time(0));
+                prune_responses_jobs(responses_jobs, (int64_t) std::time(0), responses_log_ttl);
                 responses_jobs[resp_ctx->get_id()] = job;
             }
             const json initial = resp_ctx->begin_background();
@@ -6623,6 +6662,19 @@ void server_routes::init_routes() {
                 }
             }).detach();
 
+            if (stream_mode) {
+                // the POST connection is the first subscriber, it reads the same log a later GET does
+                GGML_ASSERT(resp_ctx->event_log != nullptr);
+                res->set_req(&req);
+                res->content_type = "text/event-stream";
+                auto log      = resp_ctx->event_log;
+                auto next_seq = std::make_shared<int64_t>(0);
+                res->set_next([log, next_seq, &req](std::string & output) -> bool {
+                    return log->read(*next_seq, output, req.should_stop);
+                });
+                return res;
+            }
+
             res->ok(initial);
             return res;
         } catch (const std::exception & e) {
@@ -6644,11 +6696,11 @@ void server_routes::init_routes() {
             }
         }
         if (job != nullptr) {
-            // cancel first so the generation thread publishes the terminal event with the
-            // recorded cancelled response
-            json cancelled = job->ctx->cancel();
+            // ask the generation to stop, the terminal state is stored and published by the
+            // generation thread so the store and the subscribers cannot disagree
+            job->cancelled.store(true);
+            const json cancelled = job->ctx->wait_terminal();
             if (!cancelled.is_null()) {
-                job->cancelled.store(true);
                 res->ok(cancelled);
                 return res;
             }
@@ -6677,7 +6729,7 @@ void server_routes::init_routes() {
             server_responses_resolve_input(rreq, *responses_store, conversations_store.get());
             common_chat_session session;
             std::vector<raw_buffer> files;
-            json data = server_responses_build_params(ctx_server.vocab, meta->chat_params, rreq, session, files);
+            json data = server_responses_build_params(ctx_server.vocab, meta->chat_params, rreq, session, files, files_store.get());
             const json & prompt = data.at("prompt");
             size_t n_tokens;
             if (ctx_server.mctx != nullptr && !files.empty()) {
@@ -6820,7 +6872,30 @@ void server_routes::init_routes() {
     this->del_responses_oai = [this](const server_http_req & req) {
         auto res = create_response();
         const std::string id = req.get_param("id");
-        if (!responses_store->erase(id)) {
+
+        std::shared_ptr<server_responses_background_job> job;
+        {
+            std::lock_guard<std::mutex> lock(responses_jobs_mutex);
+            const auto it = responses_jobs.find(id);
+            if (it != responses_jobs.end()) {
+                job = it->second;
+            }
+        }
+        if (job != nullptr) {
+            // stop the generation and wait until its terminal state is committed, a running
+            // generation must not write the deleted response back into the store
+            job->ctx->mark_deleted();
+            job->cancelled.store(true);
+            job->ctx->wait_terminal();
+        }
+
+        const bool erased = responses_store->erase(id);
+        {
+            // drop the event log too, a deleted response must not stay subscribable
+            std::lock_guard<std::mutex> lock(responses_jobs_mutex);
+            responses_jobs.erase(id);
+        }
+        if (!erased) {
             res->status = 404;
             res->data = safe_json_to_str(json {{"error", json {
                 {"message", "Response not found: " + id},
@@ -6829,11 +6904,6 @@ void server_routes::init_routes() {
                 {"code", "response_not_found"},
             }}});
             return res;
-        }
-        {
-            // drop the event log too, a deleted response must not stay subscribable
-            std::lock_guard<std::mutex> lock(responses_jobs_mutex);
-            responses_jobs.erase(id);
         }
         res->ok(json {
             {"id", id},
