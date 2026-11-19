@@ -522,3 +522,16 @@ def test_responses_truncation_auto():
         "truncation": "auto",
     })
     assert res.status_code == 200, res.body
+
+
+def test_responses_hosted_tools_skipped():
+    global server
+    server.start()
+    res = server.make_request("POST", "/responses", data={
+        "model": "gpt-4.1",
+        "input": "Book",
+        "tools": [{"type": "web_search"}],
+        "max_output_tokens": 4,
+    })
+    assert res.status_code == 200, res.body
+    assert res.body["tools"] == [{"type": "web_search"}]

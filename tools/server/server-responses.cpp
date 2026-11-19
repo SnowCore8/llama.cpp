@@ -365,7 +365,8 @@ server_responses_request server_responses_parse_request(const json & body) {
                 continue;
             }
             if (type != "function") {
-                throw std::invalid_argument("unsupported tool type: " + type);
+                SRV_WRN("unsupported Responses tool type '%s' skipped\n", type.c_str());
+                continue;
             }
             common_chat_tool parsed;
             parsed.name = tool.value("name", std::string());

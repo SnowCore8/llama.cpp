@@ -405,9 +405,6 @@ server_chat_completions_request server_chat_completions_parse_request(const json
     if (body.contains("audio") && !body.at("audio").is_null()) {
         throw std::invalid_argument("audio output is not supported");
     }
-    if (body.contains("web_search_options") && !body.at("web_search_options").is_null()) {
-        throw std::invalid_argument("'web_search_options' is not supported");
-    }
     if (body.contains("prediction") && !body.at("prediction").is_null()) {
         throw std::invalid_argument("'prediction' is not supported");
     }

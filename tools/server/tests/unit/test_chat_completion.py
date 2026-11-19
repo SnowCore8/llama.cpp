@@ -891,3 +891,14 @@ def test_custom_tool_result_backfill():
     })
     assert res.status_code == 200, res.body
     assert res.body["choices"][0]["message"]["role"] == "assistant"
+
+
+def test_web_search_options_ignored():
+    global server
+    server.start()
+    res = server.make_request("POST", "/chat/completions", data={
+        "messages": [{"role": "user", "content": "Book"}],
+        "web_search_options": {"search_context_size": "low"},
+        "max_tokens": 4,
+    })
+    assert res.status_code == 200, res.body
