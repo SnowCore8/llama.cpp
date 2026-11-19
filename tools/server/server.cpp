@@ -186,6 +186,12 @@ static void server_register_routes(server_http_context & ctx_http, server_routes
     ctx_http.post("/v1/chat/completions/control", ex_wrapper(routes.post_control));
     ctx_http.post("/v1/responses",             ex_wrapper(routes.post_responses_oai));
     ctx_http.post("/responses",                ex_wrapper(routes.post_responses_oai));
+    ctx_http.get ("/v1/responses/:id",         ex_wrapper(routes.get_responses_oai));
+    ctx_http.get ("/responses/:id",            ex_wrapper(routes.get_responses_oai));
+    ctx_http.get ("/v1/responses/:id/input_items", ex_wrapper(routes.get_responses_input_items));
+    ctx_http.get ("/responses/:id/input_items",    ex_wrapper(routes.get_responses_input_items));
+    ctx_http.del ("/v1/responses/:id",         ex_wrapper(routes.del_responses_oai));
+    ctx_http.del ("/responses/:id",            ex_wrapper(routes.del_responses_oai));
     ctx_http.post("/v1/audio/transcriptions",  ex_wrapper(routes.post_transcriptions_oai));
     ctx_http.post("/audio/transcriptions",     ex_wrapper(routes.post_transcriptions_oai));
     ctx_http.post("/tts",                      ex_wrapper(routes.post_tts));

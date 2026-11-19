@@ -3,6 +3,7 @@
 #include "server-http.h"
 #include "server-task.h"
 #include "server-queue.h"
+#include "server-responses.h"
 
 #include "json.h"
 
@@ -122,6 +123,9 @@ struct server_routes {
     server_http_context::handler_t post_control;
     server_http_context::handler_t post_responses_oai;
     server_http_context::handler_t post_responses_tok_oai;
+    server_http_context::handler_t get_responses_oai;
+    server_http_context::handler_t get_responses_input_items;
+    server_http_context::handler_t del_responses_oai;
     server_http_context::handler_t post_transcriptions_oai;
     server_http_context::ws_handler_t ws_realtime;
     server_http_context::handler_t post_anthropic_messages;
@@ -149,7 +153,8 @@ private:
             const json & data,
             const std::vector<raw_buffer> & files,
             task_response_type res_type,
-            const common_chat_session & chat_session = {});
+            const common_chat_session & chat_session = {},
+            std::shared_ptr<server_responses_context> resp_ctx = nullptr);
     std::unique_ptr<server_res_generator> handle_slots_save(const server_http_req & req, int id_slot);
     std::unique_ptr<server_res_generator> handle_slots_restore(const server_http_req & req, int id_slot);
     std::unique_ptr<server_res_generator> handle_slots_erase(const server_http_req &, int id_slot);
@@ -157,6 +162,8 @@ private:
     std::unique_ptr<server_res_generator> handle_rerank_impl(const server_http_req & req);
     std::unique_ptr<server_res_generator> handle_tts_impl(const server_http_req & req, json body);
     std::unique_ptr<server_res_generator> handle_count_tokens(const server_http_req & req, task_response_type res_type);
+
+    std::shared_ptr<server_responses_store> responses_store = std::make_shared<server_responses_store>();
 
     // using unique_ptr to allow late initialization of const
     std::unique_ptr<const server_context_meta> meta;

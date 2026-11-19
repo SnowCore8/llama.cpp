@@ -5342,7 +5342,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             const json & data,
             const std::vector<raw_buffer> & files,
             task_response_type res_type,
-            const common_chat_session & chat_session) {
+            const common_chat_session & chat_session,
+            std::shared_ptr<server_responses_context> resp_ctx) {
     GGML_ASSERT(type == SERVER_TASK_TYPE_COMPLETION || type == SERVER_TASK_TYPE_INFILL);
 
     auto res = create_response();
@@ -5438,6 +5439,13 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         } else if (all_results.error) {
             res->error(all_results.error->to_json());
             return res;
+        } else if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
+            GGML_ASSERT(resp_ctx != nullptr);
+            GGML_ASSERT(all_results.results.size() == 1);
+            auto * final = dynamic_cast<server_task_result_cmpl_final *>(all_results.results[0].get());
+            GGML_ASSERT(final != nullptr);
+            res->ok(resp_ctx->final_response(*final));
+            return res;
         } else {
             json arr = json::array();
             for (auto & res : all_results.results) {
@@ -5492,7 +5500,19 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
 
         // next responses are streamed
         // to be sent immediately
-        json first_result_json = first_result->to_json();
+        json first_result_json = nullptr;
+        if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
+            GGML_ASSERT(resp_ctx != nullptr);
+            if (auto * partial = dynamic_cast<server_task_result_cmpl_partial *>(first_result.get())) {
+                first_result_json = resp_ctx->consume(*partial);
+            } else if (auto * final = dynamic_cast<server_task_result_cmpl_final *>(first_result.get())) {
+                first_result_json = resp_ctx->finish(*final);
+            } else {
+                GGML_ABORT("invalid result type for responses stream");
+            }
+        } else {
+            first_result_json = first_result->to_json();
+        }
         if (first_result_json == nullptr) {
             res->data = ""; // simply send HTTP headers and status code
         } else if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
@@ -5504,13 +5524,17 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         }
         res->status = 200;
         res->content_type = "text/event-stream";
-        res->set_next([res_this = res.get(), res_type, sse_ping_interval](std::string & output) -> bool {
-            static auto format_error = [](task_response_type res_type, const json & res_json) {
+        res->set_next([res_this = res.get(), res_type, sse_ping_interval, resp_ctx](std::string & output) -> bool {
+            auto format_error = [resp_ctx](task_response_type res_type, const json & res_json) {
                 if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
                     return format_anthropic_sse({
                         {"event", "error"},
                         {"data", res_json},
                     });
+                } else if (res_type == TASK_RESPONSE_TYPE_OAI_RESP && resp_ctx != nullptr) {
+                    const std::string message = json_value(res_json, "message", std::string("internal error"));
+                    const std::string code    = json_value(res_json, "type", std::string());
+                    return format_oai_resp_sse(resp_ctx->error_event(message, code));
                 } else {
                     return format_oai_sse(json {{ "error", res_json }});
                 }
@@ -5589,13 +5613,24 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                         dynamic_cast<server_task_result_cmpl_partial*>(result.get()) != nullptr
                         || dynamic_cast<server_task_result_cmpl_final*>(result.get()) != nullptr
                     );
-                    json res_json = result->to_json();
-                    if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
-                        output = format_anthropic_sse(res_json);
-                    } else if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
+                    if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
+                        GGML_ASSERT(resp_ctx != nullptr);
+                        json res_json;
+                        if (auto * partial = dynamic_cast<server_task_result_cmpl_partial *>(result.get())) {
+                            res_json = resp_ctx->consume(*partial);
+                        } else if (auto * final = dynamic_cast<server_task_result_cmpl_final *>(result.get())) {
+                            res_json = resp_ctx->finish(*final);
+                        } else {
+                            GGML_ABORT("invalid result type for responses stream");
+                        }
                         output = format_oai_resp_sse(res_json);
                     } else {
-                        output = format_oai_sse(res_json);
+                        json res_json = result->to_json();
+                        if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
+                            output = format_anthropic_sse(res_json);
+                        } else {
+                            output = format_oai_sse(res_json);
+                        }
                     }
                 }
 
@@ -6114,28 +6149,117 @@ void server_routes::init_routes() {
 
     this->post_responses_oai = [this](const server_http_req & req) {
         auto res = create_response();
-        std::vector<raw_buffer> files;
-        json body = server_chat_convert_responses_to_chatcmpl(json::parse(req.body));
-        SRV_DBG("%s\n", "Request converted: OpenAI Responses -> OpenAI Chat Completions");
-        SRV_DBG("converted request: %s\n", body.dump().c_str());
-        common_chat_session session;
-        json body_parsed = oaicompat_chat_params_parse(
-            ctx_server.vocab,
-            body,
-            meta->chat_params,
-            files,
-            session);
-        return handle_completions_impl(
-            req,
-            SERVER_TASK_TYPE_COMPLETION,
-            body_parsed,
-            files,
-            TASK_RESPONSE_TYPE_OAI_RESP,
-            session);
+        try {
+            const json body = json::parse(req.body);
+            server_responses_request rreq = server_responses_parse_request(body);
+            server_responses_resolve_input(rreq, *responses_store);
+            common_chat_session session;
+            json data = server_responses_build_params(ctx_server.vocab, meta->chat_params, rreq, session);
+            auto resp_ctx = std::make_shared<server_responses_context>(
+                *responses_store, std::move(rreq), meta->model_name, ctx_server.vocab);
+            std::vector<raw_buffer> files;
+            return handle_completions_impl(
+                req,
+                SERVER_TASK_TYPE_COMPLETION,
+                data,
+                files,
+                TASK_RESPONSE_TYPE_OAI_RESP,
+                session,
+                std::move(resp_ctx));
+        } catch (const std::exception & e) {
+            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
     };
 
     this->post_responses_tok_oai = [this](const server_http_req & req) {
-        return handle_count_tokens(req, TASK_RESPONSE_TYPE_OAI_RESP);
+        auto res = create_response();
+        try {
+            const json body = json::parse(req.body);
+            server_responses_request rreq = server_responses_parse_request(body);
+            server_responses_resolve_input(rreq, *responses_store);
+            common_chat_session session;
+            json data = server_responses_build_params(ctx_server.vocab, meta->chat_params, rreq, session);
+            const json & prompt = data.at("prompt");
+            const size_t n_tokens = tokenize_mixed(ctx_server.vocab, prompt, true, true).size();
+            res->ok(json {
+                {"object", "response.input_tokens"},
+                {"input_tokens", (int64_t) n_tokens},
+            });
+            return res;
+        } catch (const std::exception & e) {
+            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+    };
+
+    this->get_responses_oai = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string id = req.get_param("id");
+        server_responses_stored stored;
+        if (!responses_store->get(id, stored)) {
+            res->status = 404;
+            res->data = safe_json_to_str(json {{"error", json {
+                {"message", "Response not found: " + id},
+                {"type", "invalid_request_error"},
+                {"param", nullptr},
+                {"code", "response_not_found"},
+            }}});
+            return res;
+        }
+        res->ok(stored.response);
+        return res;
+    };
+
+    this->del_responses_oai = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string id = req.get_param("id");
+        if (!responses_store->erase(id)) {
+            res->status = 404;
+            res->data = safe_json_to_str(json {{"error", json {
+                {"message", "Response not found: " + id},
+                {"type", "invalid_request_error"},
+                {"param", nullptr},
+                {"code", "response_not_found"},
+            }}});
+            return res;
+        }
+        res->ok(json {
+            {"id", id},
+            {"object", "response.deleted"},
+            {"deleted", true},
+        });
+        return res;
+    };
+
+    this->get_responses_input_items = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string id = req.get_param("id");
+        server_responses_stored stored;
+        if (!responses_store->get(id, stored)) {
+            res->status = 404;
+            res->data = safe_json_to_str(json {{"error", json {
+                {"message", "Response not found: " + id},
+                {"type", "invalid_request_error"},
+                {"param", nullptr},
+                {"code", "response_not_found"},
+            }}});
+            return res;
+        }
+        json first_id = nullptr;
+        json last_id  = nullptr;
+        if (!stored.input_items.empty()) {
+            first_id = stored.input_items.front().value("id", json(nullptr));
+            last_id  = stored.input_items.back().value("id", json(nullptr));
+        }
+        res->ok(json {
+            {"object", "list"},
+            {"data", stored.input_items},
+            {"first_id", first_id},
+            {"last_id", last_id},
+            {"has_more", false},
+        });
+        return res;
     };
 
     this->post_transcriptions_oai = [this](const server_http_req & req) {
@@ -7256,11 +7380,6 @@ std::unique_ptr<server_res_generator> server_routes::handle_count_tokens(const s
         case TASK_RESPONSE_TYPE_OAI_CHAT:
             {
                 is_oai = true;
-            } break;
-        case TASK_RESPONSE_TYPE_OAI_RESP:
-            {
-                is_oai = true;
-                body = server_chat_convert_responses_to_chatcmpl(body);
             } break;
         case TASK_RESPONSE_TYPE_ANTHROPIC:
             {

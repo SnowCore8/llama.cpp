@@ -4,6 +4,8 @@
 #include "../tools/server/server-common.h"
 #include "../tools/server/server-decision.h"
 #include "../tools/server/server-schema.h"
+#include "../tools/server/server-responses.h"
+#include "../tools/server/server-chat.h"
 
 #include <algorithm>
 #include <cmath>
@@ -740,6 +742,214 @@ static void test_pcm_f32_to_s16(testing & t) {
     t.assert_true ("empty",          pcm_f32_to_s16(nullptr, 0).empty());
 }
 
+
+//
+// server_responses
+//
+
+static bool has_event(const json & events, const std::string & type) {
+    for (const auto & event : events) {
+        if (event.value("event", std::string()) == type) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void test_responses_parse(testing & t) {
+    json body = {
+        {"model", "test-model"},
+        {"input", "hello"},
+        {"max_output_tokens", 8},
+        {"temperature", 0.5},
+        {"metadata", json { {"user", "1"} }},
+        {"tools", json::array({ json {
+            {"type", "function"},
+            {"name", "get_weather"},
+            {"description", "weather"},
+            {"parameters", json { {"type", "object"} }},
+        } })},
+        {"tool_choice", "auto"},
+    };
+
+    server_responses_request req = server_responses_parse_request(body);
+    t.assert_equal("model",        std::string("test-model"), req.model);
+    t.assert_equal("input items",  (size_t) 1, req.input_items.size());
+    t.assert_equal("tool count",   (size_t) 1, req.tools_parsed.size());
+    t.assert_equal("tool name",    std::string("get_weather"), req.tools_parsed[0].name);
+    t.assert_equal("max tokens",   8, req.max_output_tokens);
+    t.assert_true ("store default", req.store);
+    t.assert_true ("stream default", !req.stream);
+
+    bool thrown = false;
+    json bad = body;
+    bad["temperature"] = 3.0;
+    try {
+        server_responses_parse_request(bad);
+    } catch (const std::exception &) {
+        thrown = true;
+    }
+    t.assert_true("temperature bound", thrown);
+
+    thrown = false;
+    bad = body;
+    bad["background"] = true;
+    try {
+        server_responses_parse_request(bad);
+    } catch (const std::exception &) {
+        thrown = true;
+    }
+    t.assert_true("background rejected", thrown);
+
+    thrown = false;
+    bad = body;
+    bad.erase("input");
+    try {
+        server_responses_parse_request(bad);
+    } catch (const std::exception &) {
+        thrown = true;
+    }
+    t.assert_true("input required", thrown);
+
+    json named = body;
+    named["tool_choice"] = json { {"type", "function"}, {"name", "get_weather"} };
+    req = server_responses_parse_request(named);
+    t.assert_equal("named choice", std::string("get_weather"), req.tool_choice_name);
+}
+
+static void test_responses_previous(testing & t) {
+    server_responses_store store;
+    server_responses_stored previous;
+    previous.input_items = json::array({ json {
+        {"type", "message"},
+        {"role", "user"},
+        {"content", json::array({ json { {"type", "input_text"}, {"text", "previous question"} } })},
+    } });
+    previous.response = json { {"output", json::array({ json {
+        {"type", "message"},
+        {"role", "assistant"},
+        {"content", json::array({ json { {"type", "output_text"}, {"text", "previous answer"} } })},
+    } }) } };
+    store.put("resp_prev", previous);
+
+    server_responses_request req = server_responses_parse_request(json {
+        {"model", "m"},
+        {"input", "next"},
+        {"previous_response_id", "resp_prev"},
+    });
+    server_responses_resolve_input(req, store);
+    t.assert_equal("effective items", (size_t) 3, req.effective_input.size());
+
+    bool thrown = false;
+    server_responses_request unknown = server_responses_parse_request(json {
+        {"model", "m"},
+        {"input", "next"},
+        {"previous_response_id", "resp_missing"},
+    });
+    try {
+        server_responses_resolve_input(unknown, store);
+    } catch (const std::exception &) {
+        thrown = true;
+    }
+    t.assert_true("unknown previous rejected", thrown);
+}
+
+static void test_responses_stream(testing & t) {
+    server_responses_store store;
+    server_responses_request req;
+    req.model  = "m";
+    req.stream = true;
+    req.store  = false;
+
+    server_responses_context ctx(store, req, "m", nullptr);
+
+    common_chat_msg_diff reasoning_diff;
+    reasoning_diff.reasoning_content_delta = "think";
+    common_chat_msg_diff text_diff;
+    text_diff.content_delta = "hello";
+    common_chat_msg_diff tool_diff;
+    tool_diff.tool_call_index      = 0;
+    tool_diff.tool_call_delta.id   = "call_1";
+    tool_diff.tool_call_delta.name = "f";
+    tool_diff.tool_call_delta.arguments = "{\"x\":1}";
+
+    server_task_result_cmpl_partial partial;
+    partial.oaicompat_msg_diffs = { reasoning_diff, text_diff, tool_diff };
+
+    json events = ctx.consume(partial);
+    t.assert_true("created",        has_event(events, "response.created"));
+    t.assert_true("in progress",    has_event(events, "response.in_progress"));
+    t.assert_true("reasoning item", has_event(events, "response.output_item.added"));
+    t.assert_true("reasoning text", has_event(events, "response.reasoning_text.delta"));
+    t.assert_true("text delta",     has_event(events, "response.output_text.delta"));
+    t.assert_true("tool delta",     has_event(events, "response.function_call_arguments.delta"));
+
+    server_task_result_cmpl_final final_result;
+    final_result.n_prompt_tokens = 4;
+    final_result.n_decoded       = 7;
+    final_result.stop            = STOP_TYPE_EOS;
+    final_result.truncated       = false;
+    final_result.oaicompat_msg.reasoning_content = "think";
+    final_result.oaicompat_msg.content           = "hello";
+
+    json done = ctx.finish(final_result);
+    t.assert_true("text done",     has_event(done, "response.output_text.done"));
+    t.assert_true("tool done",     has_event(done, "response.function_call_arguments.done"));
+    t.assert_true("completed",     has_event(done, "response.completed"));
+
+    json response;
+    for (const auto & event : done) {
+        if (event.value("event", std::string()) == "response.completed") {
+            response = event.at("data").at("response");
+        }
+    }
+    t.assert_equal("output items", (size_t) 3, response.at("output").size());
+    t.assert_equal("input usage",  4, response.at("usage").at("input_tokens").get<int>());
+}
+
+static void test_responses_non_stream(testing & t) {
+    server_responses_store store;
+    server_responses_request req;
+    req.model = "m";
+    server_responses_context ctx(store, req, "m", nullptr);
+
+    server_task_result_cmpl_final result;
+    result.n_prompt_tokens = 3;
+    result.n_decoded       = 2;
+    result.stop            = STOP_TYPE_EOS;
+    result.truncated       = false;
+    result.oaicompat_msg.role    = "assistant";
+    result.oaicompat_msg.content = "hello";
+
+    json response = ctx.final_response(result);
+    t.assert_equal("status",       std::string("completed"), response.at("status").get<std::string>());
+    t.assert_equal("output size",  (size_t) 1, response.at("output").size());
+    t.assert_equal("output text",  std::string("hello"), response.at("output")[0].at("content")[0].at("text").get<std::string>());
+    t.assert_equal("input usage",  3, response.at("usage").at("input_tokens").get<int>());
+
+    server_responses_stored stored;
+    t.assert_true("stored", store.get(ctx.get_id(), stored));
+}
+
+
+static void test_responses_tools_convert(testing & t) {
+    json tools = json::array({
+        json { {"type", "web_search"} },
+        json {
+            {"type", "function"},
+            {"name", "get_weather"},
+            {"description", "weather"},
+            {"parameters", json::object()},
+        },
+    });
+
+    json converted = server_chat_convert_responses_tools(tools);
+    t.assert_equal("converted size", (size_t) 1, converted.size());
+    t.assert_equal("converted type", std::string("function"), converted.at(0).at("type").get<std::string>());
+    t.assert_equal("converted name", std::string("get_weather"), converted.at(0).at("function").at("name").get<std::string>());
+    t.assert_true ("strict default", converted.at(0).at("function").at("strict").get<bool>());
+}
+
 int main(int argc, char ** argv) {
     testing t;
 
@@ -767,6 +977,11 @@ int main(int argc, char ** argv) {
     t.test("dry_sequence_breakers", test_dry_sequence_breakers);
     t.test("speech_convert",  test_speech_convert);
     t.test("pcm_f32_to_s16",  test_pcm_f32_to_s16);
+    t.test("responses_parse",     test_responses_parse);
+    t.test("responses_previous",  test_responses_previous);
+    t.test("responses_stream",    test_responses_stream);
+    t.test("responses_non_stream", test_responses_non_stream);
+    t.test("responses_tools_convert", test_responses_tools_convert);
 
     return t.summary();
 }

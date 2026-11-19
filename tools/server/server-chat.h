@@ -8,9 +8,6 @@
 
 #include "json.h"
 
-// Convert OpenAI Responses API format to OpenAI Chat Completions API format
-json server_chat_convert_responses_to_chatcmpl(const json & body);
-
 // Convert OpenAI Responses API tools to OpenAI Chat Completions API tools, non-function tools are skipped
 json server_chat_convert_responses_tools(const json & tools);
 

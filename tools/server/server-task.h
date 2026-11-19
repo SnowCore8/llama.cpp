@@ -141,17 +141,9 @@ struct task_result_state {
     std::vector<std::string> generated_tool_call_ids;
     std::unordered_set<size_t> sent_tool_call_names;
 
-    // for OpenAI Responses and Anthropic streaming API:
-    // track output item / content block state across chunks
+    // for Anthropic streaming API: track content block state across chunks
     bool thinking_block_started = false;
     bool text_block_started = false;
-
-    // for OpenAI Responses streaming API
-    bool oai_resp_created = false;
-    const std::string oai_resp_id;
-    const std::string oai_resp_reasoning_id;
-    const std::string oai_resp_message_id;
-    std::string oai_resp_fc_id; // function call ID for current args delta
 
     task_result_state(common_chat_session session = {});
 
@@ -439,11 +431,6 @@ struct server_task_result_cmpl_final : server_task_result {
     std::vector<common_chat_msg_diff> oaicompat_msg_diffs; // to be populated by update()
     bool is_updated = false;
 
-    // for OpenAI Responses API
-    std::string oai_resp_id;
-    std::string oai_resp_reasoning_id;
-    std::string oai_resp_message_id;
-
     virtual bool is_stop() override {
         return true; // in stream mode, final responses are considered stop
     }
@@ -453,10 +440,6 @@ struct server_task_result_cmpl_final : server_task_result {
     virtual void update(task_result_state & state) override {
         is_updated = true;
         oaicompat_msg = state.update_chat_msg(content, false, oaicompat_msg_diffs);
-
-        oai_resp_id = state.oai_resp_id;
-        oai_resp_reasoning_id = state.oai_resp_reasoning_id;
-        oai_resp_message_id = state.oai_resp_message_id;
     }
 
     json to_json_non_oaicompat();
@@ -468,10 +451,6 @@ struct server_task_result_cmpl_final : server_task_result {
     json to_json_oaicompat_chat();
 
     json to_json_oaicompat_chat_stream();
-
-    json to_json_oaicompat_resp();
-
-    json to_json_oaicompat_resp_stream();
 
     json to_json_oaicompat_asr();
 
@@ -509,13 +488,6 @@ struct server_task_result_cmpl_partial : server_task_result {
     bool thinking_block_started = false;
     bool text_block_started     = false;
 
-    // for OpenAI Responses API
-    bool oai_resp_created = false;
-    std::string oai_resp_id;
-    std::string oai_resp_reasoning_id;
-    std::string oai_resp_message_id;
-    std::string oai_resp_fc_id;
-
     // for Anthropic API: track if any reasoning content has been generated
     bool anthropic_has_reasoning = false;
 
@@ -532,8 +504,6 @@ struct server_task_result_cmpl_partial : server_task_result {
     json to_json_oaicompat();
 
     json to_json_oaicompat_chat();
-
-    json to_json_oaicompat_resp();
 
     json to_json_oaicompat_asr();
 

@@ -1,5 +1,5 @@
 import pytest
-from openai import OpenAI
+from openai import OpenAI, NotFoundError
 from utils import *
 
 server: ServerProcess
@@ -104,11 +104,60 @@ def test_responses_stream_with_llama_telemetry():
             assert "predicted_per_second" in data["timings"]
             if data["type"] == "response.output_text.delta":
                 saw_delta_timings = True
-        if data["type"] == "response.completed":
+        if data["type"] in ("response.completed", "response.incomplete"):
             completed = data
 
     assert saw_progress
     assert saw_delta_timings
     assert completed is not None
+    assert completed["response"]["status"] in ("completed", "incomplete")
     assert "usage" in completed["response"]
     assert "timings" in completed
+
+
+def test_responses_store_and_previous_response_id():
+    global server
+    server.start()
+    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
+
+    first = client.responses.create(model="gpt-4.1", input="Book", max_output_tokens=4, temperature=0.0)
+    assert first.id.startswith("resp_")
+
+    fetched = client.responses.retrieve(first.id)
+    assert fetched.id == first.id
+    assert fetched.status == first.status
+
+    items = client.responses.input_items.list(first.id)
+    assert len(items.data) == 1
+    assert items.data[0].role == "user"
+
+    second = client.responses.create(
+        model="gpt-4.1",
+        input="Again",
+        previous_response_id=first.id,
+        max_output_tokens=4,
+        temperature=0.0,
+    )
+    assert second.previous_response_id == first.id
+
+    assert client.responses.delete(first.id) is None
+    with pytest.raises(NotFoundError):
+        client.responses.retrieve(first.id)
+
+
+def test_responses_store_disabled():
+    global server
+    server.start()
+    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
+
+    res = client.responses.create(model="gpt-4.1", input="Book", max_output_tokens=4, temperature=0.0, store=False)
+    with pytest.raises(NotFoundError):
+        client.responses.retrieve(res.id)
+
+    with pytest.raises(Exception):
+        client.responses.create(
+            model="gpt-4.1",
+            input="Again",
+            previous_response_id=res.id,
+            max_output_tokens=4,
+        )
