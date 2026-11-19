@@ -219,6 +219,21 @@ server_responses_request server_responses_parse_request(const json & body) {
     if (!req.previous_response_id.empty() && !req.conversation_id.empty()) {
         throw std::invalid_argument("'conversation' and 'previous_response_id' cannot be used together");
     }
+    if (!req.service_tier.empty()) {
+        const std::vector<std::string> tiers = { "auto", "default", "flex", "scale", "priority", "fast" };
+        if (std::find(tiers.begin(), tiers.end(), req.service_tier) == tiers.end()) {
+            throw std::invalid_argument("unsupported 'service_tier' value: " + req.service_tier);
+        }
+    }
+    if (req.reasoning.is_object()) {
+        const std::vector<std::string> summaries = { "auto", "concise", "detailed" };
+        for (const char * key : { "summary", "generate_summary" }) {
+            const std::string value = req.reasoning.value(key, std::string());
+            if (!value.empty() && std::find(summaries.begin(), summaries.end(), value) == summaries.end()) {
+                throw std::invalid_argument(std::string("unsupported 'reasoning.") + key + "' value: " + value);
+            }
+        }
+    }
     if (body.contains("prompt") && !body.at("prompt").is_null()) {
         throw std::invalid_argument("'prompt' templates are not supported");
     }

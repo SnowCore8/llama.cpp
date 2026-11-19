@@ -350,6 +350,9 @@ server_chat_completions_request server_chat_completions_parse_request(const json
     if (body.contains("web_search_options") && !body.at("web_search_options").is_null()) {
         throw std::invalid_argument("'web_search_options' is not supported");
     }
+    if (body.contains("prediction") && !body.at("prediction").is_null()) {
+        throw std::invalid_argument("'prediction' is not supported");
+    }
     if (body.contains("tools") && body.at("tools").is_array()) {
         for (const auto & tool : body.at("tools")) {
             if (!tool.is_object()) {
@@ -562,10 +565,23 @@ void server_chat_completions_context::decorate(json & response) const {
 
 
 json server_chat_completions_context::filter_chunks(json chunks) const {
+    auto decorate_chunk = [this](json & chunk) {
+        if (chunk.is_object() && !req.service_tier.empty()) {
+            chunk["service_tier"] = req.service_tier;
+        }
+    };
     if (req.parallel_tool_calls) {
+        if (chunks.is_array()) {
+            for (auto & chunk : chunks) {
+                decorate_chunk(chunk);
+            }
+        } else {
+            decorate_chunk(chunks);
+        }
         return chunks;
     }
-    auto filter_chunk = [](json & chunk) {
+    auto filter_chunk = [this, &decorate_chunk](json & chunk) {
+        decorate_chunk(chunk);
         if (!chunk.is_object() || !chunk.contains("choices") || !chunk.at("choices").is_array()) {
             return;
         }
