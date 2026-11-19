@@ -6526,18 +6526,58 @@ void server_routes::init_routes() {
             }}});
             return res;
         }
+        std::vector<json> items;
+        if (stored.input_items.is_array()) {
+            for (const auto & item : stored.input_items) {
+                items.push_back(item);
+            }
+        }
+        const std::string order = req.get_param("order", "asc");
+        if (order == "desc") {
+            std::reverse(items.begin(), items.end());
+        } else if (order != "asc") {
+            res->error(format_error_response("'order' must be asc or desc", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        size_t start = 0;
+        const std::string after = req.get_param("after");
+        if (!after.empty()) {
+            for (size_t i = 0; i < items.size(); i++) {
+                if (items[i].value("id", std::string()) == after) {
+                    start = i + 1;
+                    break;
+                }
+            }
+        }
+        int limit = 20;
+        const std::string limit_param = req.get_param("limit");
+        if (!limit_param.empty()) {
+            try {
+                limit = std::stoi(limit_param);
+            } catch (const std::exception &) {
+                res->error(format_error_response("'limit' must be an integer", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+        }
+        limit = std::max(1, std::min(limit, 100));
+
+        json data     = json::array();
         json first_id = nullptr;
         json last_id  = nullptr;
-        if (!stored.input_items.empty()) {
-            first_id = stored.input_items.front().value("id", json(nullptr));
-            last_id  = stored.input_items.back().value("id", json(nullptr));
+        for (size_t i = start; i < items.size() && (int) data.size() < limit; i++) {
+            if (first_id.is_null()) {
+                first_id = items[i].value("id", json(nullptr));
+            }
+            last_id = items[i].value("id", json(nullptr));
+            data.push_back(items[i]);
         }
         res->ok(json {
             {"object", "list"},
-            {"data", stored.input_items},
+            {"data", data},
             {"first_id", first_id},
             {"last_id", last_id},
-            {"has_more", false},
+            {"has_more", start + data.size() < items.size()},
         });
         return res;
     };

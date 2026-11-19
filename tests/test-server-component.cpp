@@ -779,6 +779,7 @@ static void test_responses_parse(testing & t) {
     t.assert_equal("tool name",    std::string("get_weather"), req.tools_parsed[0].name);
     t.assert_equal("max tokens",   8, req.max_output_tokens);
     t.assert_true ("store default", req.store);
+    t.assert_true ("input item id", req.input_items[0].contains("id"));
     t.assert_true ("stream default", !req.stream);
 
     bool thrown = false;
@@ -1006,6 +1007,64 @@ static void test_chat_completions_parse(testing & t) {
     server_chat_completions_normalize_request(normalize);
     t.assert_equal("filtered tools", (size_t) 1, normalize.at("tools").size());
     t.assert_equal("forced choice",  std::string("required"), normalize.at("tool_choice").get<std::string>());
+
+    thrown = false;
+    bad = body;
+    bad["temperature"] = 3.0;
+    try {
+        server_chat_completions_parse_request(bad);
+    } catch (const std::exception &) {
+        thrown = true;
+    }
+    t.assert_true("temperature bound", thrown);
+
+    thrown = false;
+    bad = body;
+    bad["stop"] = json::array({ "a", "b", "c", "d", "e" });
+    try {
+        server_chat_completions_parse_request(bad);
+    } catch (const std::exception &) {
+        thrown = true;
+    }
+    t.assert_true("stop count", thrown);
+
+    thrown = false;
+    bad = body;
+    bad["tools"] = json::array({ json { {"type", "web_search"} } });
+    try {
+        server_chat_completions_parse_request(bad);
+    } catch (const std::exception &) {
+        thrown = true;
+    }
+    t.assert_true("web search rejected", thrown);
+
+    thrown = false;
+    bad = body;
+    bad["service_tier"] = "ultra";
+    try {
+        server_chat_completions_parse_request(bad);
+    } catch (const std::exception &) {
+        thrown = true;
+    }
+    t.assert_true("service tier bound", thrown);
+
+    json legacy = {
+        {"messages", json::array({
+            json { {"role", "function"}, {"name", "f"}, {"content", "x"} },
+            json { {"role", "assistant"}, {"function_call", json { {"name", "f"}, {"arguments", "{}"} }} },
+        })},
+        {"functions", json::array({ json {
+            {"name", "f"},
+            {"description", "d"},
+            {"parameters", json::object()},
+        } })},
+        {"function_call", json { {"name", "f"} }},
+    };
+    server_chat_completions_normalize_request(legacy);
+    t.assert_true ("legacy functions converted", legacy.contains("tools") && !legacy.contains("functions"));
+    t.assert_equal("legacy role", std::string("tool"), legacy.at("messages")[0].at("role").get<std::string>());
+    t.assert_true ("legacy function_call converted", legacy.at("messages")[1].contains("tool_calls"));
+    t.assert_true ("legacy choice converted", legacy.contains("tool_choice"));
 }
 
 static void test_chat_completions_store(testing & t) {

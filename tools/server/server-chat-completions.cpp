@@ -32,6 +32,42 @@ int64_t response_prompt_tokens(const json & response) {
     return 0;
 }
 
+
+void validate_number(const json & body, const char * key, double min_value, double max_value) {
+    if (!body.contains(key) || body.at(key).is_null()) {
+        return;
+    }
+    if (!body.at(key).is_number()) {
+        throw std::invalid_argument(std::string("'") + key + "' must be a number");
+    }
+    const double value = body.at(key).get<double>();
+    if (value < min_value || value > max_value) {
+        throw std::invalid_argument(std::string("'") + key + "' is out of range");
+    }
+}
+
+void validate_positive_int(const json & body, const char * key) {
+    if (!body.contains(key) || body.at(key).is_null()) {
+        return;
+    }
+    if (!body.at(key).is_number_integer() || body.at(key).get<int64_t>() < 1) {
+        throw std::invalid_argument(std::string("'") + key + "' must be a positive integer");
+    }
+}
+
+void validate_enum(const json & body, const char * key, const std::vector<std::string> & allowed) {
+    if (!body.contains(key) || body.at(key).is_null()) {
+        return;
+    }
+    if (!body.at(key).is_string()) {
+        throw std::invalid_argument(std::string("'") + key + "' must be a string");
+    }
+    const std::string value = body.at(key).get<std::string>();
+    if (std::find(allowed.begin(), allowed.end(), value) == allowed.end()) {
+        throw std::invalid_argument(std::string("unsupported '") + key + "' value: " + value);
+    }
+}
+
 bool metadata_matches(const json & candidate, const json & filter) {
     if (filter.is_null()) {
         return true;
@@ -124,10 +160,150 @@ server_chat_completions_request server_chat_completions_parse_request(const json
         throw std::invalid_argument("'n' must be between 1 and 128");
     }
     server_validate_metadata(req.metadata);
+
+    if (body.contains("store") && !body.at("store").is_null() && !body.at("store").is_boolean()) {
+        throw std::invalid_argument("'store' must be a boolean");
+    }
+    validate_number(body, "temperature", 0.0, 2.0);
+    validate_number(body, "top_p", 0.0, 1.0);
+    validate_number(body, "frequency_penalty", -2.0, 2.0);
+    validate_number(body, "presence_penalty", -2.0, 2.0);
+    validate_positive_int(body, "max_completion_tokens");
+    validate_positive_int(body, "max_tokens");
+    validate_enum(body, "service_tier", {"auto", "default", "flex", "scale", "priority", "fast"});
+    validate_enum(body, "reasoning_effort", {"none", "minimal", "low", "medium", "high", "max"});
+    validate_enum(body, "verbosity", {"low", "medium", "high"});
+
+    if (body.contains("stop") && !body.at("stop").is_null()) {
+        const json & stop = body.at("stop");
+        if (stop.is_array()) {
+            if (stop.size() > 4) {
+                throw std::invalid_argument("'stop' supports at most 4 strings");
+            }
+            for (const auto & value : stop) {
+                if (!value.is_string()) {
+                    throw std::invalid_argument("'stop' must contain strings");
+                }
+            }
+        } else if (!stop.is_string()) {
+            throw std::invalid_argument("'stop' must be a string or an array of strings");
+        }
+    }
+
+    if (body.contains("top_logprobs") && !body.at("top_logprobs").is_null()) {
+        if (!body.at("top_logprobs").is_number_integer()) {
+            throw std::invalid_argument("'top_logprobs' must be an integer");
+        }
+        const int64_t value = body.at("top_logprobs").get<int64_t>();
+        if (value < 0 || value > 20) {
+            throw std::invalid_argument("'top_logprobs' must be between 0 and 20");
+        }
+        if (!body.value("logprobs", false)) {
+            throw std::invalid_argument("'top_logprobs' requires 'logprobs' to be true");
+        }
+    }
+
+    if (body.contains("modalities") && !body.at("modalities").is_null()) {
+        const json & modalities = body.at("modalities");
+        if (!modalities.is_array()) {
+            throw std::invalid_argument("'modalities' must be an array");
+        }
+        for (const auto & value : modalities) {
+            if (!value.is_string() || value.get<std::string>() != "text") {
+                throw std::invalid_argument("only the 'text' output modality is supported");
+            }
+        }
+    }
+    if (body.contains("audio") && !body.at("audio").is_null()) {
+        throw std::invalid_argument("audio output is not supported");
+    }
+    if (body.contains("web_search_options") && !body.at("web_search_options").is_null()) {
+        throw std::invalid_argument("'web_search_options' is not supported");
+    }
+    if (body.contains("tools") && body.at("tools").is_array()) {
+        for (const auto & tool : body.at("tools")) {
+            if (!tool.is_object()) {
+                throw std::invalid_argument("'tools' entries must be objects");
+            }
+            const std::string type = tool.value("type", std::string("function"));
+            if (type != "function") {
+                throw std::invalid_argument("unsupported tool type: " + type);
+            }
+        }
+    }
     return req;
 }
 
 void server_chat_completions_normalize_request(json & body) {
+    // legacy functions -> tools
+    if (body.contains("functions") && !body.at("functions").is_null()) {
+        if (body.contains("tools") && !body.at("tools").is_null()) {
+            throw std::invalid_argument("'functions' and 'tools' cannot be used together");
+        }
+        const json & functions = body.at("functions");
+        if (!functions.is_array()) {
+            throw std::invalid_argument("'functions' must be an array");
+        }
+        json tools = json::array();
+        for (const auto & function : functions) {
+            if (!function.is_object() || !function.contains("name")) {
+                throw std::invalid_argument("each legacy function requires a 'name'");
+            }
+            tools.push_back(json {
+                {"type", "function"},
+                {"function", function},
+            });
+        }
+        body["tools"] = tools;
+        body.erase("functions");
+    }
+
+    // legacy function_call -> tool_choice
+    if (body.contains("function_call") && !body.at("function_call").is_null()) {
+        const json function_call = body.at("function_call");
+        if (function_call.is_string()) {
+            body["tool_choice"] = function_call;
+        } else if (function_call.is_object() && function_call.contains("name")) {
+            body["tool_choice"] = json {
+                {"type", "function"},
+                {"function", json { {"name", function_call.at("name")} }},
+            };
+        } else {
+            throw std::invalid_argument("unsupported 'function_call'");
+        }
+        body.erase("function_call");
+    }
+
+    // legacy message shape
+    if (body.contains("messages") && body.at("messages").is_array()) {
+        json & messages = body["messages"];
+        for (auto & message : messages) {
+            if (!message.is_object()) {
+                continue;
+            }
+            if (message.value("role", std::string()) == "function") {
+                message["role"] = "tool";
+            }
+            if (message.contains("function_call") && !message.contains("tool_calls")) {
+                const json & function_call = message.at("function_call");
+                if (!function_call.is_object() || !function_call.contains("name")) {
+                    throw std::invalid_argument("legacy assistant function_call requires a 'name'");
+                }
+                const json arguments_json = function_call.value("arguments", json(""));
+                const std::string arguments = arguments_json.is_string() ? arguments_json.get<std::string>() : arguments_json.dump();
+                message["tool_calls"] = json::array({ json {
+                    {"id", "call_" + random_string()},
+                    {"type", "function"},
+                    {"function", json {
+                        {"name", function_call.at("name")},
+                        {"arguments", arguments},
+                    }},
+                } });
+                message.erase("function_call");
+            }
+        }
+    }
+
     if (!body.contains("tool_choice") || body.at("tool_choice").is_null()) {
         return;
     }

@@ -299,6 +299,11 @@ server_responses_request server_responses_parse_request(const json & body) {
 
     req.input       = body.at("input");
     req.input_items = normalize_input(req.input);
+    for (auto & item : req.input_items) {
+        if (item.is_object() && !item.contains("id")) {
+            item["id"] = "item_" + random_string();
+        }
+    }
 
     return req;
 }
