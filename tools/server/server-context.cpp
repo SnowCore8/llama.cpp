@@ -5338,6 +5338,24 @@ void server_context::set_state_callback(server_state_callback_t callback) {
 // server_routes
 //
 
+static error_type error_type_from_name(const std::string & name) {
+    if (name == "invalid_request_error") return ERROR_TYPE_INVALID_REQUEST;
+    if (name == "authentication_error") return ERROR_TYPE_AUTHENTICATION;
+    if (name == "not_found_error")       return ERROR_TYPE_NOT_FOUND;
+    if (name == "permission_error")      return ERROR_TYPE_PERMISSION;
+    if (name == "not_supported_error")   return ERROR_TYPE_NOT_SUPPORTED;
+    if (name == "unavailable_error")     return ERROR_TYPE_UNAVAILABLE;
+    if (name == "exceed_context_size_error") return ERROR_TYPE_EXCEED_CONTEXT_SIZE;
+    return ERROR_TYPE_SERVER;
+}
+
+static json format_openai_error_from_json(const json & err) {
+    const std::string message = json_value(err, "message", std::string("request failed"));
+    const std::string type    = json_value(err, "type", std::string("server_error"));
+    const int status          = json_value(err, "code", 500);
+    return format_openai_error(message, error_type_from_name(type), "", nullptr, status);
+}
+
 static json format_openai_invalid_request(const std::exception & e) {
     const std::string message = e.what();
     const std::string param = error_param_from_message(message);
@@ -5364,7 +5382,11 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
     res->set_req(&req); // will also set spipe if needed
 
     if (!ctx_server.has_cap_chat()) {
-        res->error(format_error_response("this server does not support chat/completions", ERROR_TYPE_NOT_SUPPORTED));
+        if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT || res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
+            res->error(format_openai_error("this server does not support chat/completions", ERROR_TYPE_NOT_SUPPORTED));
+        } else {
+            res->error(format_error_response("this server does not support chat/completions", ERROR_TYPE_NOT_SUPPORTED));
+        }
         return res;
     }
 
@@ -5451,7 +5473,11 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         if (all_results.is_terminated) {
             return res; // connection is closed
         } else if (all_results.error) {
-            res->error(all_results.error->to_json());
+            if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT || res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
+                res->error(format_openai_error_from_json(all_results.error->to_json()));
+            } else {
+                res->error(all_results.error->to_json());
+            }
             return res;
         } else if (res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
             GGML_ASSERT(resp_ctx != nullptr);
@@ -5509,7 +5535,11 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         }
 
         if (first_result->is_error()) {
-            res->error(first_result->to_json());
+            if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT || res_type == TASK_RESPONSE_TYPE_OAI_RESP) {
+                res->error(format_openai_error_from_json(first_result->to_json()));
+            } else {
+                res->error(first_result->to_json());
+            }
             return res;
         }
 
@@ -5564,6 +5594,8 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                     const std::string message = json_value(res_json, "message", std::string("internal error"));
                     const std::string code    = json_value(res_json, "type", std::string());
                     return format_oai_resp_sse(resp_ctx->failed_event(message, code));
+                } else if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT) {
+                    return format_oai_sse(json {{ "error", format_openai_error_from_json(res_json) }});
                 } else {
                     return format_oai_sse(json {{ "error", res_json }});
                 }

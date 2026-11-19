@@ -163,10 +163,13 @@ json format_error_response(const std::string & message, const enum error_type ty
     };
 }
 
-json format_openai_error(const std::string & message, const enum error_type type, const std::string & code, const json & param) {
+json format_openai_error(const std::string & message, const enum error_type type, const std::string & code, const json & param, int http_status) {
     std::string type_str;
     int status;
     error_type_info(type, type_str, status);
+    if (http_status > 0) {
+        status = http_status;
+    }
     return json {
         {"http_status", status},
         {"message", message},

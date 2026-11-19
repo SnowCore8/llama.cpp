@@ -98,7 +98,7 @@ json format_error_response(const std::string & message, const enum error_type ty
 
 // OpenAI-style error body, http_status is stripped by server_res_generator::error
 json format_openai_error(const std::string & message, const enum error_type type,
-        const std::string & code = "", const json & param = nullptr);
+        const std::string & code = "", const json & param = nullptr, int http_status = 0);
 
 // best-effort 'field' extraction from messages such as "'temperature' is out of range"
 std::string error_param_from_message(const std::string & message);
