@@ -6,6 +6,7 @@
 #include "../tools/server/server-schema.h"
 #include "../tools/server/server-responses.h"
 #include "../tools/server/server-chat-completions.h"
+#include "../tools/server/server-conversations.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1198,6 +1199,66 @@ static void test_openai_store_persistence(testing & t) {
     std::filesystem::remove_all(dir);
 }
 
+
+static void test_conversations_store(testing & t) {
+    server_conversations_store store;
+
+    server_conversation conversation = store.create(
+        json { {"k", "v"} },
+        json::array({ json { {"role", "user"}, {"content", "hello"} } }));
+
+    t.assert_true ("conversation id", conversation.id.rfind("conv_", 0) == 0);
+    t.assert_equal("conversation items", (size_t) 1, conversation.items.size());
+    t.assert_true ("item id", conversation.items[0].value("id", std::string()).rfind("item_", 0) == 0);
+
+    server_conversation got;
+    t.assert_true("conversation get", store.get(conversation.id, got));
+
+    json added = json::array();
+    t.assert_true("conversation add", store.add_items(
+        conversation.id,
+        json::array({ json { {"role", "assistant"}, {"content", "hi"} } }),
+        &added));
+    t.assert_equal("added size", (size_t) 1, added.size());
+    t.assert_true ("added id", added[0].value("id", std::string()).rfind("item_", 0) == 0);
+
+    json data     = json::array();
+    json first_id = nullptr;
+    json last_id  = nullptr;
+    bool has_more = false;
+    t.assert_true("conversation list", store.list_items(conversation.id, "", 20, "asc", data, has_more, first_id, last_id));
+    t.assert_equal("list size", (size_t) 2, data.size());
+    t.assert_true ("list has no more", !has_more);
+
+    json item;
+    t.assert_true("conversation get item", store.get_item(conversation.id, added[0].value("id", std::string()), item));
+
+    server_conversation after_delete;
+    t.assert_true("conversation delete item",
+        store.delete_item(conversation.id, added[0].value("id", std::string()), after_delete));
+    t.assert_equal("items after delete", (size_t) 1, after_delete.items.size());
+
+    t.assert_true("conversation update", store.update_metadata(conversation.id, json { {"k", "v2"} }));
+    t.assert_true("conversation get after update", store.get(conversation.id, got));
+    t.assert_equal("conversation metadata", std::string("v2"), got.metadata.at("k").get<std::string>());
+
+    t.assert_true("conversation erase", store.erase(conversation.id));
+    t.assert_true("conversation gone", !store.get(conversation.id, got));
+
+    // Responses conversation input resolution
+    server_responses_store responses_store;
+    server_conversation ctx_conv = store.create(json(nullptr), json::array({ json { {"role", "user"}, {"content", "previous"} } }));
+    json body = {
+        {"model", "m"},
+        {"input", "next"},
+        {"conversation", ctx_conv.id},
+    };
+    server_responses_request req = server_responses_parse_request(body);
+    t.assert_equal("conversation parsed", ctx_conv.id, req.conversation_id);
+    server_responses_resolve_input(req, responses_store, &store);
+    t.assert_equal("conversation context items", (size_t) 2, req.effective_input.size());
+}
+
 int main(int argc, char ** argv) {
     testing t;
 
@@ -1233,6 +1294,7 @@ int main(int argc, char ** argv) {
     t.test("chat_completions_parse",  test_chat_completions_parse);
     t.test("chat_completions_store",  test_chat_completions_store);
     t.test("openai_store_persistence", test_openai_store_persistence);
+    t.test("conversations_store",     test_conversations_store);
 
     return t.summary();
 }

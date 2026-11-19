@@ -1,4 +1,5 @@
 #include "server-responses.h"
+#include "server-conversations.h"
 #include "server-openai-store.h"
 
 #include "common.h"
@@ -281,12 +282,21 @@ server_responses_request server_responses_parse_request(const json & body) {
     if (req.background) {
         throw std::invalid_argument("'background' is not supported");
     }
-    const bool has_conversation = body.contains("conversation") && !body.at("conversation").is_null();
-    if (!req.previous_response_id.empty() && has_conversation) {
-        throw std::invalid_argument("'conversation' and 'previous_response_id' cannot be used together");
+    if (body.contains("conversation") && !body.at("conversation").is_null()) {
+        const json & conversation = body.at("conversation");
+        if (conversation.is_string()) {
+            req.conversation_id = conversation.get<std::string>();
+        } else if (conversation.is_object()) {
+            req.conversation_id = conversation.value("id", std::string());
+        } else {
+            throw std::invalid_argument("'conversation' must be a string or an object");
+        }
+        if (req.conversation_id.empty()) {
+            throw std::invalid_argument("'conversation' is missing an id");
+        }
     }
-    if (has_conversation) {
-        throw std::invalid_argument("'conversation' is not supported");
+    if (!req.previous_response_id.empty() && !req.conversation_id.empty()) {
+        throw std::invalid_argument("'conversation' and 'previous_response_id' cannot be used together");
     }
     if (body.contains("prompt") && !body.at("prompt").is_null()) {
         throw std::invalid_argument("'prompt' templates are not supported");
@@ -397,8 +407,17 @@ server_responses_request server_responses_parse_request(const json & body) {
     return req;
 }
 
-void server_responses_resolve_input(server_responses_request & req, server_responses_store & store) {
+void server_responses_resolve_input(server_responses_request & req, server_responses_store & store, server_conversations_store * conversations) {
     json items = json::array();
+    if (!req.conversation_id.empty()) {
+        server_conversation conversation;
+        if (conversations == nullptr || !conversations->get(req.conversation_id, conversation)) {
+            throw std::invalid_argument("conversation not found: " + req.conversation_id);
+        }
+        for (const auto & item : conversation.items) {
+            items.push_back(item);
+        }
+    }
     if (!req.previous_response_id.empty()) {
         server_responses_stored previous;
         if (!store.get(req.previous_response_id, previous)) {
@@ -536,11 +555,13 @@ server_responses_context::server_responses_context(
         server_responses_store & store,
         server_responses_request req,
         std::string model_name,
-        const llama_vocab * vocab) :
+        const llama_vocab * vocab,
+        server_conversations_store * conversations) :
     store(store),
     req(std::move(req)),
     model_name(std::move(model_name)),
-    vocab(vocab) {
+    vocab(vocab),
+    conversations(conversations) {
     id         = "resp_" + random_string();
     created_at = (int64_t) std::time(0);
 }
@@ -577,6 +598,7 @@ json server_responses_context::make_response(
         {"output",             output},
         {"parallel_tool_calls", req.parallel_tool_calls},
         {"previous_response_id", req.previous_response_id.empty() ? json(nullptr) : json(req.previous_response_id)},
+        {"conversation",       req.conversation_id.empty() ? json(nullptr) : json { {"id", req.conversation_id} }},
         {"reasoning",          req.reasoning},
         {"store",              req.store},
         {"temperature",        req.temperature >= 0.0 ? json(req.temperature) : json(1.0)},
@@ -1007,6 +1029,20 @@ json server_responses_context::error_event(const std::string & message, const st
 }
 
 void server_responses_context::store_response(const json & response) {
+    if (conversations != nullptr && !req.conversation_id.empty() && !conversation_appended) {
+        conversation_appended = true;
+        json to_add = json::array();
+        for (const auto & item : req.input_items) {
+            to_add.push_back(item);
+        }
+        if (response.is_object() && response.contains("output")) {
+            for (const auto & item : response.at("output")) {
+                to_add.push_back(item);
+            }
+        }
+        conversations->add_items(req.conversation_id, to_add);
+    }
+
     if (!req.store || stored) {
         return;
     }

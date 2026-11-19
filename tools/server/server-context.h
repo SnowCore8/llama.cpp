@@ -5,6 +5,7 @@
 #include "server-queue.h"
 #include "server-responses.h"
 #include "server-chat-completions.h"
+#include "server-conversations.h"
 
 #include "json.h"
 
@@ -126,6 +127,14 @@ struct server_routes {
     server_http_context::handler_t post_chat_completion_update;
     server_http_context::handler_t del_chat_completion;
     server_http_context::handler_t get_chat_completion_messages;
+    server_http_context::handler_t post_conversations;
+    server_http_context::handler_t get_conversation;
+    server_http_context::handler_t post_conversation_update;
+    server_http_context::handler_t del_conversation;
+    server_http_context::handler_t post_conversation_items;
+    server_http_context::handler_t get_conversation_items;
+    server_http_context::handler_t get_conversation_item;
+    server_http_context::handler_t del_conversation_item;
     server_http_context::handler_t post_control;
     server_http_context::handler_t post_responses_oai;
     server_http_context::handler_t post_responses_tok_oai;
@@ -172,6 +181,7 @@ private:
 
     std::shared_ptr<server_responses_store> responses_store;
     std::shared_ptr<server_chat_completions_store> chat_completions_store;
+    std::shared_ptr<server_conversations_store> conversations_store;
 
     // using unique_ptr to allow late initialization of const
     std::unique_ptr<const server_context_meta> meta;

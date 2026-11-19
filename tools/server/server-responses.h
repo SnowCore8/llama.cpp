@@ -34,6 +34,7 @@ struct server_responses_request {
     bool background = false;
     bool parallel_tool_calls = true;
     std::string previous_response_id;
+    std::string conversation_id;
     std::string truncation = "disabled";
     std::string user;
     std::string safety_identifier;
@@ -75,8 +76,10 @@ private:
 // throws std::invalid_argument on invalid request
 server_responses_request server_responses_parse_request(const json & body);
 
-// resolve previous_response_id and build effective_input, throws on unknown id
-void server_responses_resolve_input(server_responses_request & req, server_responses_store & store);
+struct server_conversations_store;
+
+// resolve previous_response_id / conversation and build effective_input, throws on unknown id
+void server_responses_resolve_input(server_responses_request & req, server_responses_store & store, server_conversations_store * conversations = nullptr);
 
 // build prompt and sampling parameters for the engine
 json server_responses_build_params(
@@ -91,7 +94,8 @@ struct server_responses_context {
             server_responses_store & store,
             server_responses_request req,
             std::string model_name,
-            const llama_vocab * vocab);
+            const llama_vocab * vocab,
+            server_conversations_store * conversations = nullptr);
 
     const std::string & get_id() const { return id; }
 
@@ -128,6 +132,7 @@ private:
     server_responses_request req;
     std::string model_name;
     const llama_vocab * vocab;
+    server_conversations_store * conversations;
     std::string id;
     int64_t created_at = 0;
     mutable size_t seq = 0;
@@ -137,6 +142,7 @@ private:
     text_item message;
     std::vector<tool_item> tools;
     bool stored = false;
+    bool conversation_appended = false;
 
     json push(json & events, const std::string & type, json data) const;
     void ensure_started(json & events);

@@ -5681,6 +5681,8 @@ server_routes::server_routes(const common_params & params, server_context & ctx_
         params.openai_files_path, (size_t) params.openai_store_max, (int64_t) params.openai_store_ttl);
     chat_completions_store = std::make_shared<server_chat_completions_store>(
         params.openai_files_path, (size_t) params.openai_store_max, (int64_t) params.openai_store_ttl);
+    conversations_store = std::make_shared<server_conversations_store>(
+        params.openai_files_path, (size_t) params.openai_store_max, (int64_t) params.openai_store_ttl);
     init_routes();
 
     // note: this must be registered before load_model()
@@ -5826,6 +5828,15 @@ static json parse_tts_body(const server_http_req & req) {
         body["stream"] = body["stream"] == "true";
     }
     return body;
+}
+
+static json conversation_public_json(const server_conversation & conversation) {
+    return json {
+        {"id",         conversation.id},
+        {"object",     "conversation"},
+        {"created_at", conversation.created_at},
+        {"metadata",   conversation.metadata},
+    };
 }
 
 void server_routes::init_routes() {
@@ -6436,11 +6447,11 @@ void server_routes::init_routes() {
         try {
             const json body = json::parse(req.body);
             server_responses_request rreq = server_responses_parse_request(body);
-            server_responses_resolve_input(rreq, *responses_store);
+            server_responses_resolve_input(rreq, *responses_store, conversations_store.get());
             common_chat_session session;
             json data = server_responses_build_params(ctx_server.vocab, meta->chat_params, rreq, session);
             auto resp_ctx = std::make_shared<server_responses_context>(
-                *responses_store, std::move(rreq), meta->model_name, ctx_server.vocab);
+                *responses_store, std::move(rreq), meta->model_name, ctx_server.vocab, conversations_store.get());
             std::vector<raw_buffer> files;
             return handle_completions_impl(
                 req,
@@ -6461,7 +6472,7 @@ void server_routes::init_routes() {
         try {
             const json body = json::parse(req.body);
             server_responses_request rreq = server_responses_parse_request(body);
-            server_responses_resolve_input(rreq, *responses_store);
+            server_responses_resolve_input(rreq, *responses_store, conversations_store.get());
             common_chat_session session;
             json data = server_responses_build_params(ctx_server.vocab, meta->chat_params, rreq, session);
             const json & prompt = data.at("prompt");
@@ -6583,6 +6594,207 @@ void server_routes::init_routes() {
             {"last_id", last_id},
             {"has_more", start + data.size() < items.size()},
         });
+        return res;
+    };
+
+    this->post_conversations = [this](const server_http_req & req) {
+        auto res = create_response();
+        try {
+            const json body = json::parse(req.body);
+            const json metadata = body.value("metadata", json(nullptr));
+            server_validate_metadata(metadata);
+            const json input_items = body.value("items", json(nullptr));
+            server_conversation conversation = conversations_store->create(metadata, input_items);
+            res->ok(conversation_public_json(conversation));
+            return res;
+        } catch (const std::exception & e) {
+            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+    };
+
+    this->get_conversation = [this](const server_http_req & req) {
+        auto res = create_response();
+        server_conversation conversation;
+        if (!conversations_store->get(req.get_param("id"), conversation)) {
+            res->status = 404;
+            res->data = safe_json_to_str(json {{"error", json {
+                {"message", "Conversation not found"},
+                {"type", "invalid_request_error"},
+                {"param", nullptr},
+                {"code", "conversation_not_found"},
+            }}});
+            return res;
+        }
+        res->ok(conversation_public_json(conversation));
+        return res;
+    };
+
+    this->post_conversation_update = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string id = req.get_param("id");
+        try {
+            const json body = json::parse(req.body);
+            const json metadata = body.value("metadata", json(nullptr));
+            server_validate_metadata(metadata);
+            if (!conversations_store->update_metadata(id, metadata)) {
+                res->status = 404;
+                res->data = safe_json_to_str(json {{"error", json {
+                    {"message", "Conversation not found"},
+                    {"type", "invalid_request_error"},
+                    {"param", nullptr},
+                    {"code", "conversation_not_found"},
+                }}});
+                return res;
+            }
+            server_conversation conversation;
+            conversations_store->get(id, conversation);
+            res->ok(conversation_public_json(conversation));
+            return res;
+        } catch (const std::exception & e) {
+            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+    };
+
+    this->del_conversation = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string id = req.get_param("id");
+        if (!conversations_store->erase(id)) {
+            res->status = 404;
+            res->data = safe_json_to_str(json {{"error", json {
+                {"message", "Conversation not found"},
+                {"type", "invalid_request_error"},
+                {"param", nullptr},
+                {"code", "conversation_not_found"},
+            }}});
+            return res;
+        }
+        res->ok(json {
+            {"id", id},
+            {"object", "conversation.deleted"},
+            {"deleted", true},
+        });
+        return res;
+    };
+
+    this->post_conversation_items = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string id = req.get_param("id");
+        try {
+            const json body = json::parse(req.body);
+            if (!body.contains("items") || !body.at("items").is_array()) {
+                throw std::invalid_argument("'items' must be an array");
+            }
+            if (body.at("items").size() > 20) {
+                throw std::invalid_argument("at most 20 items can be added at a time");
+            }
+            json added = json::array();
+            if (!conversations_store->add_items(id, body.at("items"), &added)) {
+                res->status = 404;
+                res->data = safe_json_to_str(json {{"error", json {
+                    {"message", "Conversation not found"},
+                    {"type", "invalid_request_error"},
+                    {"param", nullptr},
+                    {"code", "conversation_not_found"},
+                }}});
+                return res;
+            }
+            json first_id = nullptr;
+            json last_id  = nullptr;
+            if (!added.empty()) {
+                first_id = added.front().value("id", json(nullptr));
+                last_id  = added.back().value("id", json(nullptr));
+            }
+            res->ok(json {
+                {"object", "list"},
+                {"data", added},
+                {"first_id", first_id},
+                {"last_id", last_id},
+                {"has_more", false},
+            });
+            return res;
+        } catch (const std::exception & e) {
+            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+    };
+
+    this->get_conversation_items = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string id = req.get_param("id");
+        const std::string after = req.get_param("after");
+        const std::string order = req.get_param("order", "desc");
+        int limit = 20;
+        const std::string limit_param = req.get_param("limit");
+        if (!limit_param.empty()) {
+            try {
+                limit = std::stoi(limit_param);
+            } catch (const std::exception &) {
+                res->error(format_error_response("'limit' must be an integer", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+        }
+        json data = json::array();
+        json first_id = nullptr;
+        json last_id  = nullptr;
+        bool has_more = false;
+        try {
+            if (!conversations_store->list_items(id, after, limit, order, data, has_more, first_id, last_id)) {
+                res->status = 404;
+                res->data = safe_json_to_str(json {{"error", json {
+                    {"message", "Conversation not found"},
+                    {"type", "invalid_request_error"},
+                    {"param", nullptr},
+                    {"code", "conversation_not_found"},
+                }}});
+                return res;
+            }
+        } catch (const std::exception & e) {
+            res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        res->ok(json {
+            {"object", "list"},
+            {"data", data},
+            {"first_id", first_id},
+            {"last_id", last_id},
+            {"has_more", has_more},
+        });
+        return res;
+    };
+
+    this->get_conversation_item = [this](const server_http_req & req) {
+        auto res = create_response();
+        json item;
+        if (!conversations_store->get_item(req.get_param("id"), req.get_param("item_id"), item)) {
+            res->status = 404;
+            res->data = safe_json_to_str(json {{"error", json {
+                {"message", "Conversation item not found"},
+                {"type", "invalid_request_error"},
+                {"param", nullptr},
+                {"code", "conversation_item_not_found"},
+            }}});
+            return res;
+        }
+        res->ok(item);
+        return res;
+    };
+
+    this->del_conversation_item = [this](const server_http_req & req) {
+        auto res = create_response();
+        server_conversation conversation;
+        if (!conversations_store->delete_item(req.get_param("id"), req.get_param("item_id"), conversation)) {
+            res->status = 404;
+            res->data = safe_json_to_str(json {{"error", json {
+                {"message", "Conversation item not found"},
+                {"type", "invalid_request_error"},
+                {"param", nullptr},
+                {"code", "conversation_item_not_found"},
+            }}});
+            return res;
+        }
+        res->ok(conversation_public_json(conversation));
         return res;
     };
 
