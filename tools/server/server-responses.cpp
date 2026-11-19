@@ -13,6 +13,25 @@
 
 namespace {
 
+json response_logprob_json(const completion_token_output & p) {
+    json top = json::array();
+    for (const auto & t : p.probs) {
+        top.push_back(json {
+            {"token",   t.txt},
+            {"logprob", completion_token_output::logarithm(t.prob)},
+        });
+    }
+    std::string text = p.text_to_send;
+    text.resize(validate_utf8(text));
+    return json {
+        {"token",              text},
+        {"bytes",              p.str_to_bytes(p.text_to_send)},
+        {"logprob",            completion_token_output::logarithm(p.prob)},
+        {"top_logprobs",       top},
+    };
+}
+
+
 json normalize_input(const json & input) {
     json items = json::array();
     if (input.is_string()) {
@@ -219,7 +238,13 @@ server_responses_request server_responses_parse_request(const json & body) {
         throw std::invalid_argument("'max_output_tokens' must be greater than 0");
     }
     if (body.contains("top_logprobs") && !body.at("top_logprobs").is_null()) {
-        throw std::invalid_argument("'top_logprobs' is not supported");
+        if (!body.at("top_logprobs").is_number_integer()) {
+            throw std::invalid_argument("'top_logprobs' must be an integer");
+        }
+        req.top_logprobs = (int32_t) body.at("top_logprobs").get<int64_t>();
+        if (req.top_logprobs < 0 || req.top_logprobs > 20) {
+            throw std::invalid_argument("'top_logprobs' must be between 0 and 20");
+        }
     }
     if (!req.include.is_null()) {
         if (!req.include.is_array()) {
@@ -229,8 +254,13 @@ server_responses_request server_responses_parse_request(const json & body) {
             if (!value.is_string()) {
                 throw std::invalid_argument("'include' values must be strings");
             }
-            if (value.get<std::string>() == "message.output_text.logprobs") {
-                throw std::invalid_argument("'include' does not support logprobs yet");
+            const std::string include_value = value.get<std::string>();
+            if (include_value == "message.output_text.logprobs") {
+                req.include_logprobs = true;
+            } else if (include_value == "reasoning.encrypted_content") {
+                throw std::invalid_argument("'include' does not support encrypted reasoning content");
+            } else {
+                throw std::invalid_argument("unsupported 'include' value: " + include_value);
             }
         }
     }
@@ -565,6 +595,9 @@ json server_responses_build_params(
     }
     data["timings_per_token"] = req.timings_per_token;
     data["return_progress"]   = req.return_progress;
+    if (req.include_logprobs) {
+        data["n_probs"] = req.top_logprobs > 0 ? req.top_logprobs : 20;
+    }
     if (req.id_slot >= 0) {
         data["id_slot"] = req.id_slot;
     }
@@ -681,7 +714,7 @@ json server_responses_context::message_item(const std::string & item_id, const s
             {"type",        "output_text"},
             {"text",        text},
             {"annotations", json::array()},
-            {"logprobs",    json::array()},
+            {"logprobs",    message_logprobs},
         }})},
     };
 }
@@ -871,12 +904,16 @@ void server_responses_context::add_text_delta(json & events, const std::string &
         });
     }
     message.text += delta;
-    push(events, "response.output_text.delta", json {
+    json event_data = json {
         {"item_id",       message.id},
         {"output_index",  message.output_index},
         {"content_index", 0},
         {"delta",         delta},
-    });
+    };
+    if (req.include_logprobs) {
+        event_data["logprobs"] = json::array();
+    }
+    push(events, "response.output_text.delta", std::move(event_data));
 }
 
 void server_responses_context::add_tool_delta(json & events, size_t index, const common_chat_tool_call & delta) {
@@ -982,12 +1019,16 @@ void server_responses_context::finalize_items(json & events) {
     }
     if (message.added && !message.done) {
         message.done = true;
-        push(events, "response.output_text.done", json {
+        json done_data = json {
             {"item_id",       message.id},
             {"output_index",  message.output_index},
             {"content_index", 0},
             {"text",          message.text},
-        });
+        };
+        if (req.include_logprobs) {
+            done_data["logprobs"] = message_logprobs;
+        }
+        push(events, "response.output_text.done", std::move(done_data));
         push(events, "response.content_part.done", json {
             {"item_id",       message.id},
             {"output_index",  message.output_index},
@@ -996,7 +1037,7 @@ void server_responses_context::finalize_items(json & events) {
                 {"type",        "output_text"},
                 {"text",        message.text},
                 {"annotations", json::array()},
-                {"logprobs",    json::array()},
+                {"logprobs",    req.include_logprobs ? message_logprobs : json::array()},
             }},
         });
         push(events, "response.output_item.done", json {
@@ -1027,6 +1068,17 @@ json server_responses_context::consume(const server_task_result_cmpl_partial & r
 
     const size_t n_events = events.size();
     apply_diffs(events, result.oaicompat_msg_diffs);
+    if (req.include_logprobs && !result.prob_output.probs.empty()) {
+        json entry = response_logprob_json(result.prob_output);
+        text_logprobs.push_back(entry);
+        for (size_t i = events.size(); i > 0; i--) {
+            json & event = events[i - 1];
+            if (event.value("event", std::string()) == "response.output_text.delta") {
+                event.at("data")["logprobs"] = json::array({ entry });
+                break;
+            }
+        }
+    }
     if (events.size() == n_events && result.is_progress) {
         push(events, "response.in_progress", json {
             {"response", make_response("in_progress", json::array(), nullptr, nullptr, nullptr)},
@@ -1067,6 +1119,20 @@ json server_responses_context::finish(const server_task_result_cmpl_final & resu
         add_tool_delta(events, i, msg.tool_calls[i]);
     }
 
+    if (req.include_logprobs) {
+        json list = json::array();
+        if (!result.probs_output.empty()) {
+            for (const auto & p : result.probs_output) {
+                list.push_back(response_logprob_json(p));
+            }
+        } else {
+            for (const auto & entry : text_logprobs) {
+                list.push_back(entry);
+            }
+        }
+        message_logprobs = std::move(list);
+    }
+
     finalize_items(events);
 
     const bool incomplete = result.truncated || result.stop == STOP_TYPE_LIMIT;
@@ -1092,6 +1158,14 @@ json server_responses_context::final_response(const server_task_result_cmpl_fina
     if (msg.empty()) {
         msg.role    = "assistant";
         msg.content = result.content.text;
+    }
+
+    if (req.include_logprobs) {
+        json list = json::array();
+        for (const auto & p : result.probs_output) {
+            list.push_back(response_logprob_json(p));
+        }
+        message_logprobs = std::move(list);
     }
 
     const bool incomplete = result.truncated || result.stop == STOP_TYPE_LIMIT;

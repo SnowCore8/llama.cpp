@@ -1370,6 +1370,38 @@ static void test_responses_reasoning_summary(testing & t) {
     t.assert_equal("summary size",   (size_t) 1, response.at("output")[0].at("summary").size());
 }
 
+
+static void test_responses_logprobs(testing & t) {
+    server_responses_store store;
+    server_responses_request req;
+    req.model            = "m";
+    req.store            = false;
+    req.include_logprobs = true;
+    req.top_logprobs     = 1;
+    server_responses_context ctx(store, req, "m", nullptr);
+
+    server_task_result_cmpl_final result;
+    result.n_prompt_tokens = 2;
+    result.n_decoded       = 1;
+    result.stop            = STOP_TYPE_EOS;
+    result.truncated       = false;
+    result.oaicompat_msg.role    = "assistant";
+    result.oaicompat_msg.content = "hi";
+
+    completion_token_output token;
+    token.tok           = 1;
+    token.prob          = 0.5f;
+    token.text_to_send  = "hi";
+    token.probs.push_back({ 1, "hi", 0.5f });
+    result.probs_output.push_back(token);
+
+    json response = ctx.final_response(result);
+    const json & logprobs = response.at("output")[0].at("content")[0].at("logprobs");
+    t.assert_equal("logprob count", (size_t) 1, logprobs.size());
+    t.assert_equal("logprob token", std::string("hi"), logprobs[0].at("token").get<std::string>());
+    t.assert_true ("logprob negative", logprobs[0].at("logprob").get<double>() < 0.0);
+}
+
 int main(int argc, char ** argv) {
     testing t;
 
@@ -1409,6 +1441,7 @@ int main(int argc, char ** argv) {
     t.test("chat_completions_parallel", test_chat_completions_parallel);
     t.test("responses_parallel",        test_responses_parallel);
     t.test("responses_reasoning_summary", test_responses_reasoning_summary);
+    t.test("responses_logprobs",        test_responses_logprobs);
 
     return t.summary();
 }

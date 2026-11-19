@@ -41,6 +41,8 @@ struct server_responses_request {
     std::string safety_identifier;
     std::string service_tier;
     int32_t max_output_tokens = -1;
+    int32_t top_logprobs = 0;
+    bool include_logprobs = false;
     double temperature = -1.0;
     double top_p = -1.0;
 };
@@ -146,6 +148,8 @@ private:
     size_t next_output_index = 0;
     bool started = false;
     bool reasoning_summary = false;
+    std::vector<json> text_logprobs;
+    json message_logprobs = json::array();
     text_item reasoning;
     text_item message;
     std::vector<tool_item> tools;

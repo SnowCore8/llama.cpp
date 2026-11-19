@@ -203,3 +203,21 @@ def test_responses_cancel():
     cancelled = client.responses.cancel(res.id)
     assert cancelled.status == "cancelled"
     assert client.responses.retrieve(res.id).status == "cancelled"
+
+
+def test_responses_logprobs():
+    global server
+    server.start()
+    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
+
+    res = client.responses.create(
+        model="gpt-4.1",
+        input="Book",
+        max_output_tokens=4,
+        temperature=0.0,
+        include=["message.output_text.logprobs"],
+        top_logprobs=1,
+    )
+    logprobs = res.output[0].content[0].logprobs
+    assert logprobs is not None
+    assert len(logprobs) > 0
