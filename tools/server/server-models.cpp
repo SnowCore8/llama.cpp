@@ -2118,6 +2118,56 @@ void server_models_routes::init_routes() {
         models.proxy_ws(req, conn, name);
     };
 
+
+    auto proxy_store = [this](const server_http_req & req, const std::string & method) -> server_http_res_ptr {
+        std::string name = req.get_param("model");
+        if (!name.empty()) {
+            auto error_res = std::make_unique<server_http_res>();
+            if (!router_validate_model(name, models, is_autoload(params, req), error_res)) {
+                return error_res;
+            }
+            return models.proxy_request(req, method, name, false);
+        }
+
+        server_http_res_ptr last;
+        for (const auto & meta : models.get_all_meta()) {
+            if (!meta.is_running()) {
+                continue;
+            }
+            try {
+                server_http_res_ptr res = models.proxy_request(req, method, meta.name, false);
+                if (res != nullptr && res->status >= 200 && res->status < 300) {
+                    return res;
+                }
+                last = std::move(res);
+            } catch (const std::exception &) {
+                continue;
+            }
+        }
+        if (last != nullptr) {
+            return last;
+        }
+        auto res = std::make_unique<server_http_res>();
+        res->status = 404;
+        res->data = safe_json_to_str(json {{"error", json {
+            {"message", "stored object not found"},
+            {"type", "invalid_request_error"},
+            {"param", nullptr},
+            {"code", "not_found"},
+        }}});
+        return res;
+    };
+
+    this->proxy_store_get = [proxy_store](const server_http_req & req) {
+        return proxy_store(req, "GET");
+    };
+    this->proxy_store_post = [proxy_store](const server_http_req & req) {
+        return proxy_store(req, "POST");
+    };
+    this->proxy_store_delete = [proxy_store](const server_http_req & req) {
+        return proxy_store(req, "DELETE");
+    };
+
     this->proxy_post = [this](const server_http_req & req) {
         std::string method = "POST";
         json body = json::parse(req.body);

@@ -577,6 +577,17 @@ static int server_run_router(common_params & params, int argc, char ** argv, con
     routes.post_apply_template         = models_routes->proxy_post;
     routes.post_chat_completions_tok   = models_routes->proxy_post;
     routes.post_responses_tok_oai      = models_routes->proxy_post;
+
+    // stored OpenAI objects live in the child instances, probe them on read/mutate
+    routes.get_responses_oai           = models_routes->proxy_store_get;
+    routes.get_responses_input_items   = models_routes->proxy_store_get;
+    routes.del_responses_oai           = models_routes->proxy_store_delete;
+    routes.post_responses_cancel_oai   = models_routes->proxy_store_post;
+    routes.get_chat_completions        = models_routes->proxy_store_get;
+    routes.get_chat_completion         = models_routes->proxy_store_get;
+    routes.get_chat_completion_messages = models_routes->proxy_store_get;
+    routes.post_chat_completion_update = models_routes->proxy_store_post;
+    routes.del_chat_completion         = models_routes->proxy_store_delete;
     routes.get_lora_adapters           = models_routes->proxy_get;
     routes.post_lora_adapters          = models_routes->proxy_post;
     routes.get_slots                   = models_routes->proxy_get;

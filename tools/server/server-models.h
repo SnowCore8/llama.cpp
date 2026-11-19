@@ -411,6 +411,9 @@ struct server_models_routes {
     server_http_context::handler_t get_router_props;
     server_http_context::handler_t proxy_get;
     server_http_context::handler_t proxy_post;
+    server_http_context::handler_t proxy_store_get;
+    server_http_context::handler_t proxy_store_post;
+    server_http_context::handler_t proxy_store_delete;
     server_http_context::ws_handler_t proxy_ws;
 
     server_http_context::handler_t get_router_models;
