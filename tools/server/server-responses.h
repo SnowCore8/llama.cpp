@@ -110,7 +110,7 @@ struct server_responses_context {
     // non-stream response object
     json final_response(const server_task_result_cmpl_final & result);
     // SSE error event
-    json error_event(const std::string & message, const std::string & code) const;
+    json failed_event(const std::string & message, const std::string & code);
 
     // background lifecycle
     json begin_background();

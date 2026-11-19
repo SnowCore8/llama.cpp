@@ -237,8 +237,8 @@ server_responses_request server_responses_parse_request(const json & body) {
     if (body.contains("prompt") && !body.at("prompt").is_null()) {
         throw std::invalid_argument("'prompt' templates are not supported");
     }
-    if (req.truncation != "disabled") {
-        throw std::invalid_argument("'truncation' only supports 'disabled'");
+    if (req.truncation != "disabled" && req.truncation != "auto") {
+        throw std::invalid_argument("'truncation' must be 'auto' or 'disabled'");
     }
     if (req.temperature >= 0.0 && req.temperature > 2.0) {
         throw std::invalid_argument("'temperature' must be between 0 and 2");
@@ -550,6 +550,29 @@ json server_responses_build_params(
         }
     }
 
+    std::string verbosity;
+    if (req.text.is_object()) {
+        verbosity = req.text.value("verbosity", std::string());
+    }
+    if (!verbosity.empty()) {
+        std::string instruction = "Answer with moderate detail.";
+        if (verbosity == "low") {
+            instruction = "Answer concisely.";
+        } else if (verbosity == "high") {
+            instruction = "Answer in detail.";
+        } else if (verbosity != "medium") {
+            throw std::invalid_argument("unsupported 'text.verbosity' value: " + verbosity);
+        }
+        json messages_with_hint = json::array();
+        messages_with_hint.push_back(json {
+            {"role", "system"},
+            {"content", instruction},
+        });
+        for (const auto & message : chat_messages) {
+            messages_with_hint.push_back(message);
+        }
+        chat_messages = std::move(messages_with_hint);
+    }
     inputs.messages = common_chat_msgs_parse_oaicompat(chat_messages);
     inputs.tools = req.tools_parsed;
     if (!req.tool_choice_name.empty()) {
@@ -1189,16 +1212,26 @@ json server_responses_context::final_response(const server_task_result_cmpl_fina
     return response;
 }
 
-json server_responses_context::error_event(const std::string & message, const std::string & code) const {
-    json data = {
-        {"type",            "error"},
-        {"message",         message},
-        {"code",            code.empty() ? json(nullptr) : json(code)},
-        {"param",           nullptr},
+json server_responses_context::failed_event(const std::string & message, const std::string & code) {
+    json error = json {
+        {"code",    code.empty() ? std::string("server_error") : code},
+        {"message", message},
+    };
+    json response = make_response("failed", json::array(), nullptr, error, nullptr);
+    if (req.store && !stored.exchange(true)) {
+        server_responses_stored entry;
+        entry.response    = response;
+        entry.input_items = req.effective_input;
+        entry.created_at  = created_at;
+        store.put(id, std::move(entry));
+    }
+    json data = json {
+        {"type",            "response.failed"},
         {"sequence_number", seq++},
+        {"response",        response},
     };
     return json {
-        {"event", "error"},
+        {"event", "response.failed"},
         {"data", std::move(data)},
     };
 }

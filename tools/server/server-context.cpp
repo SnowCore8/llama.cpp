@@ -5550,7 +5550,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                 } else if (res_type == TASK_RESPONSE_TYPE_OAI_RESP && resp_ctx != nullptr) {
                     const std::string message = json_value(res_json, "message", std::string("internal error"));
                     const std::string code    = json_value(res_json, "type", std::string());
-                    return format_oai_resp_sse(resp_ctx->error_event(message, code));
+                    return format_oai_resp_sse(resp_ctx->failed_event(message, code));
                 } else {
                     return format_oai_sse(json {{ "error", res_json }});
                 }

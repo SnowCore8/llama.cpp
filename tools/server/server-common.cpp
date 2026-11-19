@@ -1495,6 +1495,26 @@ json oaicompat_chat_params_parse(
     if (!body.contains("messages")) {
         throw std::invalid_argument("'messages' is required");
     }
+    const std::string verbosity = json_value(body, "verbosity", std::string());
+    if (!verbosity.empty()) {
+        std::string instruction = "Answer with moderate detail.";
+        if (verbosity == "low") {
+            instruction = "Answer concisely.";
+        } else if (verbosity == "high") {
+            instruction = "Answer in detail.";
+        } else if (verbosity != "medium") {
+            throw std::invalid_argument("unsupported 'verbosity' value: " + verbosity);
+        }
+        json messages_with_hint = json::array();
+        messages_with_hint.push_back(json {
+            {"role", "system"},
+            {"content", instruction},
+        });
+        for (const auto & msg : body.at("messages")) {
+            messages_with_hint.push_back(msg);
+        }
+        body["messages"] = messages_with_hint;
+    }
     json & messages = body.at("messages");
     if (!messages.is_array()) {
         throw std::invalid_argument("Expected 'messages' to be an array");

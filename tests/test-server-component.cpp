@@ -805,6 +805,10 @@ static void test_responses_parse(testing & t) {
     server_responses_request background_stream_req = server_responses_parse_request(bad);
     t.assert_true("background stream accepted", background_stream_req.background && background_stream_req.stream);
 
+    json auto_trunc = body;
+    auto_trunc["truncation"] = "auto";
+    t.assert_equal("truncation auto", std::string("auto"), server_responses_parse_request(auto_trunc).truncation);
+
     thrown = false;
     bad = body;
     bad.erase("input");
@@ -1397,6 +1401,23 @@ static void test_responses_logprobs(testing & t) {
     t.assert_true ("logprob negative", logprobs[0].at("logprob").get<double>() < 0.0);
 }
 
+
+static void test_responses_failed_event(testing & t) {
+    server_responses_store store;
+    server_responses_request req;
+    req.model = "m";
+    req.store = true;
+    server_responses_context ctx(store, req, "m", nullptr);
+
+    json event = ctx.failed_event("boom", "server_error");
+    t.assert_equal("failed event", std::string("response.failed"), event.at("event").get<std::string>());
+    t.assert_equal("failed status", std::string("failed"), event.at("data").at("response").at("status").get<std::string>());
+    t.assert_equal("failed message", std::string("boom"), event.at("data").at("response").at("error").at("message").get<std::string>());
+
+    server_responses_stored stored;
+    t.assert_true("failed stored", store.get(ctx.get_id(), stored));
+}
+
 int main(int argc, char ** argv) {
     testing t;
 
@@ -1437,6 +1458,7 @@ int main(int argc, char ** argv) {
     t.test("responses_parallel",        test_responses_parallel);
     t.test("responses_reasoning_summary", test_responses_reasoning_summary);
     t.test("responses_logprobs",        test_responses_logprobs);
+    t.test("responses_failed_event",    test_responses_failed_event);
 
     return t.summary();
 }
