@@ -145,6 +145,7 @@ private:
     mutable size_t seq = 0;
     size_t next_output_index = 0;
     bool started = false;
+    bool reasoning_summary = false;
     text_item reasoning;
     text_item message;
     std::vector<tool_item> tools;

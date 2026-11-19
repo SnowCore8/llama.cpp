@@ -278,6 +278,7 @@ server_chat_completions_request server_chat_completions_parse_request(const json
     server_chat_completions_request req;
     req.model              = body.value("model", std::string());
     req.store              = body.value("store", false);
+    req.parallel_tool_calls = body.value("parallel_tool_calls", true);
     req.n                  = body.value("n", 1);
     req.messages           = body.at("messages");
     req.metadata           = body.value("metadata", json(nullptr));
@@ -516,6 +517,12 @@ void server_chat_completions_context::decorate(json & response) const {
             if (!message.contains("refusal")) {
                 message["refusal"] = nullptr;
             }
+            if (!req.parallel_tool_calls && message.contains("tool_calls") &&
+                    message.at("tool_calls").is_array() && message.at("tool_calls").size() > 1) {
+                json kept = json::array();
+                kept.push_back(message.at("tool_calls")[0]);
+                message["tool_calls"] = std::move(kept);
+            }
             if (vocab != nullptr && message.contains("reasoning_content") && message.at("reasoning_content").is_string()) {
                 n_reasoning += (int64_t) common_tokenize(vocab, message.at("reasoning_content").get<std::string>(), false, false).size();
             }
@@ -551,6 +558,47 @@ void server_chat_completions_context::decorate(json & response) const {
     if (!req.service_tier.empty()) {
         response["service_tier"] = req.service_tier;
     }
+}
+
+
+json server_chat_completions_context::filter_chunks(json chunks) const {
+    if (req.parallel_tool_calls) {
+        return chunks;
+    }
+    auto filter_chunk = [](json & chunk) {
+        if (!chunk.is_object() || !chunk.contains("choices") || !chunk.at("choices").is_array()) {
+            return;
+        }
+        for (auto & choice : chunk["choices"]) {
+            if (!choice.is_object() || !choice.contains("delta") || !choice.at("delta").is_object()) {
+                continue;
+            }
+            json & delta = choice["delta"];
+            if (!delta.contains("tool_calls") || !delta.at("tool_calls").is_array()) {
+                continue;
+            }
+            json kept = json::array();
+            for (const auto & tool_call : delta.at("tool_calls")) {
+                if (tool_call.value("index", 0) == 0) {
+                    kept.push_back(tool_call);
+                }
+            }
+            if (kept.empty()) {
+                delta.erase("tool_calls");
+            } else {
+                delta["tool_calls"] = std::move(kept);
+            }
+        }
+    };
+
+    if (chunks.is_array()) {
+        for (auto & chunk : chunks) {
+            filter_chunk(chunk);
+        }
+    } else {
+        filter_chunk(chunks);
+    }
+    return chunks;
 }
 
 json server_chat_completions_context::make_messages(const json & response) const {

@@ -1264,6 +1264,112 @@ static void test_conversations_store(testing & t) {
     t.assert_equal("conversation context items", (size_t) 2, req.effective_input.size());
 }
 
+
+static void test_chat_completions_parallel(testing & t) {
+    server_chat_completions_store store;
+    server_chat_completions_request req;
+    req.store                = false;
+    req.parallel_tool_calls  = false;
+    server_chat_completions_context ctx(store, req, nullptr);
+
+    json response = {
+        {"id", "chatcmpl-parallel"},
+        {"choices", json::array({ json {
+            {"index", 0},
+            {"message", json {
+                {"role", "assistant"},
+                {"content", ""},
+                {"tool_calls", json::array({
+                    json { {"id", "call_1"}, {"type", "function"}, {"function", json { {"name", "a"}, {"arguments", "{}"} }} },
+                    json { {"id", "call_2"}, {"type", "function"}, {"function", json { {"name", "b"}, {"arguments", "{}"} }} },
+                })},
+            }},
+        } })},
+        {"usage", json { {"prompt_tokens", 1}, {"completion_tokens", 1}, {"total_tokens", 2} }},
+    };
+    ctx.finish(response);
+    t.assert_equal("one tool call", (size_t) 1, response.at("choices")[0].at("message").at("tool_calls").size());
+
+    json chunks = json::array({ json {
+        {"choices", json::array({ json {
+            {"delta", json {
+                {"tool_calls", json::array({
+                    json { {"index", 0}, {"id", "call_1"} },
+                    json { {"index", 1}, {"id", "call_2"} },
+                })},
+            }},
+        } })},
+    } });
+    json filtered = ctx.filter_chunks(chunks);
+    t.assert_equal("one streamed tool call", (size_t) 1, filtered[0].at("choices")[0].at("delta").at("tool_calls").size());
+}
+
+static void test_responses_parallel(testing & t) {
+    server_responses_store store;
+    server_responses_request req;
+    req.model                = "m";
+    req.store                = false;
+    req.parallel_tool_calls  = false;
+    server_responses_context ctx(store, req, "m", nullptr);
+
+    server_task_result_cmpl_final result;
+    result.n_prompt_tokens = 1;
+    result.n_decoded       = 2;
+    result.stop            = STOP_TYPE_EOS;
+    result.truncated       = false;
+
+    common_chat_tool_call first;
+    first.id = "call_1"; first.name = "a"; first.arguments = "{}";
+    common_chat_tool_call second;
+    second.id = "call_2"; second.name = "b"; second.arguments = "{}";
+    result.oaicompat_msg.tool_calls = { first, second };
+
+    json response = ctx.final_response(result);
+    t.assert_equal("one response tool call", (size_t) 1, response.at("output").size());
+    t.assert_equal("tool call type", std::string("function_call"), response.at("output")[0].at("type").get<std::string>());
+}
+
+
+static void test_responses_reasoning_summary(testing & t) {
+    server_responses_store store;
+    server_responses_request req;
+    req.model    = "m";
+    req.store    = false;
+    req.reasoning = json { {"summary", "auto"} };
+    server_responses_context ctx(store, req, "m", nullptr);
+
+    common_chat_msg_diff diff;
+    diff.reasoning_content_delta = "think";
+    server_task_result_cmpl_partial partial;
+    partial.oaicompat_msg_diffs = { diff };
+
+    json events = ctx.consume(partial);
+    t.assert_true("summary part added", has_event(events, "response.reasoning_summary_part.added"));
+    t.assert_true("summary delta",      has_event(events, "response.reasoning_summary_text.delta"));
+    t.assert_true("no reasoning text",  !has_event(events, "response.reasoning_text.delta"));
+
+    server_task_result_cmpl_final final_result;
+    final_result.n_prompt_tokens = 1;
+    final_result.n_decoded       = 1;
+    final_result.stop            = STOP_TYPE_EOS;
+    final_result.truncated       = false;
+    final_result.oaicompat_msg.reasoning_content = "think";
+
+    json done = ctx.finish(final_result);
+    t.assert_true("summary text done", has_event(done, "response.reasoning_summary_text.done"));
+    t.assert_true("summary part done", has_event(done, "response.reasoning_summary_part.done"));
+    t.assert_true("completed",         has_event(done, "response.completed"));
+
+    json response;
+    for (const auto & event : done) {
+        if (event.value("event", std::string()) == "response.completed") {
+            response = event.at("data").at("response");
+        }
+    }
+    t.assert_equal("reasoning item", (size_t) 1, response.at("output").size());
+    t.assert_equal("summary size",   (size_t) 1, response.at("output")[0].at("summary").size());
+}
+
 int main(int argc, char ** argv) {
     testing t;
 
@@ -1300,6 +1406,9 @@ int main(int argc, char ** argv) {
     t.test("chat_completions_store",  test_chat_completions_store);
     t.test("openai_store_persistence", test_openai_store_persistence);
     t.test("conversations_store",     test_conversations_store);
+    t.test("chat_completions_parallel", test_chat_completions_parallel);
+    t.test("responses_parallel",        test_responses_parallel);
+    t.test("responses_reasoning_summary", test_responses_reasoning_summary);
 
     return t.summary();
 }

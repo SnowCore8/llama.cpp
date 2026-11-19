@@ -5525,6 +5525,9 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             }
         } else {
             first_result_json = first_result->to_json();
+            if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT && chat_ctx != nullptr) {
+                first_result_json = chat_ctx->filter_chunks(std::move(first_result_json));
+            }
         }
         if (first_result_json == nullptr) {
             res->data = ""; // simply send HTTP headers and status code
@@ -5644,6 +5647,9 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                         output = format_oai_resp_sse(res_json);
                     } else {
                         json res_json = result->to_json();
+                        if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT && chat_ctx != nullptr) {
+                            res_json = chat_ctx->filter_chunks(std::move(res_json));
+                        }
                         if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
                             output = format_anthropic_sse(res_json);
                         } else {

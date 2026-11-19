@@ -20,6 +20,7 @@ struct server_chat_completions_request {
     std::string safety_identifier;
     std::string service_tier;
     bool store = false;
+    bool parallel_tool_calls = true;
     int n = 1;
 };
 
@@ -74,6 +75,8 @@ struct server_chat_completions_context {
     void finish(json & response);
     // streaming: one final choice at a time, store once all choices are present
     void finish_stream(json response);
+    // enforce parallel_tool_calls=false on streamed chunks
+    json filter_chunks(json chunks) const;
 
 private:
     struct pending_stream {

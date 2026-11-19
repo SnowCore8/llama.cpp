@@ -3,6 +3,7 @@
 #include "server-openai-store.h"
 
 #include "common.h"
+#include "base64.hpp"
 
 #include <filesystem>
 
@@ -397,7 +398,40 @@ json server_responses_build_params(
                             {"text", part.value("refusal", std::string())},
                         });
                     } else if (part_type == "input_file") {
-                        throw std::invalid_argument("input_file is not supported");
+                        const std::string file_data = part.value("file_data", std::string());
+                        if (file_data.empty()) {
+                            throw std::invalid_argument("input_file requires 'file_data'; file_id and file_url are not supported");
+                        }
+                        std::string decoded;
+                        try {
+                            if (file_data.rfind("data:", 0) == 0) {
+                                const size_t comma = file_data.find(',');
+                                if (comma == std::string::npos) {
+                                    throw std::invalid_argument("invalid input_file data URI");
+                                }
+                                const std::string header = file_data.substr(0, comma);
+                                const std::string payload = file_data.substr(comma + 1);
+                                decoded = header.find("base64") != std::string::npos ? base64::decode(payload) : payload;
+                            } else {
+                                decoded = base64::decode(file_data);
+                            }
+                        } catch (const std::exception &) {
+                            throw std::invalid_argument("input_file data is not valid base64");
+                        }
+                        bool is_text = true;
+                        for (const unsigned char c : decoded) {
+                            if (c == 0 || (c < 9) || (c > 13 && c < 32)) {
+                                is_text = false;
+                                break;
+                            }
+                        }
+                        if (!is_text) {
+                            throw std::invalid_argument("only text input_file content is supported");
+                        }
+                        parts.push_back(json {
+                            {"type", "text"},
+                            {"text", decoded},
+                        });
                     } else {
                         throw std::invalid_argument("unsupported content part type: " + part_type);
                     }
@@ -558,6 +592,11 @@ server_responses_context::server_responses_context(
     conversations(conversations) {
     id         = "resp_" + random_string();
     created_at = (int64_t) std::time(0);
+    if (this->req.reasoning.is_object()) {
+        const std::string summary = this->req.reasoning.value("summary", std::string());
+        const std::string generated = this->req.reasoning.value("generate_summary", std::string());
+        reasoning_summary = !summary.empty() || !generated.empty();
+    }
 }
 
 json server_responses_context::push(json & events, const std::string & type, json data) const {
@@ -649,16 +688,24 @@ json server_responses_context::message_item(const std::string & item_id, const s
 
 json server_responses_context::reasoning_item(const std::string & item_id, const std::string & text, const std::string & status) const {
     json content = json::array();
+    json summary = json::array();
     if (!text.empty()) {
-        content.push_back(json {
-            {"type", "reasoning_text"},
-            {"text", text},
-        });
+        if (reasoning_summary) {
+            summary.push_back(json {
+                {"type", "summary_text"},
+                {"text", text},
+            });
+        } else {
+            content.push_back(json {
+                {"type", "reasoning_text"},
+                {"text", text},
+            });
+        }
     }
     return json {
         {"id",                item_id},
         {"type",              "reasoning"},
-        {"summary",           json::array()},
+        {"summary",           summary},
         {"content",           content},
         {"encrypted_content", nullptr},
         {"status",            status},
@@ -692,6 +739,9 @@ json server_responses_context::output_from_msg(const common_chat_msg & msg) cons
     for (const auto & tool_call : msg.tool_calls) {
         const std::string call_id = tool_call.id.empty() ? "call_" + random_string() : tool_call.id;
         output.push_back(function_call_item("fc_" + random_string(), call_id, tool_call.name, tool_call.arguments, "completed"));
+        if (!req.parallel_tool_calls) {
+            break;
+        }
     }
     return output;
 }
@@ -750,23 +800,44 @@ void server_responses_context::add_reasoning_delta(json & events, const std::str
     }
     if (!reasoning.part_added) {
         reasoning.part_added = true;
-        push(events, "response.content_part.added", json {
+        if (reasoning_summary) {
+            push(events, "response.reasoning_summary_part.added", json {
+                {"item_id",       reasoning.id},
+                {"output_index",  reasoning.output_index},
+                {"summary_index", 0},
+                {"part", json {
+                    {"type", "summary_text"},
+                    {"text", ""},
+                }},
+            });
+        } else {
+            push(events, "response.content_part.added", json {
+                {"item_id",       reasoning.id},
+                {"output_index",  reasoning.output_index},
+                {"content_index", 0},
+                {"part", json {
+                    {"type", "reasoning_text"},
+                    {"text", ""},
+                }},
+            });
+        }
+    }
+    reasoning.text += delta;
+    if (reasoning_summary) {
+        push(events, "response.reasoning_summary_text.delta", json {
+            {"item_id",       reasoning.id},
+            {"output_index",  reasoning.output_index},
+            {"summary_index", 0},
+            {"delta",         delta},
+        });
+    } else {
+        push(events, "response.reasoning_text.delta", json {
             {"item_id",       reasoning.id},
             {"output_index",  reasoning.output_index},
             {"content_index", 0},
-            {"part", json {
-                {"type", "reasoning_text"},
-                {"text", ""},
-            }},
+            {"delta",         delta},
         });
     }
-    reasoning.text += delta;
-    push(events, "response.reasoning_text.delta", json {
-        {"item_id",       reasoning.id},
-        {"output_index",  reasoning.output_index},
-        {"content_index", 0},
-        {"delta",         delta},
-    });
 }
 
 void server_responses_context::add_text_delta(json & events, const std::string & delta) {
@@ -809,6 +880,9 @@ void server_responses_context::add_text_delta(json & events, const std::string &
 }
 
 void server_responses_context::add_tool_delta(json & events, size_t index, const common_chat_tool_call & delta) {
+    if (!req.parallel_tool_calls && index > 0) {
+        return;
+    }
     if (tools.size() <= index) {
         tools.resize(index + 1);
     }
@@ -868,21 +942,39 @@ void server_responses_context::apply_diffs(json & events, const std::vector<comm
 void server_responses_context::finalize_items(json & events) {
     if (reasoning.added && !reasoning.done) {
         reasoning.done = true;
-        push(events, "response.reasoning_text.done", json {
-            {"item_id",       reasoning.id},
-            {"output_index",  reasoning.output_index},
-            {"content_index", 0},
-            {"text",          reasoning.text},
-        });
-        push(events, "response.content_part.done", json {
-            {"item_id",       reasoning.id},
-            {"output_index",  reasoning.output_index},
-            {"content_index", 0},
-            {"part", json {
-                {"type", "reasoning_text"},
-                {"text", reasoning.text},
-            }},
-        });
+        if (reasoning_summary) {
+            push(events, "response.reasoning_summary_text.done", json {
+                {"item_id",       reasoning.id},
+                {"output_index",  reasoning.output_index},
+                {"summary_index", 0},
+                {"text",          reasoning.text},
+            });
+            push(events, "response.reasoning_summary_part.done", json {
+                {"item_id",       reasoning.id},
+                {"output_index",  reasoning.output_index},
+                {"summary_index", 0},
+                {"part", json {
+                    {"type", "summary_text"},
+                    {"text", reasoning.text},
+                }},
+            });
+        } else {
+            push(events, "response.reasoning_text.done", json {
+                {"item_id",       reasoning.id},
+                {"output_index",  reasoning.output_index},
+                {"content_index", 0},
+                {"text",          reasoning.text},
+            });
+            push(events, "response.content_part.done", json {
+                {"item_id",       reasoning.id},
+                {"output_index",  reasoning.output_index},
+                {"content_index", 0},
+                {"part", json {
+                    {"type", "reasoning_text"},
+                    {"text", reasoning.text},
+                }},
+            });
+        }
         push(events, "response.output_item.done", json {
             {"output_index", reasoning.output_index},
             {"item", reasoning_item(reasoning.id, reasoning.text, "completed")},
@@ -966,6 +1058,9 @@ json server_responses_context::finish(const server_task_result_cmpl_final & resu
         add_text_delta(events, msg.content);
     }
     for (size_t i = 0; i < msg.tool_calls.size(); i++) {
+        if (!req.parallel_tool_calls && i > 0) {
+            break;
+        }
         if (i < tools.size() && tools[i].added) {
             continue;
         }
