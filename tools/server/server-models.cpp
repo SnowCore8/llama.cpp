@@ -2129,6 +2129,40 @@ void server_models_routes::init_routes() {
             return models.proxy_request(req, method, name, false);
         }
 
+        if (method == "POST" && (req.path == "/v1/conversations" || req.path == "/conversations")) {
+            const auto all = models.get_all_meta();
+            std::vector<server_model_meta> preferred;
+            for (const auto source : { SERVER_MODEL_SOURCE_MODELS_DIR, SERVER_MODEL_SOURCE_PRESET, SERVER_MODEL_SOURCE_CACHE }) {
+                for (const auto & meta : all) {
+                    if (meta.source == source) {
+                        preferred.push_back(meta);
+                    }
+                }
+            }
+            for (const auto & meta : preferred) {
+                if (meta.is_running()) {
+                    return models.proxy_request(req, method, meta.name, false);
+                }
+            }
+            for (const auto & meta : preferred) {
+                try {
+                    models.ensure_model_ready(meta.name, req.should_stop);
+                    return models.proxy_request(req, method, meta.name, false);
+                } catch (const std::exception &) {
+                    continue;
+                }
+            }
+            auto res = std::make_unique<server_http_res>();
+            res->status = 503;
+            res->data = safe_json_to_str(json {{"error", json {
+                {"message", "no running model instance"},
+                {"type", "server_error"},
+                {"param", nullptr},
+                {"code", "unavailable"},
+            }}});
+            return res;
+        }
+
         server_http_res_ptr last;
         for (const auto & meta : models.get_all_meta()) {
             if (!meta.is_running()) {

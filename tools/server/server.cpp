@@ -588,6 +588,14 @@ static int server_run_router(common_params & params, int argc, char ** argv, con
     routes.get_chat_completion_messages = models_routes->proxy_store_get;
     routes.post_chat_completion_update = models_routes->proxy_store_post;
     routes.del_chat_completion         = models_routes->proxy_store_delete;
+    routes.post_conversations          = models_routes->proxy_store_post;
+    routes.get_conversation            = models_routes->proxy_store_get;
+    routes.post_conversation_update    = models_routes->proxy_store_post;
+    routes.del_conversation            = models_routes->proxy_store_delete;
+    routes.post_conversation_items     = models_routes->proxy_store_post;
+    routes.get_conversation_items      = models_routes->proxy_store_get;
+    routes.get_conversation_item       = models_routes->proxy_store_get;
+    routes.del_conversation_item       = models_routes->proxy_store_delete;
     routes.get_lora_adapters           = models_routes->proxy_get;
     routes.post_lora_adapters          = models_routes->proxy_post;
     routes.get_slots                   = models_routes->proxy_get;
