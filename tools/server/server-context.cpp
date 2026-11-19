@@ -6596,6 +6596,69 @@ void server_routes::init_routes() {
             }}});
             return res;
         }
+
+        if (req.get_param("stream", "") == "true") {
+            const json & response = stored.response;
+            json events = json::array();
+            size_t seq = 0;
+            auto push_event = [&](const std::string & type, json data) {
+                data["type"]            = type;
+                data["sequence_number"] = seq++;
+                events.push_back(json {
+                    {"event", type},
+                    {"data", std::move(data)},
+                });
+            };
+
+            json in_progress = response;
+            in_progress["status"]         = "in_progress";
+            in_progress["output"]         = json::array();
+            in_progress["usage"]          = nullptr;
+            in_progress["completed_at"]   = nullptr;
+            in_progress["incomplete_details"] = nullptr;
+            push_event("response.created",     json {{"response", in_progress}});
+            push_event("response.in_progress", json {{"response", in_progress}});
+
+            if (response.contains("output") && response.at("output").is_array()) {
+                size_t index = 0;
+                for (const auto & item : response.at("output")) {
+                    push_event("response.output_item.done", json {
+                        {"output_index", index++},
+                        {"item", item},
+                    });
+                }
+            }
+
+            const std::string status = response.value("status", std::string("completed"));
+            if (status != "in_progress" && status != "queued") {
+                const std::string terminal = status == "incomplete" ? "response.incomplete"
+                                           : status == "failed"     ? "response.failed"
+                                                                    : "response.completed";
+                push_event(terminal, json {{"response", response}});
+            }
+
+            const std::string starting_after = req.get_param("starting_after");
+            if (!starting_after.empty()) {
+                try {
+                    const int64_t after = std::stoll(starting_after);
+                    json filtered = json::array();
+                    for (const auto & event : events) {
+                        if (event.at("data").value("sequence_number", (int64_t) 0) > after) {
+                            filtered.push_back(event);
+                        }
+                    }
+                    events = std::move(filtered);
+                } catch (const std::exception &) {
+                    res->error(format_error_response("'starting_after' must be an integer", ERROR_TYPE_INVALID_REQUEST));
+                    return res;
+                }
+            }
+
+            res->content_type = "text/event-stream";
+            res->data = format_oai_resp_sse(events);
+            return res;
+        }
+
         res->ok(stored.response);
         return res;
     };

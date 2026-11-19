@@ -239,3 +239,15 @@ def test_responses_background_stream():
     types = [event.type for event in stream]
     assert types[0] == "response.created"
     assert types[-1] in ("response.completed", "response.incomplete")
+
+
+def test_responses_retrieve_stream_replay():
+    global server
+    server.start()
+    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
+
+    res = client.responses.create(model="gpt-4.1", input="Book", max_output_tokens=4, temperature=0.0)
+    stream = client.responses.retrieve(res.id, stream=True)
+    types = [event.type for event in stream]
+    assert types[0] == "response.created"
+    assert types[-1] in ("response.completed", "response.incomplete")
