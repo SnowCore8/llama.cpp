@@ -537,6 +537,15 @@ json server_responses_build_params(
                             {"type", "text"},
                             {"text", part.value("refusal", std::string())},
                         });
+                    } else if (part_type == "input_audio") {
+                        const json audio = part.value("input_audio", json::object());
+                        if (audio.empty()) {
+                            throw std::invalid_argument("input_audio requires 'input_audio'");
+                        }
+                        parts.push_back(json {
+                            {"type", "input_audio"},
+                            {"input_audio", audio},
+                        });
                     } else if (part_type == "input_file") {
                         const std::string file_data = part.value("file_data", std::string());
                         const std::string file_id   = part.value("file_id", std::string());

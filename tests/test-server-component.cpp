@@ -1563,6 +1563,44 @@ static void test_responses_custom_tools(testing & t) {
     t.assert_true("custom format rejected", thrown);
 }
 
+
+static void test_responses_custom_output(testing & t) {
+    json body = {
+        {"model", "m"},
+        {"input", "hi"},
+        {"tools", json::array({ json {
+            {"type", "custom"},
+            {"name", "run_code"},
+            {"description", "Run code"},
+            {"format", json {{"type", "text"}}},
+        } })},
+    };
+    server_responses_request req = server_responses_parse_request(body);
+    server_responses_store store;
+    server_responses_context ctx(store, req, "m", nullptr, nullptr);
+
+    server_task_result_cmpl_final result;
+    result.n_decoded       = 3;
+    result.n_prompt_tokens = 1;
+    result.oaicompat_msg.role = "assistant";
+    result.oaicompat_msg.tool_calls.push_back({ "run_code", "{\"input\":\"print(1)\"}", "call_1" });
+
+    const json events = ctx.finish(result);
+    bool found = false;
+    for (const auto & event : events) {
+        if (event.value("event", std::string()) != "response.output_item.done") {
+            continue;
+        }
+        const json & item = event.at("data").at("item");
+        if (item.value("type", std::string()) == "custom_tool_call") {
+            found = true;
+            t.assert_equal("custom output name",  std::string("run_code"), item.at("name").get<std::string>());
+            t.assert_equal("custom output input", std::string("print(1)"), item.at("input").get<std::string>());
+        }
+    }
+    t.assert_true("custom output item", found);
+}
+
 int main(int argc, char ** argv) {
     testing t;
 
@@ -1596,6 +1634,7 @@ int main(int argc, char ** argv) {
     t.test("responses_non_stream", test_responses_non_stream);
     t.test("responses_tools_convert", test_responses_tools_convert);
     t.test("responses_custom_tools", test_responses_custom_tools);
+    t.test("responses_custom_output", test_responses_custom_output);
     t.test("chat_completions_parse",  test_chat_completions_parse);
     t.test("chat_completions_store",  test_chat_completions_store);
     t.test("openai_store_persistence", test_openai_store_persistence);
