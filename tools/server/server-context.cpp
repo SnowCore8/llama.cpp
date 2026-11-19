@@ -6449,10 +6449,10 @@ void server_routes::init_routes() {
             server_responses_request rreq = server_responses_parse_request(body);
             server_responses_resolve_input(rreq, *responses_store, conversations_store.get());
             common_chat_session session;
-            json data = server_responses_build_params(ctx_server.vocab, meta->chat_params, rreq, session);
+            std::vector<raw_buffer> files;
+            json data = server_responses_build_params(ctx_server.vocab, meta->chat_params, rreq, session, files);
             auto resp_ctx = std::make_shared<server_responses_context>(
                 *responses_store, std::move(rreq), meta->model_name, ctx_server.vocab, conversations_store.get());
-            std::vector<raw_buffer> files;
             return handle_completions_impl(
                 req,
                 SERVER_TASK_TYPE_COMPLETION,
@@ -6474,9 +6474,18 @@ void server_routes::init_routes() {
             server_responses_request rreq = server_responses_parse_request(body);
             server_responses_resolve_input(rreq, *responses_store, conversations_store.get());
             common_chat_session session;
-            json data = server_responses_build_params(ctx_server.vocab, meta->chat_params, rreq, session);
+            std::vector<raw_buffer> files;
+            json data = server_responses_build_params(ctx_server.vocab, meta->chat_params, rreq, session, files);
             const json & prompt = data.at("prompt");
-            const size_t n_tokens = tokenize_mixed(ctx_server.vocab, prompt, true, true).size();
+            size_t n_tokens;
+            if (ctx_server.mctx != nullptr && !files.empty()) {
+                if (!prompt.is_string()) {
+                    throw std::runtime_error("for mtmd, input prompt must be a string");
+                }
+                n_tokens = process_mtmd_prompt(ctx_server.mctx, prompt.get<std::string>(), files, ctx_server.init_opt, true).size();
+            } else {
+                n_tokens = tokenize_mixed(ctx_server.vocab, prompt, true, true).size();
+            }
             res->ok(json {
                 {"object", "response.input_tokens"},
                 {"input_tokens", (int64_t) n_tokens},

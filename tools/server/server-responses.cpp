@@ -12,102 +12,6 @@
 
 namespace {
 
-std::string content_to_text(const json & content) {
-    if (content.is_null()) {
-        return "";
-    }
-    if (content.is_string()) {
-        return content.get<std::string>();
-    }
-    if (!content.is_array()) {
-        throw std::invalid_argument("'content' must be a string or an array");
-    }
-    std::string text;
-    for (const auto & part : content) {
-        if (!part.is_object()) {
-            throw std::invalid_argument("content parts must be objects");
-        }
-        const std::string type = part.value("type", std::string());
-        if (type == "input_text" || type == "output_text" || type == "text") {
-            text += part.value("text", std::string());
-        } else if (type == "refusal") {
-            text += part.value("refusal", std::string());
-        } else if (type == "input_image" || type == "input_file") {
-            throw std::invalid_argument("multimodal input is not supported");
-        } else {
-            throw std::invalid_argument("unsupported content part type: " + type);
-        }
-    }
-    return text;
-}
-
-std::string tool_output_to_text(const json & output) {
-    if (output.is_null()) {
-        return "";
-    }
-    if (output.is_string()) {
-        return output.get<std::string>();
-    }
-    if (output.is_array()) {
-        return content_to_text(output);
-    }
-    return output.dump();
-}
-
-common_chat_msg parse_input_item(const json & item) {
-    common_chat_msg msg;
-
-    if (item.is_string()) {
-        msg.role = "user";
-        msg.content = item.get<std::string>();
-        return msg;
-    }
-    if (!item.is_object()) {
-        throw std::invalid_argument("input items must be objects");
-    }
-
-    const std::string type = item.value("type", std::string());
-    if (type.empty() || type == "message") {
-        std::string role = item.value("role", std::string("user"));
-        if (role == "developer") {
-            role = "system";
-        }
-        if (role != "user" && role != "system" && role != "assistant") {
-            throw std::invalid_argument("unsupported message role: " + role);
-        }
-        msg.role = role;
-        msg.content = content_to_text(item.value("content", json("")));
-        return msg;
-    }
-    if (type == "function_call") {
-        common_chat_tool_call tool_call;
-        tool_call.id = item.value("call_id", item.value("id", std::string()));
-        tool_call.name = item.value("name", std::string());
-        if (tool_call.name.empty()) {
-            throw std::invalid_argument("function_call item is missing 'name'");
-        }
-        const json arguments = item.value("arguments", json(""));
-        tool_call.arguments = arguments.is_string() ? arguments.get<std::string>() : arguments.dump();
-        msg.role = "assistant";
-        msg.tool_calls.push_back(std::move(tool_call));
-        return msg;
-    }
-    if (type == "function_call_output") {
-        msg.role = "tool";
-        msg.tool_call_id = item.value("call_id", std::string());
-        msg.content = tool_output_to_text(item.value("output", json("")));
-        return msg;
-    }
-    if (type == "reasoning") {
-        // reasoning items are model output, they are not replayed into the prompt
-        return msg;
-    }
-    if (type == "item_reference") {
-        throw std::invalid_argument("item_reference is not supported");
-    }
-    throw std::invalid_argument("unsupported input item type: " + type);
-}
-
 json normalize_input(const json & input) {
     json items = json::array();
     if (input.is_string()) {
@@ -442,7 +346,8 @@ json server_responses_build_params(
         const llama_vocab * vocab,
         const server_chat_params & opt,
         const server_responses_request & req,
-        common_chat_session & session) {
+        common_chat_session & session,
+        std::vector<raw_buffer> & files) {
     common_chat_templates_inputs inputs;
     inputs.use_jinja             = opt.use_jinja;
     inputs.reasoning_format      = opt.reasoning_format;
@@ -451,22 +356,111 @@ json server_responses_build_params(
     inputs.chat_template_kwargs  = opt.chat_template_kwargs;
     inputs.enable_thinking       = opt.enable_thinking;
 
+    auto convert_item = [](const json & item) -> json {
+        if (!item.is_object()) {
+            throw std::invalid_argument("input items must be objects");
+        }
+        const std::string type = item.value("type", std::string());
+        if (type.empty() || type == "message") {
+            std::string role = item.value("role", std::string("user"));
+            if (role == "developer") {
+                role = "system";
+            }
+            const json content_in = item.value("content", json(""));
+            json content;
+            if (content_in.is_string()) {
+                content = content_in;
+            } else if (content_in.is_array()) {
+                json parts = json::array();
+                for (const auto & part : content_in) {
+                    if (!part.is_object()) {
+                        throw std::invalid_argument("content parts must be objects");
+                    }
+                    const std::string part_type = part.value("type", std::string());
+                    if (part_type == "input_text" || part_type == "output_text" || part_type == "text") {
+                        parts.push_back(json {
+                            {"type", "text"},
+                            {"text", part.value("text", std::string())},
+                        });
+                    } else if (part_type == "input_image") {
+                        const std::string url = part.value("image_url", part.value("url", std::string()));
+                        if (url.empty()) {
+                            throw std::invalid_argument("input_image requires 'image_url'");
+                        }
+                        parts.push_back(json {
+                            {"type", "image_url"},
+                            {"image_url", json { {"url", url} }},
+                        });
+                    } else if (part_type == "refusal") {
+                        parts.push_back(json {
+                            {"type", "text"},
+                            {"text", part.value("refusal", std::string())},
+                        });
+                    } else if (part_type == "input_file") {
+                        throw std::invalid_argument("input_file is not supported");
+                    } else {
+                        throw std::invalid_argument("unsupported content part type: " + part_type);
+                    }
+                }
+                content = parts;
+            } else {
+                throw std::invalid_argument("message content must be a string or an array");
+            }
+            return json {
+                {"role", role},
+                {"content", content},
+            };
+        }
+        if (type == "function_call") {
+            const json arguments_in = item.value("arguments", json(""));
+            const std::string arguments = arguments_in.is_string() ? arguments_in.get<std::string>() : arguments_in.dump();
+            return json {
+                {"role", "assistant"},
+                {"content", nullptr},
+                {"tool_calls", json::array({ json {
+                    {"id", item.value("call_id", item.value("id", std::string()))},
+                    {"type", "function"},
+                    {"function", json {
+                        {"name", item.value("name", std::string())},
+                        {"arguments", arguments},
+                    }},
+                } })},
+            };
+        }
+        if (type == "function_call_output") {
+            const json output = item.value("output", json(""));
+            return json {
+                {"role", "tool"},
+                {"tool_call_id", item.value("call_id", std::string())},
+                {"content", output.is_string() ? output.get<std::string>() : output.dump()},
+            };
+        }
+        if (type == "reasoning") {
+            return nullptr;
+        }
+        throw std::invalid_argument("unsupported input item type: " + type);
+    };
+
+    json chat_messages = json::array();
+    auto add_chat_message = [&](json message) {
+        if (message.contains("content") && message.at("content").is_array()) {
+            oaicompat_content_load_media(message["content"], opt, files);
+        }
+        chat_messages.push_back(std::move(message));
+    };
+
     if (!req.instructions.is_null()) {
         if (req.instructions.is_string()) {
-            common_chat_msg msg;
-            msg.role    = "system";
-            msg.content = req.instructions.get<std::string>();
-            inputs.messages.push_back(std::move(msg));
+            add_chat_message(json {
+                {"role", "system"},
+                {"content", req.instructions.get<std::string>()},
+            });
         } else if (req.instructions.is_array()) {
             for (const auto & item : req.instructions) {
-                common_chat_msg msg = parse_input_item(item);
-                if (msg.empty()) {
-                    continue;
+                json message = convert_item(item);
+                if (!message.is_null()) {
+                    add_chat_message(std::move(message));
                 }
-                if (msg.role != "system" && msg.role != "user" && msg.role != "assistant") {
-                    throw std::invalid_argument("instructions support system, developer and user messages only");
-                }
-                inputs.messages.push_back(std::move(msg));
             }
         } else {
             throw std::invalid_argument("'instructions' must be a string or an array");
@@ -474,13 +468,13 @@ json server_responses_build_params(
     }
 
     for (const auto & item : req.effective_input) {
-        common_chat_msg msg = parse_input_item(item);
-        if (msg.empty()) {
-            continue;
+        json message = convert_item(item);
+        if (!message.is_null()) {
+            add_chat_message(std::move(message));
         }
-        inputs.messages.push_back(std::move(msg));
     }
 
+    inputs.messages = common_chat_msgs_parse_oaicompat(chat_messages);
     inputs.tools = req.tools_parsed;
     if (!req.tool_choice_name.empty()) {
         const auto it = std::find_if(inputs.tools.begin(), inputs.tools.end(), [&](const common_chat_tool & tool) {

@@ -1356,7 +1356,7 @@ void handle_media(
     }
 }
 // load media files from an OAI content array, then replace each media part with a media marker text part
-static void oaicompat_content_load_media(json & content, const server_chat_params & opt, std::vector<raw_buffer> & out_files) {
+void oaicompat_content_load_media(json & content, const server_chat_params & opt, std::vector<raw_buffer> & out_files) {
     for (auto & p : content) {
         std::string type = json_value(p, "type", std::string());
         if (type == "image_url") {

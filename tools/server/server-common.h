@@ -391,6 +391,9 @@ json oaicompat_chat_params_parse(
     std::vector<raw_buffer> & out_files,
     common_chat_session & out_session);
 
+// load media parts in place (image_url, input_audio, video_url) into out_files and replace with media markers
+void oaicompat_content_load_media(json & content, const server_chat_params & opt, std::vector<raw_buffer> & out_files);
+
 // used by /embeddings endpoint, content has the same format as a chat message content array
 server_tokens tokenize_oai_content_array(
     const llama_vocab * vocab,

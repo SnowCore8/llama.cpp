@@ -86,7 +86,8 @@ json server_responses_build_params(
         const llama_vocab * vocab,
         const server_chat_params & opt,
         const server_responses_request & req,
-        common_chat_session & session);
+        common_chat_session & session,
+        std::vector<raw_buffer> & files);
 
 // per-request response state, shared by the non-stream and stream paths
 struct server_responses_context {
