@@ -6447,24 +6447,102 @@ void server_routes::init_routes() {
         try {
             const json body = json::parse(req.body);
             server_responses_request rreq = server_responses_parse_request(body);
+            const bool background = rreq.background;
             server_responses_resolve_input(rreq, *responses_store, conversations_store.get());
             common_chat_session session;
             std::vector<raw_buffer> files;
             json data = server_responses_build_params(ctx_server.vocab, meta->chat_params, rreq, session, files);
             auto resp_ctx = std::make_shared<server_responses_context>(
                 *responses_store, std::move(rreq), meta->model_name, ctx_server.vocab, conversations_store.get());
-            return handle_completions_impl(
-                req,
-                SERVER_TASK_TYPE_COMPLETION,
-                data,
-                files,
-                TASK_RESPONSE_TYPE_OAI_RESP,
-                session,
-                std::move(resp_ctx));
+
+            if (!background) {
+                return handle_completions_impl(
+                    req,
+                    SERVER_TASK_TYPE_COMPLETION,
+                    data,
+                    files,
+                    TASK_RESPONSE_TYPE_OAI_RESP,
+                    session,
+                    std::move(resp_ctx));
+            }
+
+            auto job = std::make_shared<server_responses_background_job>();
+            job->ctx = resp_ctx;
+            {
+                std::lock_guard<std::mutex> lock(responses_jobs_mutex);
+                responses_jobs[resp_ctx->get_id()] = job;
+            }
+            const json initial = resp_ctx->begin_background();
+
+            std::thread([this, resp_ctx, job, data = std::move(data), files = std::move(files), session = std::move(session)]() mutable {
+                std::function<bool()> should_stop = [job]() {
+                    return job->cancelled.load();
+                };
+                server_http_req bg_req{ {}, {}, "/v1/responses", "", "", {}, should_stop };
+                server_http_res_ptr bg_res = handle_completions_impl(
+                    bg_req,
+                    SERVER_TASK_TYPE_COMPLETION,
+                    data,
+                    files,
+                    TASK_RESPONSE_TYPE_OAI_RESP,
+                    session,
+                    resp_ctx);
+                if (bg_res != nullptr && bg_res->status != 200 && !job->cancelled.load()) {
+                    std::string message = "generation failed";
+                    try {
+                        const json error_body = json::parse(bg_res->data);
+                        const json error = error_body.value("error", json::object());
+                        message = error.value("message", message);
+                    } catch (const std::exception &) {
+                    }
+                    resp_ctx->fail(message);
+                }
+                std::lock_guard<std::mutex> lock(responses_jobs_mutex);
+                responses_jobs.erase(resp_ctx->get_id());
+            }).detach();
+
+            res->ok(initial);
+            return res;
         } catch (const std::exception & e) {
             res->error(format_error_response(e.what(), ERROR_TYPE_INVALID_REQUEST));
             return res;
         }
+    };
+
+    this->post_responses_cancel_oai = [this](const server_http_req & req) {
+        auto res = create_response();
+        const std::string id = req.get_param("id");
+
+        std::shared_ptr<server_responses_background_job> job;
+        {
+            std::lock_guard<std::mutex> lock(responses_jobs_mutex);
+            const auto it = responses_jobs.find(id);
+            if (it != responses_jobs.end()) {
+                job = it->second;
+            }
+        }
+        if (job != nullptr) {
+            job->cancelled.store(true);
+            json cancelled = job->ctx->cancel();
+            if (!cancelled.is_null()) {
+                res->ok(cancelled);
+                return res;
+            }
+        }
+
+        server_responses_stored stored;
+        if (!responses_store->get(id, stored)) {
+            res->status = 404;
+            res->data = safe_json_to_str(json {{"error", json {
+                {"message", "Response not found: " + id},
+                {"type", "invalid_request_error"},
+                {"param", nullptr},
+                {"code", "response_not_found"},
+            }}});
+            return res;
+        }
+        res->error(format_error_response("response is not in progress", ERROR_TYPE_INVALID_REQUEST));
+        return res;
     };
 
     this->post_responses_tok_oai = [this](const server_http_req & req) {

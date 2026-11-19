@@ -795,15 +795,20 @@ static void test_responses_parse(testing & t) {
     }
     t.assert_true("temperature bound", thrown);
 
+    json background_body = body;
+    background_body["background"] = true;
+    server_responses_request background_req = server_responses_parse_request(background_body);
+    t.assert_true("background accepted", background_req.background);
+
     thrown = false;
-    bad = body;
-    bad["background"] = true;
+    bad = background_body;
+    bad["stream"] = true;
     try {
         server_responses_parse_request(bad);
     } catch (const std::exception &) {
         thrown = true;
     }
-    t.assert_true("background rejected", thrown);
+    t.assert_true("background stream rejected", thrown);
 
     thrown = false;
     bad = body;

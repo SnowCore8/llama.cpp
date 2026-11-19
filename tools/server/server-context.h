@@ -9,10 +9,12 @@
 
 #include "json.h"
 
+#include <atomic>
 #include <cstddef>
 #include <memory>
 #include <mutex>
 #include <set>
+#include <unordered_map>
 
 struct server_context_impl; // private implementation
 
@@ -63,6 +65,11 @@ struct server_context_meta {
 };
 
 using server_state_callback_t = std::function<void(server_state, json /* payload */)>;
+
+struct server_responses_background_job {
+    std::shared_ptr<server_responses_context> ctx;
+    std::atomic<bool> cancelled{false};
+};
 
 struct server_context {
     std::unique_ptr<server_context_impl> impl;
@@ -138,6 +145,7 @@ struct server_routes {
     server_http_context::handler_t post_control;
     server_http_context::handler_t post_responses_oai;
     server_http_context::handler_t post_responses_tok_oai;
+    server_http_context::handler_t post_responses_cancel_oai;
     server_http_context::handler_t get_responses_oai;
     server_http_context::handler_t get_responses_input_items;
     server_http_context::handler_t del_responses_oai;
@@ -182,6 +190,8 @@ private:
     std::shared_ptr<server_responses_store> responses_store;
     std::shared_ptr<server_chat_completions_store> chat_completions_store;
     std::shared_ptr<server_conversations_store> conversations_store;
+    std::mutex responses_jobs_mutex;
+    std::unordered_map<std::string, std::shared_ptr<server_responses_background_job>> responses_jobs;
 
     // using unique_ptr to allow late initialization of const
     std::unique_ptr<const server_context_meta> meta;

@@ -1,3 +1,5 @@
+import time
+
 import pytest
 from openai import OpenAI, NotFoundError
 from utils import *
@@ -161,3 +163,43 @@ def test_responses_store_disabled():
             previous_response_id=res.id,
             max_output_tokens=4,
         )
+
+
+def test_responses_background():
+    global server
+    server.start()
+    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
+
+    res = client.responses.create(
+        model="gpt-4.1",
+        input="Book",
+        max_output_tokens=8,
+        temperature=0.0,
+        background=True,
+    )
+    assert res.background is True
+
+    got = res
+    for _ in range(100):
+        got = client.responses.retrieve(res.id)
+        if got.status in ("completed", "incomplete", "failed", "cancelled"):
+            break
+        time.sleep(0.05)
+    assert got.status in ("completed", "incomplete")
+
+
+def test_responses_cancel():
+    global server
+    server.start()
+    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
+
+    res = client.responses.create(
+        model="gpt-4.1",
+        input="Book " * 20,
+        max_output_tokens=128,
+        temperature=0.0,
+        background=True,
+    )
+    cancelled = client.responses.cancel(res.id)
+    assert cancelled.status == "cancelled"
+    assert client.responses.retrieve(res.id).status == "cancelled"

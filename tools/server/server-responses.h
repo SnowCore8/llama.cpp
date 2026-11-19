@@ -3,6 +3,7 @@
 #include "server-common.h"
 #include "server-task.h"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -109,6 +110,11 @@ struct server_responses_context {
     // SSE error event
     json error_event(const std::string & message, const std::string & code) const;
 
+    // background lifecycle
+    json begin_background();
+    json cancel();
+    void fail(const std::string & message);
+
 private:
     struct text_item {
         std::string id;
@@ -142,7 +148,8 @@ private:
     text_item reasoning;
     text_item message;
     std::vector<tool_item> tools;
-    bool stored = false;
+    std::atomic<bool> cancelled{false};
+    std::atomic<bool> stored{false};
     bool conversation_appended = false;
 
     json push(json & events, const std::string & type, json data) const;

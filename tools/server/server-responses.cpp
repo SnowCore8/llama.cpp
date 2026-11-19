@@ -183,8 +183,8 @@ server_responses_request server_responses_parse_request(const json & body) {
     req.temperature               = body.value("temperature", -1.0);
     req.top_p                     = body.value("top_p", -1.0);
 
-    if (req.background) {
-        throw std::invalid_argument("'background' is not supported");
+    if (req.background && req.stream) {
+        throw std::invalid_argument("'background' with 'stream' is not supported");
     }
     if (body.contains("conversation") && !body.at("conversation").is_null()) {
         const json & conversation = body.at("conversation");
@@ -1023,6 +1023,9 @@ json server_responses_context::error_event(const std::string & message, const st
 }
 
 void server_responses_context::store_response(const json & response) {
+    if (cancelled.load()) {
+        return;
+    }
     if (conversations != nullptr && !req.conversation_id.empty() && !conversation_appended) {
         conversation_appended = true;
         json to_add = json::array();
@@ -1037,10 +1040,53 @@ void server_responses_context::store_response(const json & response) {
         conversations->add_items(req.conversation_id, to_add);
     }
 
-    if (!req.store || stored) {
+    if (!req.store) {
         return;
     }
-    stored = true;
+    if (stored.exchange(true)) {
+        return;
+    }
+    server_responses_stored entry;
+    entry.response    = response;
+    entry.input_items = req.effective_input;
+    entry.created_at  = created_at;
+    store.put(id, std::move(entry));
+}
+
+json server_responses_context::begin_background() {
+    req.store = true;
+    json response = make_response("in_progress", json::array(), nullptr, nullptr, nullptr);
+    server_responses_stored entry;
+    entry.response    = response;
+    entry.input_items = req.effective_input;
+    entry.created_at  = created_at;
+    store.put(id, std::move(entry));
+    return response;
+}
+
+json server_responses_context::cancel() {
+    cancelled.store(true);
+    if (stored.exchange(true)) {
+        return nullptr;
+    }
+    json response = make_response("cancelled", json::array(), nullptr, nullptr, nullptr);
+    server_responses_stored entry;
+    entry.response    = response;
+    entry.input_items = req.effective_input;
+    entry.created_at  = created_at;
+    store.put(id, std::move(entry));
+    return response;
+}
+
+void server_responses_context::fail(const std::string & message) {
+    if (stored.exchange(true)) {
+        return;
+    }
+    json error = json {
+        {"code",    "server_error"},
+        {"message", message},
+    };
+    json response = make_response("failed", json::array(), nullptr, error, nullptr);
     server_responses_stored entry;
     entry.response    = response;
     entry.input_items = req.effective_input;
