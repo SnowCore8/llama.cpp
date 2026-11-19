@@ -800,15 +800,10 @@ static void test_responses_parse(testing & t) {
     server_responses_request background_req = server_responses_parse_request(background_body);
     t.assert_true("background accepted", background_req.background);
 
-    thrown = false;
     bad = background_body;
     bad["stream"] = true;
-    try {
-        server_responses_parse_request(bad);
-    } catch (const std::exception &) {
-        thrown = true;
-    }
-    t.assert_true("background stream rejected", thrown);
+    server_responses_request background_stream_req = server_responses_parse_request(bad);
+    t.assert_true("background stream accepted", background_stream_req.background && background_stream_req.stream);
 
     thrown = false;
     bad = body;

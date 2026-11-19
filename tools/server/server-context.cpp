@@ -6454,6 +6454,7 @@ void server_routes::init_routes() {
             const json body = json::parse(req.body);
             server_responses_request rreq = server_responses_parse_request(body);
             const bool background = rreq.background;
+            const bool stream_mode = rreq.stream;
             server_responses_resolve_input(rreq, *responses_store, conversations_store.get());
             common_chat_session session;
             std::vector<raw_buffer> files;
@@ -6461,7 +6462,7 @@ void server_routes::init_routes() {
             auto resp_ctx = std::make_shared<server_responses_context>(
                 *responses_store, std::move(rreq), meta->model_name, ctx_server.vocab, conversations_store.get());
 
-            if (!background) {
+            if (!background || stream_mode) {
                 return handle_completions_impl(
                     req,
                     SERVER_TASK_TYPE_COMPLETION,

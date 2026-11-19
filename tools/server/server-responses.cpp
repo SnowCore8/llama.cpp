@@ -203,9 +203,6 @@ server_responses_request server_responses_parse_request(const json & body) {
     req.temperature               = body.value("temperature", -1.0);
     req.top_p                     = body.value("top_p", -1.0);
 
-    if (req.background && req.stream) {
-        throw std::invalid_argument("'background' with 'stream' is not supported");
-    }
     if (body.contains("conversation") && !body.at("conversation").is_null()) {
         const json & conversation = body.at("conversation");
         if (conversation.is_string()) {
