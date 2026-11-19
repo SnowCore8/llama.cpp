@@ -1,6 +1,9 @@
 #include "server-chat-completions.h"
+#include "server-openai-store.h"
 
 #include "common.h"
+
+#include <filesystem>
 
 #include <algorithm>
 #include <ctime>
@@ -92,44 +95,170 @@ bool metadata_matches(const json & candidate, const json & filter) {
 
 } // namespace
 
-bool server_chat_completions_store::get(const std::string & id, server_chat_completions_stored & out) const {
-    std::lock_guard<std::mutex> lock(mutex);
-    const auto it = items.find(id);
-    if (it == items.end()) {
+json server_chat_completions_stored::to_json() const {
+    return json {
+        {"response",          response},
+        {"request_messages",  request_messages},
+        {"messages",          messages},
+        {"metadata",          metadata},
+        {"user",              user},
+        {"safety_identifier", safety_identifier},
+        {"created_at",        created_at},
+    };
+}
+
+bool server_chat_completions_stored::from_json(const json & data, server_chat_completions_stored & out) {
+    if (!data.is_object()) {
         return false;
     }
-    out = it->second;
+    out.response          = data.value("response", json(nullptr));
+    out.request_messages  = data.value("request_messages", json::array());
+    out.messages          = data.value("messages", json::array());
+    out.metadata          = data.value("metadata", json(nullptr));
+    out.user              = data.value("user", std::string());
+    out.safety_identifier = data.value("safety_identifier", std::string());
+    out.created_at        = data.value("created_at", (int64_t) 0);
+    return !out.response.is_null();
+}
+
+server_chat_completions_store::server_chat_completions_store(
+        const std::string & base_path, size_t max_items_, int64_t ttl_seconds_) :
+    path(base_path),
+    max_items(max_items_),
+    ttl_seconds(ttl_seconds_) {
+    if (!path.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(path) / "chat_completions", ec);
+    }
+}
+
+std::string server_chat_completions_store::file_path(const std::string & id) const {
+    return server_openai_store::item_path(path, "chat_completions", id);
+}
+
+bool server_chat_completions_store::load_one_locked(const std::string & id, server_chat_completions_stored & out) {
+    if (path.empty()) {
+        return false;
+    }
+    json data;
+    if (!server_openai_store::read_json(file_path(id), data)) {
+        return false;
+    }
+    server_chat_completions_stored stored;
+    if (!server_chat_completions_stored::from_json(data, stored)) {
+        return false;
+    }
+    if (ttl_seconds > 0 && server_openai_store::now() - stored.created_at > ttl_seconds) {
+        server_openai_store::remove_file(file_path(id));
+        return false;
+    }
+    items[id] = stored;
+    out = std::move(stored);
     return true;
+}
+
+void server_chat_completions_store::prune_locked() {
+    const int64_t now = server_openai_store::now();
+    if (ttl_seconds > 0) {
+        for (auto it = items.begin(); it != items.end();) {
+            if (now - it->second.created_at > ttl_seconds) {
+                server_openai_store::remove_file(file_path(it->first));
+                it = items.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    while (max_items > 0 && items.size() > max_items) {
+        auto oldest = items.begin();
+        for (auto it = items.begin(); it != items.end(); ++it) {
+            if (it->second.created_at < oldest->second.created_at) {
+                oldest = it;
+            }
+        }
+        server_openai_store::remove_file(file_path(oldest->first));
+        items.erase(oldest);
+    }
+}
+
+bool server_chat_completions_store::get(const std::string & id, server_chat_completions_stored & out) {
+    std::lock_guard<std::mutex> lock(mutex);
+    const int64_t now = server_openai_store::now();
+
+    const auto it = items.find(id);
+    if (it != items.end()) {
+        if (ttl_seconds > 0 && now - it->second.created_at > ttl_seconds) {
+            server_openai_store::remove_file(file_path(id));
+            items.erase(it);
+        } else {
+            out = it->second;
+            return true;
+        }
+    }
+    return load_one_locked(id, out);
 }
 
 void server_chat_completions_store::put(const std::string & id, server_chat_completions_stored item) {
     std::lock_guard<std::mutex> lock(mutex);
-    if (items.size() >= max_items && items.find(id) == items.end()) {
-        items.erase(items.begin());
-    }
+    prune_locked();
     items[id] = std::move(item);
+    prune_locked();
+    const auto it = items.find(id);
+    if (it != items.end() && !path.empty()) {
+        server_openai_store::write_json(file_path(id), it->second.to_json());
+    }
 }
 
 bool server_chat_completions_store::erase(const std::string & id) {
     std::lock_guard<std::mutex> lock(mutex);
-    return items.erase(id) > 0;
+    const bool erased = items.erase(id) > 0;
+    if (!path.empty()) {
+        server_openai_store::remove_file(file_path(id));
+    }
+    return erased;
 }
 
 bool server_chat_completions_store::update_metadata(const std::string & id, const json & metadata) {
     std::lock_guard<std::mutex> lock(mutex);
-    const auto it = items.find(id);
+    auto it = items.find(id);
     if (it == items.end()) {
-        return false;
+        server_chat_completions_stored stored;
+        if (!load_one_locked(id, stored)) {
+            return false;
+        }
+        it = items.find(id);
     }
     it->second.metadata = metadata;
     if (it->second.response.is_object()) {
         it->second.response["metadata"] = metadata;
     }
+    if (!path.empty()) {
+        server_openai_store::write_json(file_path(id), it->second.to_json());
+    }
     return true;
 }
 
-std::vector<std::pair<std::string, server_chat_completions_stored>> server_chat_completions_store::list() const {
+std::vector<std::pair<std::string, server_chat_completions_stored>> server_chat_completions_store::list() {
     std::lock_guard<std::mutex> lock(mutex);
+    if (!path.empty()) {
+        const std::string dir = (std::filesystem::path(path) / "chat_completions").string();
+        for (const auto & file : server_openai_store::list_files(dir)) {
+            const std::string id = std::filesystem::path(file).stem().string();
+            if (items.find(id) != items.end()) {
+                continue;
+            }
+            server_chat_completions_stored stored;
+            json data;
+            if (server_openai_store::read_json(file, data) && server_chat_completions_stored::from_json(data, stored)) {
+                if (ttl_seconds == 0 || server_openai_store::now() - stored.created_at <= ttl_seconds) {
+                    items[id] = std::move(stored);
+                } else {
+                    server_openai_store::remove_file(file);
+                }
+            }
+        }
+        prune_locked();
+    }
     std::vector<std::pair<std::string, server_chat_completions_stored>> result;
     result.reserve(items.size());
     for (const auto & [id, stored] : items) {

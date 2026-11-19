@@ -11,6 +11,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <filesystem>
 #include <regex>
 #include <string>
 #include <thread>
@@ -1137,6 +1139,65 @@ static void test_chat_completions_store(testing & t) {
     t.assert_equal("merged usage", 2, stored.response.at("usage").at("completion_tokens").get<int>());
 }
 
+
+static void test_openai_store_persistence(testing & t) {
+    const std::filesystem::path dir = std::filesystem::current_path() / ("llama-openai-store-test-" + random_string());
+    std::filesystem::remove_all(dir);
+
+    server_responses_stored response;
+    response.response    = json { {"id", "resp_test"}, {"object", "response"} };
+    response.input_items = json::array({ json { {"role", "user"}, {"content", "hi"} } });
+    response.created_at  = (int64_t) std::time(0);
+    {
+        server_responses_store store(dir.string(), 16, 0);
+        store.put("resp_test", response);
+    }
+    {
+        server_responses_store store(dir.string(), 16, 0);
+        server_responses_stored out;
+        t.assert_true ("responses persisted", store.get("resp_test", out));
+        t.assert_equal("responses id",        std::string("resp_test"), out.response.at("id").get<std::string>());
+        t.assert_true ("responses erase",     store.erase("resp_test"));
+    }
+    {
+        server_responses_store store(dir.string(), 16, 0);
+        server_responses_stored out;
+        t.assert_true("responses erased", !store.get("resp_test", out));
+    }
+
+    server_chat_completions_stored chat;
+    chat.response    = json { {"id", "chatcmpl_test"}, {"object", "chat.completion"} };
+    chat.messages    = json::array({ json { {"id", "msg_1"}, {"role", "assistant"}, {"content", "hi"} } });
+    chat.created_at  = (int64_t) std::time(0);
+    {
+        server_chat_completions_store store(dir.string(), 16, 0);
+        store.put("chatcmpl_test", chat);
+    }
+    {
+        server_chat_completions_store store(dir.string(), 16, 0);
+        server_chat_completions_stored out;
+        t.assert_true ("chat persisted", store.get("chatcmpl_test", out));
+        t.assert_equal("chat messages",  (size_t) 1, out.messages.size());
+        t.assert_true ("chat update",    store.update_metadata("chatcmpl_test", json { {"k", "v"} }));
+        t.assert_equal("chat list",      (size_t) 1, store.list().size());
+        t.assert_true ("chat erase",     store.erase("chatcmpl_test"));
+    }
+
+    server_responses_stored expired = response;
+    expired.created_at = (int64_t) std::time(0) - 100;
+    {
+        server_responses_store store(dir.string(), 16, 0);
+        store.put("resp_expired", expired);
+    }
+    {
+        server_responses_store store(dir.string(), 16, 10);
+        server_responses_stored out;
+        t.assert_true("ttl expired", !store.get("resp_expired", out));
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
 int main(int argc, char ** argv) {
     testing t;
 
@@ -1171,6 +1232,7 @@ int main(int argc, char ** argv) {
     t.test("responses_tools_convert", test_responses_tools_convert);
     t.test("chat_completions_parse",  test_chat_completions_parse);
     t.test("chat_completions_store",  test_chat_completions_store);
+    t.test("openai_store_persistence", test_openai_store_persistence);
 
     return t.summary();
 }

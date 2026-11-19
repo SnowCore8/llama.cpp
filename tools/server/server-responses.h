@@ -47,24 +47,36 @@ struct server_responses_stored {
     json response = nullptr;
     json input_items = json::array();
     int64_t created_at = 0;
+
+    json to_json() const;
+    static bool from_json(const json & data, server_responses_stored & out);
 };
 
 // in-memory store for response objects and their input items
 struct server_responses_store {
     mutable std::mutex mutex;
     std::unordered_map<std::string, server_responses_stored> items;
+    std::string path;
     size_t max_items = 1024;
+    int64_t ttl_seconds = 0;
 
-    bool get(const std::string & id, server_responses_stored & out) const;
+    server_responses_store() = default;
+    server_responses_store(const std::string & base_path, size_t max_items, int64_t ttl_seconds);
+
+    bool get(const std::string & id, server_responses_stored & out);
     void put(const std::string & id, server_responses_stored item);
     bool erase(const std::string & id);
+
+private:
+    std::string file_path(const std::string & id) const;
+    void prune_locked();
 };
 
 // throws std::invalid_argument on invalid request
 server_responses_request server_responses_parse_request(const json & body);
 
 // resolve previous_response_id and build effective_input, throws on unknown id
-void server_responses_resolve_input(server_responses_request & req, const server_responses_store & store);
+void server_responses_resolve_input(server_responses_request & req, server_responses_store & store);
 
 // build prompt and sampling parameters for the engine
 json server_responses_build_params(

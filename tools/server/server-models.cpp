@@ -1253,6 +1253,11 @@ void server_models::load(const std::string & name, const load_options & opts) {
         std::vector<std::string> child_args = inst.meta.args; // copy
         std::vector<std::string> child_env  = base_env; // copy
         child_env.push_back(std::string(SERVER_ENV_ROUTER_PORT) + "=" + std::to_string(base_params.port));
+        if (!base_params.openai_files_path.empty()) {
+            set_child_env(child_env, "LLAMA_ARG_OPENAI_FILES_PATH", base_params.openai_files_path);
+        }
+        set_child_env(child_env, "LLAMA_ARG_OPENAI_STORE_MAX", std::to_string(base_params.openai_store_max));
+        set_child_env(child_env, "LLAMA_ARG_OPENAI_STORE_TTL", std::to_string(base_params.openai_store_ttl));
 
         if (opts.role == SERVER_ROLE_DOWNLOAD) {
             inst.meta.status = SERVER_MODEL_STATUS_DOWNLOADING;

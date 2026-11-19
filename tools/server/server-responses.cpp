@@ -1,6 +1,9 @@
 #include "server-responses.h"
+#include "server-openai-store.h"
 
 #include "common.h"
+
+#include <filesystem>
 
 #include <algorithm>
 #include <ctime>
@@ -135,27 +138,113 @@ json normalize_input(const json & input) {
 
 } // namespace
 
-bool server_responses_store::get(const std::string & id, server_responses_stored & out) const {
-    std::lock_guard<std::mutex> lock(mutex);
-    const auto it = items.find(id);
-    if (it == items.end()) {
+json server_responses_stored::to_json() const {
+    return json {
+        {"response",    response},
+        {"input_items", input_items},
+        {"created_at",  created_at},
+    };
+}
+
+bool server_responses_stored::from_json(const json & data, server_responses_stored & out) {
+    if (!data.is_object()) {
         return false;
     }
-    out = it->second;
-    return true;
+    out.response    = data.value("response", json(nullptr));
+    out.input_items = data.value("input_items", json::array());
+    out.created_at  = data.value("created_at", (int64_t) 0);
+    return !out.response.is_null();
+}
+
+server_responses_store::server_responses_store(const std::string & base_path, size_t max_items_, int64_t ttl_seconds_) :
+    path(base_path),
+    max_items(max_items_),
+    ttl_seconds(ttl_seconds_) {
+    if (!path.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(path) / "responses", ec);
+    }
+}
+
+std::string server_responses_store::file_path(const std::string & id) const {
+    return server_openai_store::item_path(path, "responses", id);
+}
+
+void server_responses_store::prune_locked() {
+    const int64_t now = server_openai_store::now();
+    if (ttl_seconds > 0) {
+        for (auto it = items.begin(); it != items.end();) {
+            if (now - it->second.created_at > ttl_seconds) {
+                server_openai_store::remove_file(file_path(it->first));
+                it = items.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    while (max_items > 0 && items.size() > max_items) {
+        auto oldest = items.begin();
+        for (auto it = items.begin(); it != items.end(); ++it) {
+            if (it->second.created_at < oldest->second.created_at) {
+                oldest = it;
+            }
+        }
+        server_openai_store::remove_file(file_path(oldest->first));
+        items.erase(oldest);
+    }
+}
+
+bool server_responses_store::get(const std::string & id, server_responses_stored & out) {
+    std::lock_guard<std::mutex> lock(mutex);
+    const int64_t now = server_openai_store::now();
+
+    const auto it = items.find(id);
+    if (it != items.end()) {
+        if (ttl_seconds > 0 && now - it->second.created_at > ttl_seconds) {
+            server_openai_store::remove_file(file_path(id));
+            items.erase(it);
+        } else {
+            out = it->second;
+            return true;
+        }
+    }
+
+    if (!path.empty()) {
+        json data;
+        if (server_openai_store::read_json(file_path(id), data)) {
+            server_responses_stored stored;
+            if (server_responses_stored::from_json(data, stored)) {
+                if (ttl_seconds > 0 && now - stored.created_at > ttl_seconds) {
+                    server_openai_store::remove_file(file_path(id));
+                } else {
+                    items[id] = stored;
+                    out = std::move(stored);
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
 }
 
 void server_responses_store::put(const std::string & id, server_responses_stored item) {
     std::lock_guard<std::mutex> lock(mutex);
-    if (items.size() >= max_items && items.find(id) == items.end()) {
-        items.erase(items.begin());
-    }
+    prune_locked();
     items[id] = std::move(item);
+    prune_locked();
+    const auto it = items.find(id);
+    if (it != items.end() && !path.empty()) {
+        server_openai_store::write_json(file_path(id), it->second.to_json());
+    }
 }
 
 bool server_responses_store::erase(const std::string & id) {
     std::lock_guard<std::mutex> lock(mutex);
-    return items.erase(id) > 0;
+    const bool erased = items.erase(id) > 0;
+    if (!path.empty()) {
+        server_openai_store::remove_file(file_path(id));
+    }
+    return erased;
 }
 
 server_responses_request server_responses_parse_request(const json & body) {
@@ -308,7 +397,7 @@ server_responses_request server_responses_parse_request(const json & body) {
     return req;
 }
 
-void server_responses_resolve_input(server_responses_request & req, const server_responses_store & store) {
+void server_responses_resolve_input(server_responses_request & req, server_responses_store & store) {
     json items = json::array();
     if (!req.previous_response_id.empty()) {
         server_responses_stored previous;

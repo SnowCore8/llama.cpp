@@ -3654,6 +3654,38 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_SLOT_SAVE_PATH"));
     add_opt(common_arg(
+        {"--openai-files-path"}, "PATH",
+        "directory for persisted OpenAI Responses and Chat Completions objects (default: disabled = memory only)",
+        [](common_params & params, const std::string & value) {
+            params.openai_files_path = value;
+            std::error_code ec;
+            std::filesystem::create_directories(params.openai_files_path, ec);
+            if (ec || !fs_is_directory(params.openai_files_path)) {
+                throw std::invalid_argument("cannot create/use OpenAI store directory: " + value);
+            }
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_OPENAI_FILES_PATH"));
+    add_opt(common_arg(
+        {"--openai-store-max"}, "N",
+        string_format("max entries per OpenAI store (default: %d, 0 = unlimited)", params.openai_store_max),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("--openai-store-max must be non-negative");
+            }
+            params.openai_store_max = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_OPENAI_STORE_MAX"));
+    add_opt(common_arg(
+        {"--openai-store-ttl"}, "N",
+        string_format("TTL in seconds for OpenAI store entries, 0 = no TTL (default: %d)", params.openai_store_ttl),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("--openai-store-ttl must be non-negative");
+            }
+            params.openai_store_ttl = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_OPENAI_STORE_TTL"));
+    add_opt(common_arg(
         {"--media-path"}, "PATH",
         "directory for loading local media files; files can be accessed via file:// URLs using relative paths (default: disabled)",
         [](common_params & params, const std::string & value) {

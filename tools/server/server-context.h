@@ -170,8 +170,8 @@ private:
     std::unique_ptr<server_res_generator> handle_tts_impl(const server_http_req & req, json body);
     std::unique_ptr<server_res_generator> handle_count_tokens(const server_http_req & req, task_response_type res_type);
 
-    std::shared_ptr<server_responses_store> responses_store = std::make_shared<server_responses_store>();
-    std::shared_ptr<server_chat_completions_store> chat_completions_store = std::make_shared<server_chat_completions_store>();
+    std::shared_ptr<server_responses_store> responses_store;
+    std::shared_ptr<server_chat_completions_store> chat_completions_store;
 
     // using unique_ptr to allow late initialization of const
     std::unique_ptr<const server_context_meta> meta;

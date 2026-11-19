@@ -5677,6 +5677,10 @@ server_routes::server_routes(const common_params & params, server_context & ctx_
           ctx_server(*ctx_server.impl),
           queue_tasks(ctx_server.impl->queue_tasks),
           queue_results(ctx_server.impl->queue_results) {
+    responses_store = std::make_shared<server_responses_store>(
+        params.openai_files_path, (size_t) params.openai_store_max, (int64_t) params.openai_store_ttl);
+    chat_completions_store = std::make_shared<server_chat_completions_store>(
+        params.openai_files_path, (size_t) params.openai_store_max, (int64_t) params.openai_store_ttl);
     init_routes();
 
     // note: this must be registered before load_model()

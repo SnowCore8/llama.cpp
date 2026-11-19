@@ -31,19 +31,32 @@ struct server_chat_completions_stored {
     std::string user;
     std::string safety_identifier;
     int64_t created_at = 0;
+
+    json to_json() const;
+    static bool from_json(const json & data, server_chat_completions_stored & out);
 };
 
 // in-memory store for stored chat completions
 struct server_chat_completions_store {
     mutable std::mutex mutex;
     std::unordered_map<std::string, server_chat_completions_stored> items;
+    std::string path;
     size_t max_items = 1024;
+    int64_t ttl_seconds = 0;
 
-    bool get(const std::string & id, server_chat_completions_stored & out) const;
+    server_chat_completions_store() = default;
+    server_chat_completions_store(const std::string & base_path, size_t max_items, int64_t ttl_seconds);
+
+    bool get(const std::string & id, server_chat_completions_stored & out);
     void put(const std::string & id, server_chat_completions_stored item);
     bool erase(const std::string & id);
     bool update_metadata(const std::string & id, const json & metadata);
-    std::vector<std::pair<std::string, server_chat_completions_stored>> list() const;
+    std::vector<std::pair<std::string, server_chat_completions_stored>> list();
+
+private:
+    std::string file_path(const std::string & id) const;
+    bool load_one_locked(const std::string & id, server_chat_completions_stored & out);
+    void prune_locked();
 };
 
 server_chat_completions_request server_chat_completions_parse_request(const json & body);
