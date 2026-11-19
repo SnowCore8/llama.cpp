@@ -68,8 +68,7 @@ void server_chat_completions_normalize_request(json & body);
 struct server_chat_completions_context {
     server_chat_completions_context(
             server_chat_completions_store & store,
-            server_chat_completions_request req,
-            const llama_vocab * vocab);
+            server_chat_completions_request req);
 
     // non-stream response: decorate fields and store if requested
     void finish(json & response);
@@ -88,7 +87,6 @@ private:
 
     server_chat_completions_store & store;
     server_chat_completions_request req;
-    const llama_vocab * vocab;
     std::unordered_map<std::string, pending_stream> pending;
 
     void decorate(json & response) const;

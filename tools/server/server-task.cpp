@@ -10,6 +10,7 @@
 #include "speculative.h"
 #include "server-common.h"
 
+#include <algorithm>
 #include <sstream>
 
 //
@@ -350,12 +351,22 @@ json server_task_result_cmpl_final::to_json_non_oaicompat() {
 }
 
 json server_task_result_cmpl_final::usage_json_oaicompat() {
-    return json {
+    json res = json {
         {"completion_tokens", n_decoded},
         {"prompt_tokens",     n_prompt_tokens},
         {"total_tokens",      n_decoded + n_prompt_tokens},
         {"prompt_tokens_details", json { {"cached_tokens", n_prompt_tokens_cache} }},
     };
+    if (res_type == TASK_RESPONSE_TYPE_OAI_CHAT) {
+        res["completion_tokens_details"] = json {
+            {"reasoning_tokens",           n_reasoning_tokens},
+            {"text_tokens",                std::max<int64_t>(0, (int64_t) n_decoded - n_reasoning_tokens)},
+            {"accepted_prediction_tokens", 0},
+            {"rejected_prediction_tokens", 0},
+            {"audio_tokens",               0},
+        };
+    }
+    return res;
 }
 
 json server_task_result_cmpl_final::to_json_oaicompat() {
@@ -416,6 +427,8 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat() {
         {"index", index},
         {"message", msg.to_json_oaicompat()},
     };
+    // internal, summed and removed by server_chat_completions_context::decorate()
+    choice["n_reasoning_tokens"] = n_reasoning_tokens;
 
     if (!stream && probs_output.size() > 0) {
         choice["logprobs"] = json{

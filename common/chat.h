@@ -93,6 +93,7 @@ struct common_chat_msg {
     std::vector<common_chat_msg_content_part> content_parts;
     std::vector<common_chat_tool_call>        tool_calls;
     std::string                               reasoning_content;
+    size_t                                    n_reasoning_tokens = 0; // generated tokens that formed reasoning_content, 0 if unknown
     std::string                               tool_name;
     std::string                               tool_call_id;
     // non-OpenAI message keys as a JSON object string, only for templates that read them (DeepSeek V4.1)

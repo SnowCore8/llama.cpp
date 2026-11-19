@@ -45,6 +45,10 @@ def test_chat_completion(model, system_prompt, user_prompt, max_tokens, re_conte
     # assert res.body["model"] == model if model is not None else server.model_alias
     assert res.body["usage"]["prompt_tokens"] == n_prompt
     assert res.body["usage"]["completion_tokens"] == n_predicted
+    details = res.body["usage"]["completion_tokens_details"]
+    assert details["reasoning_tokens"] >= 0
+    assert details["text_tokens"] >= 0
+    assert details["reasoning_tokens"] + details["text_tokens"] == res.body["usage"]["completion_tokens"]
     choice = res.body["choices"][0]
     assert "assistant" == choice["message"]["role"]
     assert match_regex(re_content, choice["message"]["content"]), f'Expected {re_content}, got {choice["message"]["content"]}'
@@ -595,6 +599,10 @@ def test_chat_completions_multiple_choices():
         # ref: https://github.com/ggml-org/llama.cpp/issues/29451
         assert res.body["usage"]["completion_tokens"] == 16
         assert res.body["usage"]["total_tokens"] == res.body["usage"]["prompt_tokens"] + 16
+        # every choice contributes its exact count, summed for the request
+        details = res.body["usage"]["completion_tokens_details"]
+        assert details["reasoning_tokens"] >= 0
+        assert details["reasoning_tokens"] + details["text_tokens"] == res.body["usage"]["completion_tokens"]
 
 
 def test_chat_completions_token_count():
@@ -691,6 +699,9 @@ def test_chat_completion_store_stream():
             usage = chunk.usage
     assert completion_id is not None
     assert usage is not None
+    assert usage.completion_tokens_details is not None
+    assert usage.completion_tokens_details.reasoning_tokens >= 0
+    assert usage.completion_tokens_details.text_tokens >= 0
     assert client.chat.completions.retrieve(completion_id).id == completion_id
 
 

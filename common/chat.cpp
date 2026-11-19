@@ -1874,6 +1874,21 @@ common_chat_msg common_chat_peg_parse(const common_peg_arena &          src_pars
     }
     mapper->from_ast(ctx.ast, result);
 
+    if (!is_partial) {
+        // count the generated tokens of each reasoning block, the AST offsets include the generation prompt
+        const size_t n_prompt = params.generation_prompt.size();
+        ctx.ast.visit(result, [&](const common_peg_ast_node & node) {
+            if (node.tag != common_chat_peg_builder::REASONING) {
+                return;
+            }
+            for (size_t i = std::max(node.start, n_prompt); i < node.end && i < ctx.tokens.size(); i++) {
+                if (ctx.tokens[i] != LLAMA_TOKEN_NULL) {
+                    msg.n_reasoning_tokens += 1;
+                }
+            }
+        });
+    }
+
     if (ctx.is_debug()) {
         fprintf(stderr, "\nAST for %s parse:\n%s\n", is_partial ? "partial" : "full", ctx.ast.dump().c_str());
         fflush(stderr);

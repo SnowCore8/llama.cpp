@@ -1083,7 +1083,7 @@ static void test_chat_completions_store(testing & t) {
     req.metadata     = json { {"k", "v"} };
     req.service_tier = "default";
 
-    server_chat_completions_context ctx(store, req, nullptr);
+    server_chat_completions_context ctx(store, req);
 
     json response = {
         {"id", "chatcmpl-test"},
@@ -1122,7 +1122,7 @@ static void test_chat_completions_store(testing & t) {
     server_chat_completions_request stream_req;
     stream_req.store = true;
     stream_req.n     = 2;
-    server_chat_completions_context stream_ctx(store, stream_req, nullptr);
+    server_chat_completions_context stream_ctx(store, stream_req);
 
     json chunk0 = {
         {"id", "chatcmpl-stream"},
@@ -1269,7 +1269,7 @@ static void test_chat_completions_parallel(testing & t) {
     server_chat_completions_request req;
     req.store                = false;
     req.parallel_tool_calls  = false;
-    server_chat_completions_context ctx(store, req, nullptr);
+    server_chat_completions_context ctx(store, req);
 
     json response = {
         {"id", "chatcmpl-parallel"},

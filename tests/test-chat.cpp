@@ -9,6 +9,7 @@
 #include "../src/unicode.h"
 #include "../tools/server/server-chat.h"
 #include "chat-auto-parser.h"
+#include "chat-peg-parser.h"
 #include "chat.h"
 #include "json-schema-to-grammar.h"
 #include "json-schema.h"
@@ -976,6 +977,7 @@ const common_chat_msg message_user{
     /* .content_parts = */ {},
     /* .tool_calls = */ {},
     /* .reasoning_content = */ "",
+    /* .n_reasoning_tokens = */ 0,
     /* .tool_name = */ "",
     /* .tool_call_id = */ "",
     /* .extra_json = */ "",
@@ -993,6 +995,7 @@ const common_chat_msg message_user_parts{
     {                 },
     /* .reasoning_content = */
     "",
+    /* .n_reasoning_tokens = */ 0,
     /* .tool_name = */ "",
     /* .tool_call_id = */ "",
     /* .extra_json = */ "",
@@ -8158,6 +8161,69 @@ static void test_chat_session() {
     }
 }
 
+static void test_reasoning_token_count() {
+    LOG_DBG("%s\n", __func__);
+
+    // two generated tokens form the reasoning block, the end marker and the content are not counted
+    {
+        const std::string generation_prompt = "<|a|>";
+
+        auto parser = build_chat_peg_parser([&](common_chat_peg_builder & p) {
+            return p.prefix(generation_prompt) +
+                (p.reasoning(p.until("</t>")) + p.literal("</t>") + p.content(p.rest())) +
+                p.end();
+        });
+
+        common_chat_parser_params params;
+        params.format            = COMMON_CHAT_FORMAT_PEG_NATIVE;
+        params.generation_prompt = common_chat_input(generation_prompt);
+
+        common_chat_input input;
+        input.append("abc",   1); // reasoning
+        input.append("def",   2); // reasoning
+        input.append("</t>",  3); // end marker
+        input.append("xyz",   4); // content
+
+        const auto msg = common_chat_peg_parse(parser, input, false, params);
+        assert_equals(std::string("abcdef"), msg.reasoning_content);
+        assert_equals(std::string("xyz"),    msg.content);
+        assert_equals((size_t) 2, msg.n_reasoning_tokens);
+
+        // partial parses do not report a token count
+        const auto partial = common_chat_peg_parse(parser, input, true, params);
+        assert_equals((size_t) 0, partial.n_reasoning_tokens);
+    }
+
+    // reasoning can start in the generation prompt (continued message): only the generated part counts
+    {
+        const std::string generation_prompt = "<|a|>abc";
+
+        auto parser = build_chat_peg_parser([&](common_chat_peg_builder & p) {
+            return p.prefix(generation_prompt, "abc") +
+                (p.reasoning(p.until("</t>")) + p.literal("</t>") + p.content(p.rest())) +
+                p.end();
+        });
+
+        common_chat_parser_params params;
+        params.format = COMMON_CHAT_FORMAT_PEG_NATIVE;
+
+        common_chat_input prompt_input;
+        prompt_input.append("<|a|>", 90);
+        prompt_input.append("abc",   91); // reasoning prefilled by the prompt, not generated
+        params.generation_prompt = prompt_input;
+
+        common_chat_input input;
+        input.append("def",  1); // reasoning
+        input.append("</t>", 3);
+        input.append("xyz",  4);
+
+        const auto msg = common_chat_peg_parse(parser, input, false, params);
+        assert_equals(std::string("abcdef"), msg.reasoning_content);
+        assert_equals(std::string("xyz"),    msg.content);
+        assert_equals((size_t) 1, msg.n_reasoning_tokens);
+    }
+}
+
 static void test_chat_json_depth() {
     LOG_DBG("%s\n", __func__);
     const auto arrays = [](size_t n) {
@@ -8476,6 +8542,7 @@ int main(int argc, char ** argv) {
         test_reasoning_effort_caps();
         test_prompt_parts();
         test_chat_session();
+        test_reasoning_token_count();
         test_chat_json_depth();
         test_reasoning_budget_tokens_per_request();
         test_reasoning_budget_message_per_request();

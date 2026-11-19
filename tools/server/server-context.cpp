@@ -5390,7 +5390,15 @@ static json format_openai_error_from_json(const json & err) {
     const std::string message = json_value(err, "message", std::string("request failed"));
     const std::string type    = json_value(err, "type", std::string("server_error"));
     const int status          = json_value(err, "code", 500);
-    return format_openai_error(message, error_type_from_name(type), "", nullptr, status);
+    json out = format_openai_error(message, error_type_from_name(type), "", nullptr, status);
+    // keep surface-specific fields such as n_prompt_tokens and n_ctx
+    for (const auto & [key, value] : err.items()) {
+        if (key == "code" || key == "type" || key == "message" || key == "http_status") {
+            continue;
+        }
+        out[key] = value;
+    }
+    return out;
 }
 
 static json format_openai_invalid_request(const std::exception & e) {
@@ -6222,7 +6230,7 @@ void server_routes::init_routes() {
                 files,
                 session);
             auto chat_ctx = std::make_shared<server_chat_completions_context>(
-                *chat_completions_store, std::move(creq), ctx_server.vocab);
+                *chat_completions_store, std::move(creq));
             return handle_completions_impl(
                 req,
                 SERVER_TASK_TYPE_COMPLETION,

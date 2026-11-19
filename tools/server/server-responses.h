@@ -216,9 +216,9 @@ private:
             const json & usage,
             const json & error,
             const json & incomplete_details) const;
-    json usage_from(const server_task_result_cmpl_final & result, const std::string & reasoning_text) const;
+    json usage_from(const server_task_result_cmpl_final & result) const;
     json output_from_msg(const common_chat_msg & msg) const;
-    json output_from_stream(size_t * n_reasoning = nullptr) const;
+    json output_from_stream() const;
     json message_item(const std::string & item_id, const std::string & text, const std::string & status) const;
     json reasoning_item(const std::string & item_id, const std::string & text, const std::string & status) const;
     json function_call_item(

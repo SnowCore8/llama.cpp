@@ -276,7 +276,7 @@ server_chat_completions_request server_chat_completions_parse_request(const json
     }
 
     server_chat_completions_request req;
-    req.model              = body.value("model", std::string());
+    req.model              = json_value(body, "model", std::string());
     req.store              = body.value("store", false);
     req.parallel_tool_calls = body.value("parallel_tool_calls", true);
     req.n                  = body.value("n", 1);
@@ -502,18 +502,20 @@ void server_chat_completions_normalize_request(json & body) {
 
 server_chat_completions_context::server_chat_completions_context(
         server_chat_completions_store & store,
-        server_chat_completions_request req,
-        const llama_vocab * vocab) :
+        server_chat_completions_request req) :
     store(store),
-    req(std::move(req)),
-    vocab(vocab) {
+    req(std::move(req)) {
 }
 
 void server_chat_completions_context::decorate(json & response) const {
-    int64_t n_reasoning = 0;
+    // sum the exact count of each choice; the temporary field is removed here
+    int64_t n_reasoning   = 0;
+    bool    has_reasoning = false;
     if (response.contains("choices") && response.at("choices").is_array()) {
+        has_reasoning = true;
         for (auto & choice : response.at("choices")) {
             if (!choice.is_object() || !choice.contains("message") || !choice.at("message").is_object()) {
+                has_reasoning = false;
                 continue;
             }
             json & message = choice.at("message");
@@ -526,22 +528,35 @@ void server_chat_completions_context::decorate(json & response) const {
                 kept.push_back(message.at("tool_calls")[0]);
                 message["tool_calls"] = std::move(kept);
             }
-            if (vocab != nullptr && message.contains("reasoning_content") && message.at("reasoning_content").is_string()) {
-                n_reasoning += (int64_t) common_tokenize(vocab, message.at("reasoning_content").get<std::string>(), false, false).size();
+            if (choice.contains("n_reasoning_tokens") && choice.at("n_reasoning_tokens").is_number_integer()) {
+                n_reasoning += choice.at("n_reasoning_tokens").get<int64_t>();
+            } else {
+                has_reasoning = false;
             }
+            choice.erase("n_reasoning_tokens");
         }
     }
 
     if (response.contains("usage") && response.at("usage").is_object()) {
         json & usage = response.at("usage");
         const int64_t completion_tokens = usage.value("completion_tokens", (int64_t) 0);
-        usage["completion_tokens_details"] = json {
-            {"reasoning_tokens",           n_reasoning},
-            {"text_tokens",                std::max<int64_t>(0, completion_tokens - n_reasoning)},
-            {"accepted_prediction_tokens", 0},
-            {"rejected_prediction_tokens", 0},
-            {"audio_tokens",               0},
-        };
+        if (has_reasoning) {
+            usage["completion_tokens_details"] = json {
+                {"reasoning_tokens",           n_reasoning},
+                {"text_tokens",                std::max<int64_t>(0, completion_tokens - n_reasoning)},
+                {"accepted_prediction_tokens", 0},
+                {"rejected_prediction_tokens", 0},
+                {"audio_tokens",               0},
+            };
+        } else if (!usage.contains("completion_tokens_details") || !usage.at("completion_tokens_details").is_object()) {
+            usage["completion_tokens_details"] = json {
+                {"reasoning_tokens",           0},
+                {"text_tokens",                completion_tokens},
+                {"accepted_prediction_tokens", 0},
+                {"rejected_prediction_tokens", 0},
+                {"audio_tokens",               0},
+            };
+        }
         if (!usage.contains("prompt_tokens_details") || !usage.at("prompt_tokens_details").is_object()) {
             usage["prompt_tokens_details"] = json::object();
         }

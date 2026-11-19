@@ -252,7 +252,7 @@ server_responses_request server_responses_parse_request(const json & body) {
     }
 
     server_responses_request req;
-    req.model                     = body.value("model", std::string());
+    req.model                     = json_value(body, "model", std::string());
     req.stream                    = body.value("stream", false);
     req.store                     = body.value("store", true);
     req.timings_per_token         = body.value("timings_per_token", false);
@@ -812,11 +812,8 @@ json server_responses_context::make_response(
     return response;
 }
 
-json server_responses_context::usage_from(const server_task_result_cmpl_final & result, const std::string & reasoning_text) const {
-    int64_t n_reasoning = 0;
-    if (vocab != nullptr && !reasoning_text.empty()) {
-        n_reasoning = (int64_t) common_tokenize(vocab, reasoning_text, false, false).size();
-    }
+json server_responses_context::usage_from(const server_task_result_cmpl_final & result) const {
+    const int64_t n_reasoning = result.n_reasoning_tokens;
     return json {
         {"input_tokens", result.n_prompt_tokens},
         {"input_tokens_details", json {
@@ -906,7 +903,7 @@ json server_responses_context::output_from_msg(const common_chat_msg & msg) cons
     return output;
 }
 
-json server_responses_context::output_from_stream(size_t * n_reasoning) const {
+json server_responses_context::output_from_stream() const {
     std::vector<std::pair<size_t, json>> items;
     if (reasoning.added) {
         items.emplace_back(reasoning.output_index, reasoning_item(reasoning.id, reasoning.text, "completed"));
@@ -924,9 +921,6 @@ json server_responses_context::output_from_stream(size_t * n_reasoning) const {
     json output = json::array();
     for (auto & item : items) {
         output.push_back(std::move(item.second));
-    }
-    if (n_reasoning != nullptr) {
-        *n_reasoning = reasoning.text.size();
     }
     return output;
 }
@@ -1264,7 +1258,7 @@ json server_responses_context::finish(const server_task_result_cmpl_final & resu
     finalize_items(events);
 
     const bool incomplete = result.truncated || result.stop == STOP_TYPE_LIMIT;
-    const json usage      = usage_from(result, reasoning.text);
+    const json usage      = usage_from(result);
     const json details    = incomplete ? json {{"reason", "max_output_tokens"}} : json(nullptr);
     const std::string status = incomplete ? "incomplete" : "completed";
     const json response   = make_response(status, output_from_stream(), usage, nullptr, details);
@@ -1299,7 +1293,7 @@ json server_responses_context::final_response(const server_task_result_cmpl_fina
     }
 
     const bool incomplete = result.truncated || result.stop == STOP_TYPE_LIMIT;
-    const json usage      = usage_from(result, msg.reasoning_content);
+    const json usage      = usage_from(result);
     const json details    = incomplete ? json {{"reason", "max_output_tokens"}} : json(nullptr);
     const std::string status = incomplete ? "incomplete" : "completed";
     const json response   = make_response(status, output_from_msg(msg), usage, nullptr, details);

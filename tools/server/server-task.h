@@ -408,6 +408,7 @@ struct server_task_result_cmpl_final : server_task_result {
 
     bool truncated;
     int32_t n_decoded;
+    int32_t n_reasoning_tokens = 0; // generated tokens inside reasoning blocks
     int32_t n_prompt_tokens;
     int32_t n_prompt_tokens_cache;
     int32_t n_tokens_cached;
@@ -440,6 +441,7 @@ struct server_task_result_cmpl_final : server_task_result {
     virtual void update(task_result_state & state) override {
         is_updated = true;
         oaicompat_msg = state.update_chat_msg(content, false, oaicompat_msg_diffs);
+        n_reasoning_tokens = (int32_t) oaicompat_msg.n_reasoning_tokens;
     }
 
     json to_json_non_oaicompat();
