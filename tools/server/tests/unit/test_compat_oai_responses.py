@@ -320,3 +320,22 @@ def test_responses_background_stream_reattach():
     tail = list(client.responses.retrieve(res.id, stream=True, starting_after=mid))
     assert [event.sequence_number for event in tail] == list(range(mid + 1, len(seqs)))
     assert [event.type for event in tail] == types[mid + 1:]
+
+
+def test_responses_annotations_and_file_id():
+    global server
+    server.start()
+    client = OpenAI(api_key="dummy", base_url=f"http://{server.server_host}:{server.server_port}/v1")
+
+    res = client.responses.create(model="gpt-4.1", input="Book", max_output_tokens=4, temperature=0.0)
+    assert res.output[0].content[0].annotations == []
+
+    try:
+        client.responses.create(
+            model="gpt-4.1",
+            input=[{"role": "user", "content": [{"type": "input_file", "file_id": "file-123"}]}],
+        )
+        assert False
+    except BadRequestError as e:
+        assert e.status_code == 400
+        assert "file_id" in e.body["message"]
