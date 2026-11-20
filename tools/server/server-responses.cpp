@@ -822,6 +822,23 @@ json server_responses_build_params(
                     pending_reasoning = std::move(text);
                 }
             }
+            if (pending_reasoning.empty() && item.contains("summary") && item.at("summary").is_array()) {
+                // clients that replay the visible summary need it in history, otherwise the
+                // prompt diverges at every earlier reasoning block and the whole conversation is recomputed
+                for (const auto & part : item.at("summary")) {
+                    if (!part.is_object() || part.value("type", std::string()) != "summary_text") {
+                        continue;
+                    }
+                    const std::string text = part.value("text", std::string());
+                    if (text.empty()) {
+                        continue;
+                    }
+                    if (!pending_reasoning.empty()) {
+                        pending_reasoning += "\n\n";
+                    }
+                    pending_reasoning += text;
+                }
+            }
             return nullptr;
         }
         throw std::invalid_argument("unsupported input item type: " + type);
