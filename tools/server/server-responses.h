@@ -209,7 +209,6 @@ private:
     mutable size_t seq = 0;
     size_t next_output_index = 0;
     bool started = false;
-    bool reasoning_summary = false;
     std::vector<json> text_logprobs;
     json message_logprobs = json::array();
     text_item reasoning;

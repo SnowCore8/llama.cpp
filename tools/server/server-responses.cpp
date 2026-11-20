@@ -337,7 +337,7 @@ server_responses_request server_responses_parse_request(const json & body) {
             if (include_value == "message.output_text.logprobs") {
                 req.include_logprobs = true;
             } else if (include_value == "reasoning.encrypted_content") {
-                throw std::invalid_argument("'include' does not support encrypted reasoning content");
+                // accepted for compatibility: this server has no encrypted reasoning, replay uses summary
             } else {
                 throw std::invalid_argument("unsupported 'include' value: " + include_value);
             }
@@ -818,11 +818,6 @@ server_responses_context::server_responses_context(
     }
     id         = "resp_" + random_string();
     created_at = (int64_t) std::time(0);
-    if (this->req.reasoning.is_object()) {
-        const std::string summary = this->req.reasoning.value("summary", std::string());
-        const std::string generated = this->req.reasoning.value("generate_summary", std::string());
-        reasoning_summary = !summary.empty() || !generated.empty();
-    }
     // a background response is generated as a stream, its events can be replayed to new
     // connections. the POST connection of background + stream reads the same log
     if (this->req.background) {
@@ -931,26 +926,18 @@ json server_responses_context::message_item(const std::string & item_id, const s
 }
 
 json server_responses_context::reasoning_item(const std::string & item_id, const std::string & text, const std::string & status) const {
-    json content = json::array();
     json summary = json::array();
     if (!text.empty()) {
-        if (reasoning_summary) {
-            summary.push_back(json {
-                {"type", "summary_text"},
-                {"text", text},
-            });
-        } else {
-            content.push_back(json {
-                {"type", "reasoning_text"},
-                {"text", text},
-            });
-        }
+        summary.push_back(json {
+            {"type", "summary_text"},
+            {"text", text},
+        });
     }
     return json {
         {"id",                item_id},
         {"type",              "reasoning"},
         {"summary",           summary},
-        {"content",           content},
+        {"content",           json::array()},
         {"encrypted_content", nullptr},
         {"status",            status},
     };
@@ -1077,44 +1064,23 @@ void server_responses_context::add_reasoning_delta(json & events, const std::str
     }
     if (!reasoning.part_added) {
         reasoning.part_added = true;
-        if (reasoning_summary) {
-            push(events, "response.reasoning_summary_part.added", json {
-                {"item_id",       reasoning.id},
-                {"output_index",  reasoning.output_index},
-                {"summary_index", 0},
-                {"part", json {
-                    {"type", "summary_text"},
-                    {"text", ""},
-                }},
-            });
-        } else {
-            push(events, "response.content_part.added", json {
-                {"item_id",       reasoning.id},
-                {"output_index",  reasoning.output_index},
-                {"content_index", 0},
-                {"part", json {
-                    {"type", "reasoning_text"},
-                    {"text", ""},
-                }},
-            });
-        }
-    }
-    reasoning.text += delta;
-    if (reasoning_summary) {
-        push(events, "response.reasoning_summary_text.delta", json {
+        push(events, "response.reasoning_summary_part.added", json {
             {"item_id",       reasoning.id},
             {"output_index",  reasoning.output_index},
             {"summary_index", 0},
-            {"delta",         delta},
-        });
-    } else {
-        push(events, "response.reasoning_text.delta", json {
-            {"item_id",       reasoning.id},
-            {"output_index",  reasoning.output_index},
-            {"content_index", 0},
-            {"delta",         delta},
+            {"part", json {
+                {"type", "summary_text"},
+                {"text", ""},
+            }},
         });
     }
+    reasoning.text += delta;
+    push(events, "response.reasoning_summary_text.delta", json {
+        {"item_id",       reasoning.id},
+        {"output_index",  reasoning.output_index},
+        {"summary_index", 0},
+        {"delta",         delta},
+    });
 }
 
 void server_responses_context::add_text_delta(json & events, const std::string & delta) {
@@ -1228,39 +1194,21 @@ void server_responses_context::apply_diffs(json & events, const std::vector<comm
 void server_responses_context::finalize_items(json & events) {
     if (reasoning.added && !reasoning.done) {
         reasoning.done = true;
-        if (reasoning_summary) {
-            push(events, "response.reasoning_summary_text.done", json {
-                {"item_id",       reasoning.id},
-                {"output_index",  reasoning.output_index},
-                {"summary_index", 0},
-                {"text",          reasoning.text},
-            });
-            push(events, "response.reasoning_summary_part.done", json {
-                {"item_id",       reasoning.id},
-                {"output_index",  reasoning.output_index},
-                {"summary_index", 0},
-                {"part", json {
-                    {"type", "summary_text"},
-                    {"text", reasoning.text},
-                }},
-            });
-        } else {
-            push(events, "response.reasoning_text.done", json {
-                {"item_id",       reasoning.id},
-                {"output_index",  reasoning.output_index},
-                {"content_index", 0},
-                {"text",          reasoning.text},
-            });
-            push(events, "response.content_part.done", json {
-                {"item_id",       reasoning.id},
-                {"output_index",  reasoning.output_index},
-                {"content_index", 0},
-                {"part", json {
-                    {"type", "reasoning_text"},
-                    {"text", reasoning.text},
-                }},
-            });
-        }
+        push(events, "response.reasoning_summary_text.done", json {
+            {"item_id",       reasoning.id},
+            {"output_index",  reasoning.output_index},
+            {"summary_index", 0},
+            {"text",          reasoning.text},
+        });
+        push(events, "response.reasoning_summary_part.done", json {
+            {"item_id",       reasoning.id},
+            {"output_index",  reasoning.output_index},
+            {"summary_index", 0},
+            {"part", json {
+                {"type", "summary_text"},
+                {"text", reasoning.text},
+            }},
+        });
         push(events, "response.output_item.done", json {
             {"output_index", reasoning.output_index},
             {"item", reasoning_item(reasoning.id, reasoning.text, "completed")},

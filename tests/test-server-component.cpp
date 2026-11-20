@@ -1007,6 +1007,14 @@ static void test_responses_parse(testing & t) {
     auto_trunc["truncation"] = "auto";
     t.assert_equal("truncation auto", std::string("auto"), server_responses_parse_request(auto_trunc).truncation);
 
+    json logs = body;
+    logs["include"] = json::array({ "message.output_text.logprobs" });
+    t.assert_true("logprobs include", server_responses_parse_request(logs).include_logprobs);
+
+    json encrypted = body;
+    encrypted["include"] = json::array({ "reasoning.encrypted_content" });
+    t.assert_true("encrypted include accepted", !server_responses_parse_request(encrypted).include_logprobs);
+
     thrown = false;
     bad = body;
     bad.erase("input");
@@ -1085,9 +1093,10 @@ static void test_responses_stream(testing & t) {
     json events = ctx.consume(partial);
     t.assert_true("created",        has_event(events, "response.created"));
     t.assert_true("in progress",    has_event(events, "response.in_progress"));
-    t.assert_true("reasoning item", has_event(events, "response.output_item.added"));
-    t.assert_true("reasoning text", has_event(events, "response.reasoning_text.delta"));
-    t.assert_true("text delta",     has_event(events, "response.output_text.delta"));
+    t.assert_true("reasoning item",    has_event(events, "response.output_item.added"));
+    t.assert_true("reasoning summary", has_event(events, "response.reasoning_summary_text.delta"));
+    t.assert_true("no reasoning text", !has_event(events, "response.reasoning_text.delta"));
+    t.assert_true("text delta",        has_event(events, "response.output_text.delta"));
     t.assert_true("tool delta",     has_event(events, "response.function_call_arguments.delta"));
 
     server_task_result_cmpl_final final_result;
