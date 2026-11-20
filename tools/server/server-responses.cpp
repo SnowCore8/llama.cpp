@@ -34,6 +34,146 @@ json response_logprob_json(const completion_token_output & p) {
 }
 
 
+// opaque reasoning payload for stateless replay; the server can decode its own blobs
+std::string encode_encrypted_reasoning(const std::string & text) {
+    return "elc1:" + base64::encode(json { {"v", 1}, {"text", text} }.dump());
+}
+
+bool decode_encrypted_reasoning(const std::string & blob, std::string & out) {
+    if (blob.rfind("elc1:", 0) != 0) {
+        return false;
+    }
+    try {
+        const json parsed = json::parse(base64::decode(blob.substr(5)));
+        if (!parsed.is_object() || parsed.value("v", 0) != 1 || !parsed.contains("text") || !parsed.at("text").is_string()) {
+            return false;
+        }
+        out = parsed.at("text").get<std::string>();
+        return true;
+    } catch (const std::exception &) {
+        return false;
+    }
+}
+
+int hex_digit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+void append_utf8(std::string & out, unsigned int cp) {
+    if (cp < 0x80) {
+        out += (char) cp;
+    } else if (cp < 0x800) {
+        out += (char) (0xC0 | (cp >> 6));
+        out += (char) (0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+        out += (char) (0xE0 | (cp >> 12));
+        out += (char) (0x80 | ((cp >> 6) & 0x3F));
+        out += (char) (0x80 | (cp & 0x3F));
+    } else {
+        out += (char) (0xF0 | (cp >> 18));
+        out += (char) (0x80 | ((cp >> 12) & 0x3F));
+        out += (char) (0x80 | ((cp >> 6) & 0x3F));
+        out += (char) (0x80 | (cp & 0x3F));
+    }
+}
+
+// decode the value of the "input" field from a partial {"input": "..."} JSON stream
+bool decode_custom_input_prefix(const std::string & arguments, std::string & out, bool & complete) {
+    out.clear();
+    complete = false;
+    const size_t key = arguments.find("\"input\"");
+    if (key == std::string::npos) {
+        return false;
+    }
+    size_t pos = key + 7;
+    while (pos < arguments.size() && std::isspace((unsigned char) arguments[pos])) ++pos;
+    if (pos >= arguments.size() || arguments[pos] != ':') {
+        return false;
+    }
+    ++pos;
+    while (pos < arguments.size() && std::isspace((unsigned char) arguments[pos])) ++pos;
+    if (pos >= arguments.size() || arguments[pos] != '"') {
+        return false;
+    }
+    ++pos;
+    while (pos < arguments.size()) {
+        const char c = arguments[pos++];
+        if (c == '"') {
+            complete = true;
+            return true;
+        }
+        if (c != '\\') {
+            out += c;
+            continue;
+        }
+        if (pos >= arguments.size()) {
+            return true; // incomplete escape, keep what we have
+        }
+        const char esc = arguments[pos++];
+        switch (esc) {
+            case '"':  out += '"';  break;
+            case '\\': out += '\\'; break;
+            case '/':  out += '/';  break;
+            case 'b':  out += '\b'; break;
+            case 'f':  out += '\f'; break;
+            case 'n':  out += '\n'; break;
+            case 'r':  out += '\r'; break;
+            case 't':  out += '\t'; break;
+            case 'u': {
+                if (pos + 4 > arguments.size()) {
+                    return true; // incomplete unicode escape
+                }
+                unsigned int cp = 0;
+                for (int i = 0; i < 4; ++i) {
+                    const int h = hex_digit(arguments[pos + i]);
+                    if (h < 0) {
+                        return true;
+                    }
+                    cp = (cp << 4) | (unsigned int) h;
+                }
+                pos += 4;
+                if (cp >= 0xD800 && cp <= 0xDBFF) {
+                    if (pos + 6 > arguments.size() || arguments[pos] != '\\' || arguments[pos + 1] != 'u') {
+                        return true; // wait for the low surrogate
+                    }
+                    int lo = 0;
+                    for (int i = 0; i < 4; ++i) {
+                        const int h = hex_digit(arguments[pos + 2 + i]);
+                        if (h < 0) {
+                            return true;
+                        }
+                        lo = (lo << 4) | h;
+                    }
+                    if (lo < 0xDC00 || lo > 0xDFFF) {
+                        return true;
+                    }
+                    pos += 6;
+                    cp = 0x10000 + ((cp - 0xD800) << 10) + ((unsigned int) lo - 0xDC00);
+                }
+                append_utf8(out, cp);
+                break;
+            }
+            default:
+                out += esc;
+                break;
+        }
+    }
+    return true;
+}
+
+std::string decode_data_uri(const std::string & uri) {
+    const size_t comma = uri.find(',');
+    if (comma == std::string::npos) {
+        throw std::invalid_argument("data URI is missing a comma");
+    }
+    const std::string header  = uri.substr(0, comma);
+    const std::string payload = uri.substr(comma + 1);
+    return header.find("base64") != std::string::npos ? base64::decode(payload) : payload;
+}
+
 json normalize_input(const json & input) {
     json items = json::array();
     if (input.is_string()) {
@@ -337,7 +477,7 @@ server_responses_request server_responses_parse_request(const json & body) {
             if (include_value == "message.output_text.logprobs") {
                 req.include_logprobs = true;
             } else if (include_value == "reasoning.encrypted_content") {
-                // accepted for compatibility: this server has no encrypted reasoning, replay uses summary
+                req.include_encrypted_content = true;
             } else {
                 throw std::invalid_argument("unsupported 'include' value: " + include_value);
             }
@@ -482,7 +622,8 @@ json server_responses_build_params(
     inputs.chat_template_kwargs  = opt.chat_template_kwargs;
     inputs.enable_thinking       = opt.enable_thinking;
 
-    auto convert_item = [files_store](const json & item) -> json {
+    std::string pending_reasoning;
+    auto convert_item = [files_store, &opt, &pending_reasoning](const json & item) -> json {
         if (!item.is_object()) {
             throw std::invalid_argument("input items must be objects");
         }
@@ -550,6 +691,7 @@ json server_responses_build_params(
                     } else if (part_type == "input_file") {
                         const std::string file_data = part.value("file_data", std::string());
                         const std::string file_id   = part.value("file_id", std::string());
+                        const std::string file_url  = part.value("file_url", std::string());
                         std::string decoded;
                         if (!file_id.empty()) {
                             if (files_store == nullptr) {
@@ -561,6 +703,17 @@ json server_responses_build_params(
                                 throw std::invalid_argument("file not found: " + file_id);
                             }
                             decoded.assign(content.begin(), content.end());
+                        } else if (!file_url.empty()) {
+                            if (file_url.rfind("data:", 0) == 0) {
+                                decoded = decode_data_uri(file_url);
+                            } else {
+                                std::vector<raw_buffer> fetched;
+                                handle_media(fetched, file_url, opt.media_path, opt.media_allow_private_urls);
+                                if (fetched.size() != 1) {
+                                    throw std::invalid_argument("input_file 'file_url' must resolve to one file");
+                                }
+                                decoded.assign(fetched[0].begin(), fetched[0].end());
+                            }
                         } else if (!file_data.empty()) {
                             try {
                                 if (file_data.rfind("data:", 0) == 0) {
@@ -602,15 +755,20 @@ json server_responses_build_params(
             } else {
                 throw std::invalid_argument("message content must be a string or an array");
             }
-            return json {
+            json message = {
                 {"role", role},
                 {"content", content},
             };
+            if (role == "assistant" && !pending_reasoning.empty()) {
+                message["reasoning_content"] = std::move(pending_reasoning);
+                pending_reasoning.clear();
+            }
+            return message;
         }
         if (type == "function_call") {
             const json arguments_in = item.value("arguments", json(""));
             const std::string arguments = arguments_in.is_string() ? arguments_in.get<std::string>() : arguments_in.dump();
-            return json {
+            json message = {
                 {"role", "assistant"},
                 {"content", nullptr},
                 {"tool_calls", json::array({ json {
@@ -622,11 +780,16 @@ json server_responses_build_params(
                     }},
                 } })},
             };
+            if (!pending_reasoning.empty()) {
+                message["reasoning_content"] = std::move(pending_reasoning);
+                pending_reasoning.clear();
+            }
+            return message;
         }
         if (type == "custom_tool_call") {
             const std::string input = item.value("input", std::string());
             const json arguments = json {{"input", input}};
-            return json {
+            json message = {
                 {"role", "assistant"},
                 {"content", nullptr},
                 {"tool_calls", json::array({ json {
@@ -638,6 +801,11 @@ json server_responses_build_params(
                     }},
                 } })},
             };
+            if (!pending_reasoning.empty()) {
+                message["reasoning_content"] = std::move(pending_reasoning);
+                pending_reasoning.clear();
+            }
+            return message;
         }
         if (type == "function_call_output" || type == "custom_tool_call_output") {
             const json output = item.value("output", json(""));
@@ -648,6 +816,12 @@ json server_responses_build_params(
             };
         }
         if (type == "reasoning") {
+            if (item.contains("encrypted_content") && item.at("encrypted_content").is_string()) {
+                std::string text;
+                if (decode_encrypted_reasoning(item.at("encrypted_content").get<std::string>(), text)) {
+                    pending_reasoning = std::move(text);
+                }
+            }
             return nullptr;
         }
         throw std::invalid_argument("unsupported input item type: " + type);
@@ -933,12 +1107,15 @@ json server_responses_context::reasoning_item(const std::string & item_id, const
             {"text", text},
         });
     }
+    const std::string encrypted = req.include_encrypted_content && !text.empty()
+        ? encode_encrypted_reasoning(text)
+        : std::string();
     return json {
         {"id",                item_id},
         {"type",              "reasoning"},
         {"summary",           summary},
         {"content",           json::array()},
-        {"encrypted_content", nullptr},
+        {"encrypted_content", encrypted.empty() ? json(nullptr) : json(encrypted)},
         {"status",            status},
     };
 }
@@ -1152,7 +1329,18 @@ void server_responses_context::add_tool_delta(json & events, size_t index, const
                 ? custom_tool_call_item(tool.item_id, tool.call_id, tool.name, "", "in_progress")
                 : function_call_item(tool.item_id, tool.call_id, tool.name, "", "in_progress")},
         });
-        if (!tool.is_custom && !tool.arguments.empty()) {
+        if (tool.is_custom) {
+            std::string prefix;
+            bool complete = false;
+            if (decode_custom_input_prefix(tool.arguments, prefix, complete) && !prefix.empty()) {
+                push(events, "response.custom_tool_call_input.delta", json {
+                    {"item_id",      tool.item_id},
+                    {"output_index", tool.output_index},
+                    {"delta",        prefix},
+                });
+                tool.input = std::move(prefix);
+            }
+        } else if (!tool.arguments.empty()) {
             push(events, "response.function_call_arguments.delta", json {
                 {"item_id",      tool.item_id},
                 {"output_index", tool.output_index},
@@ -1167,7 +1355,20 @@ void server_responses_context::add_tool_delta(json & events, size_t index, const
     }
     if (!delta.arguments.empty()) {
         tool.arguments += delta.arguments;
-        if (!tool.is_custom) {
+        if (tool.is_custom) {
+            std::string prefix;
+            bool complete = false;
+            if (decode_custom_input_prefix(tool.arguments, prefix, complete) &&
+                    prefix.size() > tool.input.size() &&
+                    prefix.compare(0, tool.input.size(), tool.input) == 0) {
+                push(events, "response.custom_tool_call_input.delta", json {
+                    {"item_id",      tool.item_id},
+                    {"output_index", tool.output_index},
+                    {"delta",        prefix.substr(tool.input.size())},
+                });
+                tool.input = std::move(prefix);
+            }
+        } else {
             push(events, "response.function_call_arguments.delta", json {
                 {"item_id",      tool.item_id},
                 {"output_index", tool.output_index},
@@ -1248,14 +1449,21 @@ void server_responses_context::finalize_items(json & events) {
         }
         tool.done = true;
         if (tool.is_custom) {
-            tool.input = custom_tool_input(tool.arguments);
-            if (!tool.input.empty()) {
+            const std::string full = custom_tool_input(tool.arguments);
+            std::string pending;
+            if (full.size() > tool.input.size() && full.compare(0, tool.input.size(), tool.input) == 0) {
+                pending = full.substr(tool.input.size());
+            } else if (full != tool.input) {
+                pending = full;
+            }
+            if (!pending.empty()) {
                 push(events, "response.custom_tool_call_input.delta", json {
                     {"item_id",      tool.item_id},
                     {"output_index", tool.output_index},
-                    {"delta",        tool.input},
+                    {"delta",        pending},
                 });
             }
+            tool.input = full;
             push(events, "response.custom_tool_call_input.done", json {
                 {"item_id",      tool.item_id},
                 {"output_index", tool.output_index},

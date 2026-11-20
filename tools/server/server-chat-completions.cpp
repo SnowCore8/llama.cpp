@@ -406,7 +406,8 @@ server_chat_completions_request server_chat_completions_parse_request(const json
         throw std::invalid_argument("audio output is not supported");
     }
     if (body.contains("prediction") && !body.at("prediction").is_null()) {
-        throw std::invalid_argument("'prediction' is not supported");
+        // accepted as a latency hint; local decoding has no predicted-output path
+        SRV_WRN("%s", "'prediction' is ignored\n");
     }
     if (body.contains("tools") && !body.at("tools").is_null()) {
         // the shared parser validates function and custom tools, including the custom format

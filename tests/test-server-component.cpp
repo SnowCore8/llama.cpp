@@ -1013,7 +1013,9 @@ static void test_responses_parse(testing & t) {
 
     json encrypted = body;
     encrypted["include"] = json::array({ "reasoning.encrypted_content" });
-    t.assert_true("encrypted include accepted", !server_responses_parse_request(encrypted).include_logprobs);
+    server_responses_request encrypted_req = server_responses_parse_request(encrypted);
+    t.assert_true("encrypted include accepted", encrypted_req.include_encrypted_content);
+    t.assert_true("encrypted include no logprobs", !encrypted_req.include_logprobs);
 
     thrown = false;
     bad = body;
@@ -1577,6 +1579,31 @@ static void test_responses_reasoning_summary(testing & t) {
 }
 
 
+static void test_responses_encrypted_reasoning(testing & t) {
+    server_responses_store store;
+    server_responses_request req;
+    req.model                    = "m";
+    req.store                    = false;
+    req.include_encrypted_content = true;
+    server_responses_context ctx(store, req, "m", nullptr);
+
+    server_task_result_cmpl_final final_result;
+    final_result.oaicompat_msg.reasoning_content = "think";
+    final_result.n_prompt_tokens = 1;
+    final_result.n_decoded       = 1;
+    final_result.stop            = STOP_TYPE_EOS;
+    final_result.truncated       = false;
+
+    json response = ctx.final_response(final_result);
+    t.assert_equal("output items", (size_t) 1, response.at("output").size());
+    const json & item = response.at("output")[0];
+    t.assert_equal("reasoning type", std::string("reasoning"), item.at("type").get<std::string>());
+    t.assert_true ("encrypted is string", item.at("encrypted_content").is_string());
+    t.assert_true ("encrypted prefix", item.at("encrypted_content").get<std::string>().rfind("elc1:", 0) == 0);
+    t.assert_equal("summary size", (size_t) 1, item.at("summary").size());
+}
+
+
 static void test_responses_logprobs(testing & t) {
     server_responses_store store;
     server_responses_request req;
@@ -1769,6 +1796,63 @@ static void test_responses_custom_tools(testing & t) {
 }
 
 
+static void test_responses_custom_tool_stream(testing & t) {
+    server_responses_store store;
+    server_responses_request req;
+    req.model  = "m";
+    req.stream = true;
+    req.store  = false;
+    common_chat_tool tool;
+    tool.name      = "run_code";
+    tool.is_custom = true;
+    req.tools_parsed.push_back(tool);
+    server_responses_context ctx(store, req, "m", nullptr);
+
+    auto collect_deltas = [](const json & events) {
+        std::string text;
+        for (const auto & event : events) {
+            if (event.value("event", std::string()) == "response.custom_tool_call_input.delta") {
+                text += event.at("data").value("delta", std::string());
+            }
+        }
+        return text;
+    };
+
+    common_chat_msg_diff first;
+    first.tool_call_index            = 0;
+    first.tool_call_delta.name       = "run_code";
+    first.tool_call_delta.arguments  = "{\"input\":\"hel";
+    server_task_result_cmpl_partial partial;
+    partial.oaicompat_msg_diffs = { first };
+    json events = ctx.consume(partial);
+    t.assert_equal("first custom delta", std::string("hel"), collect_deltas(events));
+
+    common_chat_msg_diff second;
+    second.tool_call_index           = 0;
+    second.tool_call_delta.arguments = "lo\"}";
+    partial.oaicompat_msg_diffs = { second };
+    events = ctx.consume(partial);
+    t.assert_equal("second custom delta", std::string("lo"), collect_deltas(events));
+
+    server_task_result_cmpl_final final_result;
+    final_result.n_prompt_tokens = 1;
+    final_result.n_decoded       = 1;
+    final_result.stop            = STOP_TYPE_EOS;
+    final_result.truncated       = false;
+    const json done = ctx.finish(final_result);
+
+    bool done_input = false;
+    for (const auto & event : done) {
+        if (event.value("event", std::string()) != "response.custom_tool_call_input.done") {
+            continue;
+        }
+        done_input = event.at("data").value("input", std::string()) == "hello";
+    }
+    t.assert_true("custom input done", done_input);
+    t.assert_equal("no extra custom delta", std::string(), collect_deltas(done));
+}
+
+
 static void test_responses_custom_output(testing & t) {
     json body = {
         {"model", "m"},
@@ -1841,6 +1925,7 @@ int main(int argc, char ** argv) {
     t.test("responses_non_stream", test_responses_non_stream);
     t.test("responses_tools_convert", test_responses_tools_convert);
     t.test("responses_custom_tools", test_responses_custom_tools);
+    t.test("responses_custom_tool_stream", test_responses_custom_tool_stream);
     t.test("responses_custom_output", test_responses_custom_output);
     t.test("chat_completions_parse",  test_chat_completions_parse);
     t.test("chat_completions_store",  test_chat_completions_store);
@@ -1849,6 +1934,7 @@ int main(int argc, char ** argv) {
     t.test("chat_completions_parallel", test_chat_completions_parallel);
     t.test("responses_parallel",        test_responses_parallel);
     t.test("responses_reasoning_summary", test_responses_reasoning_summary);
+    t.test("responses_encrypted_reasoning", test_responses_encrypted_reasoning);
     t.test("responses_logprobs",        test_responses_logprobs);
     t.test("responses_failed_event",    test_responses_failed_event);
     t.test("openai_error_shape",        test_openai_error_shape);

@@ -51,6 +51,7 @@ struct server_responses_request {
     int32_t max_output_tokens = -1;
     int32_t top_logprobs = 0;
     bool include_logprobs = false;
+    bool include_encrypted_content = false;
     double temperature = -1.0;
     double top_p = -1.0;
 };
