@@ -84,6 +84,10 @@ std::vector<llama_grammar_candidate> llama_grammar_reject_candidates_for_stack(
         const llama_grammar_stack      & stack,
         const llama_grammar_candidates & candidates);
 
+// Jump-forward support: if the grammar state allows exactly one next token, return it.
+// Returns false when there are zero or more than one possible next tokens.
+bool llama_grammar_forced_token(const struct llama_grammar * grammar, llama_token & token_out);
+
 struct llama_grammar_parser {
     const llama_vocab * vocab;
     std::map<std::string, uint32_t> symbol_ids;

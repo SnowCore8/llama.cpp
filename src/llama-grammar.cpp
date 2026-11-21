@@ -1609,6 +1609,77 @@ void llama_grammar_apply_impl(const struct llama_grammar & grammar, llama_token_
     }
 }
 
+bool llama_grammar_forced_token(const struct llama_grammar * grammar, llama_token & token_out) {
+    GGML_ASSERT(grammar != nullptr);
+    GGML_ASSERT(grammar->vocab != nullptr);
+
+    if (grammar->awaiting_trigger || grammar->stacks.empty()) {
+        return false;
+    }
+
+    bool allow_eog = false;
+    for (const auto & stack : grammar->stacks) {
+        if (stack.empty()) {
+            allow_eog = true;
+            break;
+        }
+    }
+
+    // ending the sequence is always an alternative, so nothing is forced
+    if (allow_eog) {
+        return false;
+    }
+
+    const llama_vocab & vocab = *grammar->vocab;
+
+    // decoded token pieces must stay alive until the rejection pass is done
+    std::vector<std::pair<std::vector<uint32_t>, llama_partial_utf8>> candidates_decoded;
+    llama_grammar_candidates candidates_grammar;
+
+    const size_t n_vocab = vocab.n_tokens();
+    candidates_decoded.reserve(n_vocab);
+    candidates_grammar.reserve(n_vocab);
+
+    for (llama_token id = 0; id < (llama_token) n_vocab; ++id) {
+        if (vocab.is_eog(id)) {
+            continue;
+        }
+
+        const std::string & piece = vocab.token_to_piece(id);
+        if (piece.empty() || piece[0] == 0) {
+            continue;
+        }
+
+        candidates_decoded.push_back(decode_utf8(piece, grammar->partial_utf8));
+        candidates_grammar.push_back({
+            candidates_grammar.size(),
+            candidates_decoded.back().first.data(),
+            candidates_decoded.back().second,
+            id,
+        });
+    }
+
+    const auto rejects = llama_grammar_reject_candidates(*grammar->rules, grammar->stacks, candidates_grammar);
+
+    if (candidates_grammar.size() - rejects.size() != 1) {
+        return false;
+    }
+
+    std::vector<bool> is_rejected(candidates_grammar.size(), false);
+    for (const auto & reject : rejects) {
+        is_rejected[reject.index] = true;
+    }
+
+    for (size_t i = 0; i < candidates_grammar.size(); ++i) {
+        if (!is_rejected[i]) {
+            token_out = candidates_grammar[i].id;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void llama_grammar_accept_impl(struct llama_grammar & grammar, llama_token token) {
     GGML_ASSERT(grammar.vocab != nullptr);
 

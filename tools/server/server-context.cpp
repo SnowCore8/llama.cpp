@@ -373,6 +373,9 @@ struct server_slot {
 
     std::vector<completion_token_output> generated_token_probs;
 
+    // jump-forward tokens forced by the grammar, they share the batch with the sampled token
+    llama_tokens forced_tokens;
+
     bool has_next_token = true;
     bool has_new_line   = false;
     bool truncated      = false;
@@ -676,7 +679,14 @@ struct server_slot {
                     inp_embd.clear(); // rows are consumed, the next step produces new ones
                 }
             } else {
-                add_ok &= batch.add(id, sampled, prompt.tokens.pos_next(), true, false);
+                llama_pos pos0 = prompt.tokens.pos_next();
+                add_ok &= batch.add(id, sampled, pos0++, true, false);
+                for (const llama_token tok : forced_tokens) {
+                    add_ok &= batch.add(id, tok, pos0++, true, false);
+                }
+                if (!forced_tokens.empty()) {
+                    i_batch = batch.size() - 1;
+                }
             }
 
             SLT_DBG(*this, "slot decode token, id=%d, n_ctx = %d, n_tokens = %d, truncated = %d\n",
@@ -704,6 +714,11 @@ struct server_slot {
 
         prompt.tokens.push_back(tok_track);
         prompt.tokens.insert(spec_draft);
+
+        if (!forced_tokens.empty()) {
+            prompt.tokens.insert(forced_tokens);
+            forced_tokens.clear();
+        }
     }
 
     void release() {
@@ -4903,6 +4918,51 @@ private:
                 slot.release();
 
                 return;
+            }
+
+            // jump-forward: append the tokens that the grammar forces next. They are evaluated
+            // together with the sampled token in the next batch, which skips their own sampling step.
+            if (slot.spec_draft.empty() && !slot.task->params.sampling.grammar.empty() && getenv("GGML_SERVER_NO_JUMP_FORWARD") == nullptr) {
+                int n_forced_max = 16;
+
+                const int n_remaining = slot.n_remaining();
+                if (n_remaining >= 0) {
+                    n_forced_max = std::min(n_forced_max, n_remaining);
+                }
+
+                for (int i = 0; i < n_forced_max; ++i) {
+                    llama_token tok = LLAMA_TOKEN_NULL;
+                    if (!common_sampler_grammar_forced(slot.smpl.get(), tok)) {
+                        break;
+                    }
+
+                    common_sampler_accept(slot.smpl.get(), tok, true);
+
+                    completion_token_output result_forced;
+                    result_forced.tok          = tok;
+                    result_forced.text_to_send = common_token_to_piece(slot.ctx_tgt, tok, accept_special_token(slot, tok));
+                    result_forced.prob         = 1.0f;
+
+                    slot.stats.n_gen += 1;
+
+                    const llama_token sampled_before = slot.sampled;
+                    const bool ok = process_token(result_forced, slot);
+                    slot.sampled = sampled_before;
+
+                    if (!ok) {
+                        slot.print_timings();
+                        send_final_response(slot);
+                        slot.release();
+
+                        return;
+                    }
+
+                    slot.forced_tokens.push_back(tok);
+                }
+
+                if (!slot.forced_tokens.empty()) {
+                    SLT_DBG(slot, "jump-forward: %d forced tokens\n", (int) slot.forced_tokens.size());
+                }
             }
 
             slot.print_timings_tg();

@@ -1562,6 +1562,9 @@ extern "C" {
     /// @details Lazy grammar sampler, introduced in https://github.com/ggml-org/llama.cpp/pull/9639
     /// @param trigger_patterns A list of patterns that will trigger the grammar sampler. Pattern will be matched from the start of the generation output, and grammar sampler will be fed content starting from its first match group.
     /// @param trigger_tokens A list of tokens that will trigger the grammar sampler. Grammar sampler will be fed content starting from the trigger token included.
+    /// @details Jump-forward support: if the grammar sampler inside a sampler chain allows exactly one next token, return it.
+    LLAMA_API bool llama_sampler_grammar_forced_token(struct llama_sampler * smpl, llama_token * token_out);
+
     LLAMA_API struct llama_sampler * llama_sampler_init_grammar_lazy_patterns(
         const struct llama_vocab * vocab,
                       const char * grammar_str,

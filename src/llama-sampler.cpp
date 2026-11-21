@@ -2824,6 +2824,46 @@ struct llama_sampler * llama_sampler_init_grammar_lazy_patterns(
     return llama_sampler_init_grammar_impl(vocab, grammar_str, grammar_root, /* lazy= */ true, trigger_tokens, num_trigger_tokens, trigger_patterns, num_trigger_patterns);
 }
 
+static bool llama_sampler_grammar_forced_walk(struct llama_sampler * smpl, llama_token & token_out) {
+    if (smpl == nullptr || smpl->iface == nullptr) {
+        return false;
+    }
+
+    if (smpl->iface == &llama_sampler_chain_i) {
+        const int32_t n = llama_sampler_chain_n(smpl);
+        for (int32_t i = 0; i < n; ++i) {
+            if (llama_sampler_grammar_forced_walk(llama_sampler_chain_get(smpl, i), token_out)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    if (smpl->iface == &llama_sampler_grammar_i) {
+        auto * ctx = (llama_sampler_grammar *) smpl->ctx;
+        if (ctx->grammar == nullptr) {
+            return false;
+        }
+        return llama_grammar_forced_token(ctx->grammar, token_out);
+    }
+
+    return false;
+}
+
+bool llama_sampler_grammar_forced_token(struct llama_sampler * smpl, llama_token * token_out) {
+    if (token_out == nullptr) {
+        return false;
+    }
+
+    llama_token tok = 0;
+    if (!llama_sampler_grammar_forced_walk(smpl, tok)) {
+        return false;
+    }
+
+    *token_out = tok;
+    return true;
+}
+
 // penalties
 
 struct llama_sampler_penalties : public llama_sampler_backend {

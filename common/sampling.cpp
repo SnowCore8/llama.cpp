@@ -860,6 +860,14 @@ uint32_t common_sampler_get_seed(const struct common_sampler * gsmpl) {
     return llama_sampler_get_seed(gsmpl->chain);
 }
 
+bool common_sampler_grammar_forced(struct common_sampler * gsmpl, llama_token & token_out) {
+    if (gsmpl == nullptr || gsmpl->grmr == nullptr) {
+        return false;
+    }
+
+    return llama_sampler_grammar_forced_token(gsmpl->grmr, &token_out);
+}
+
 bool common_sampler_reasoning_budget_force(struct common_sampler * gsmpl) {
     if (!gsmpl) {
         return false;
