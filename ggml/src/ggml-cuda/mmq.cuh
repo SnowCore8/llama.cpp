@@ -975,6 +975,17 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
 
     for (int kb0 = kb0_start; kb0 < kb0_stop; kb0 += blocks_per_iter) {
         load_tiles(x, x_gate, tile_x, offset_x + kb0, tile_x_i_max, stride_row_x);
+
+        // Prefetch the src0 tile of the next iteration into L2 while this tile is being processed.
+        if (kb0 + blocks_per_iter < kb0_stop) {
+            constexpr int bs       = ggml_cuda_type_traits<type>::bs;
+            constexpr int nthreads = ggml_cuda_mmq_get_nthreads(type, J, fallback, prec_src1);
+            const int64_t off      = int64_t(offset_x + kb0 + blocks_per_iter)*bs;
+            for (int i = threadIdx.y*warp_size + threadIdx.x; i < tile_x_i_max; i += nthreads) {
+                ggml_cuda_prefetch_l2(x + int64_t(i)*stride_row_x*bs + off);
+            }
+        }
+
         {
             const int * by0 = y + ncols_y * (kb0 * qk / ne_block) * sz;
 #pragma unroll

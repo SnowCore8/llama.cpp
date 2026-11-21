@@ -278,6 +278,13 @@ static __global__ void flash_attn_ext_vec(
              // Increment pointers after each loop:
              K += gridDim.y*nthreads*nb11, V += gridDim.y*nthreads*nb21, maskh += gridDim.y*nthreads) {
 
+        // Prefetch the K and V rows of the next iteration into L2 while this iteration is being computed.
+        if (k_VKQ_0 + gridDim.y*nthreads < k_VKQ_max) {
+            const int i_KV = threadIdx.y*WARP_SIZE + threadIdx.x;
+            ggml_cuda_prefetch_l2(K + gridDim.y*nthreads*nb11 + i_KV*nb11);
+            ggml_cuda_prefetch_l2(V + gridDim.y*nthreads*nb21 + i_KV*nb21);
+        }
+
         // Calculate KQ tile and keep track of new maximum KQ values:
         float KQ_reg[ncols]; // KQ in registers.
 
