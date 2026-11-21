@@ -622,6 +622,24 @@ class LlamaHfVocab(Vocab):
                 "You can install it with `pip install transformers`."
             ) from e
 
+        # Compatibility: some models (e.g. gemma-4-12B-it) ship extra_special_tokens
+        # as a list in tokenizer_config.json, which breaks transformers >= 4.46
+        # where _set_model_specific_special_tokens expects a dict.
+        # Properly merge list-style tokens into additional_special_tokens.
+        import transformers.tokenization_utils_base as _tub
+        _orig_set_special = _tub.PreTrainedTokenizerBase._set_model_specific_special_tokens
+        def _patched_set_special(self, special_tokens=None, **kwargs):
+            if isinstance(special_tokens, list):
+                # Merge into additional_special_tokens (the proper way)
+                existing = list(getattr(self, 'additional_special_tokens', []) or [])
+                for tok in special_tokens:
+                    if tok and tok not in existing:
+                        existing.append(tok)
+                self.additional_special_tokens = existing
+                return  # already handled
+            return _orig_set_special(self, special_tokens=special_tokens, **kwargs)
+        _tub.PreTrainedTokenizerBase._set_model_specific_special_tokens = _patched_set_special
+
         # Allow the tokenizer to default to slow or fast versions.
         # Explicitly set tokenizer to use local paths.
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -629,6 +647,8 @@ class LlamaHfVocab(Vocab):
             cache_dir=base_path,
             local_files_only=True,
         )
+        # Restore original method after tokenizer is loaded
+        _tub.PreTrainedTokenizerBase._set_model_specific_special_tokens = _orig_set_special
         assert self.tokenizer is not None
         assert self.tokenizer.is_fast  # assume tokenizer.json is used
 
