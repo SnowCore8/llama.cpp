@@ -210,6 +210,9 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
 
         const int64_t t_start = ggml_time_us();
 
+        // the whole cached prompt is a prefix of the new one
+        const bool is_full_prefix = lcp_best == (int) it_best->prompt.tokens.size();
+
         {
             auto & data = it_best->data.main;
 
@@ -221,8 +224,11 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
                 return false;
             }
 
-            data.clear();
-            data.shrink_to_fit();
+            // a full prefix state is kept so that concurrent slots can restore it too
+            if (!is_full_prefix) {
+                data.clear();
+                data.shrink_to_fit();
+            }
         }
 
         {
@@ -239,21 +245,27 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
                     return false;
                 }
 
-                data.clear();
-                data.shrink_to_fit();
+                if (!is_full_prefix) {
+                    data.clear();
+                    data.shrink_to_fit();
+                }
             }
         }
 
         SRV_DBG("%s", "__TEST_TAG_PROMPT_CACHE_RESTORE__\n");
 
-        // the whole cached prompt is a prefix of the new one
-        if (lcp_best == (int) it_best->prompt.tokens.size()) {
+        if (is_full_prefix) {
             SRV_DBG("%s", "__TEST_TAG_PROMPT_CACHE_FULL_RESTORE__\n");
         }
 
-        prompt = std::move(it_best->prompt);
+        if (is_full_prefix) {
+            // keep the state in the cache, share it between slots instead of moving it to one
+            prompt = it_best->prompt.clone();
+        } else {
+            prompt = std::move(it_best->prompt);
 
-        states.erase(it_best);
+            states.erase(it_best);
+        }
 
         SRV_TRC("slot %d: prompt cache restore took %.2f ms\n", id_slot, (ggml_time_us() - t_start) / 1000.0);
     }
